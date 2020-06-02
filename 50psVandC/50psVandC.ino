@@ -95,17 +95,17 @@ void loop() {
         solar.serialprint();
         if (c == '\n' && currentLineIsBlank) {
           // send a power summary
-          client.println("grid,realpower="+grid.realPower+");
-          client.println("grid,apparentPower="+grid.apparentPower+");
-          client.println("grid,supplyVoltage="+grid.Vrms+");
-          client.println("grid,currentRMS="+grid.Irms+");
-          client.println("grid,powerFActor="+grid.powerFactor+");
+          client.println("grid,realpower="+String(grid.realPower));
+          client.println("grid,apparentPower="+String(grid.apparentPower));
+          client.println("grid,supplyVoltage="+String(grid.Vrms));
+          client.println("grid,currentRMS="+String(grid.Irms));
+          client.println("grid,powerFActor="+String(grid.powerFactor));
 
-          client.println("solar,realpower="+solar.realPower+");
-          client.println("solar,apparentPower="+solar.apparentPower+");
-          client.println("solar,supplyVoltage="+solar.Vrms+");
-          client.println("solar,currentRMS="+solar.Irms+");
-          client.println("solar,powerFActor="+solar.powerFactor+");
+          client.println("solar,realpower="+String(grid.realPower));
+          client.println("solar,apparentPower="+String(grid.apparentPower));
+          client.println("solar,supplyVoltage="+String(grid.Vrms));
+          client.println("solar,currentRMS="+String(grid.Irms));
+          client.println("solar,powerFActor="+String(grid.powerFactor));  
           break;
         }
         if (c == '\n') {
