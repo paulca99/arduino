@@ -20,7 +20,9 @@
 #include <SPI.h>
 #include <Ethernet.h>
 #include "EmonLib.h"             // Include Emon Library
-EnergyMonitor grid;             // Create an instance
+EnergyMonitor grid;             // Gridmon
+EnergyMonitor solar;            // Solarmon
+
 
 // Enter a MAC address and IP address for your controller below.
 // The IP address will be dependent on your local network:
@@ -69,7 +71,9 @@ void setup() {
   Serial.print("server is at ");
   Serial.println(Ethernet.localIP());
   grid.voltage(2, 224.26, 1.7);  // Voltage: input pin, calibration, phase_shift
-  grid.current(1, 49.9);     
+  grid.current(1, 49.9);  
+  solar.voltage(2, 224.26, 1.7);  // Voltage: input pin, calibration, phase_shift
+  solar.current(3, 49.9);   
 }
 
 
@@ -87,7 +91,8 @@ void loop() {
         // if you've gotten to the end of the line (received a newline
         // character) and the line is blank, the http request has ended,
         // so you can send a reply
-         grid.serialprint();           // Print out all variables (realpower, apparent power, Vrms, Irms, power factor)
+        grid.serialprint();           // Print out all variables (realpower, apparent power, Vrms, Irms, power factor)
+        solar.serialprint();
         if (c == '\n' && currentLineIsBlank) {
           // send a power summary
           client.println("grid,realpower="+grid.realPower+");
@@ -96,6 +101,11 @@ void loop() {
           client.println("grid,currentRMS="+grid.Irms+");
           client.println("grid,powerFActor="+grid.powerFactor+");
 
+          client.println("solar,realpower="+solar.realPower+");
+          client.println("solar,apparentPower="+solar.apparentPower+");
+          client.println("solar,supplyVoltage="+solar.Vrms+");
+          client.println("solar,currentRMS="+solar.Irms+");
+          client.println("solar,powerFActor="+solar.powerFactor+");
           break;
         }
         if (c == '\n') {
