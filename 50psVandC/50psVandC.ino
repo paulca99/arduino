@@ -1,21 +1,21 @@
 /*
   Web Server
 
- A simple web server that shows the value of the analog input pins.
- using an Arduino Wiznet Ethernet shield.
+  A simple web server that shows the value of the analog input pins.
+  using an Arduino Wiznet Ethernet shield.
 
- Circuit:
- * Ethernet shield attached to pins 10, 11, 12, 13
- * Analog inputs attached to pins A0 through A5 (optional)
+  Circuit:
+   Ethernet shield attached to pins 10, 11, 12, 13
+   Analog inputs attached to pins A0 through A5 (optional)
 
- created 18 Dec 2009
- by David A. Mellis
- modified 9 Apr 2012
- by Tom Igoe
- modified 02 Sept 2015
- by Arturo Guadalupi
- 
- */
+  created 18 Dec 2009
+  by David A. Mellis
+  modified 9 Apr 2012
+  by Tom Igoe
+  modified 02 Sept 2015
+  by Arturo Guadalupi
+
+*/
 
 #include <SPI.h>
 #include <Ethernet.h>
@@ -71,9 +71,9 @@ void setup() {
   Serial.print("server is at ");
   Serial.println(Ethernet.localIP());
   grid.voltage(2, 224.26, 1.7);  // Voltage: input pin, calibration, phase_shift
-  grid.current(1, 49.9);  
+  grid.current(1, 49.9);
   solar.voltage(2, 224.26, 1.7);  // Voltage: input pin, calibration, phase_shift
-  solar.current(3, 49.9);   
+  solar.current(3, 49.9);
 }
 
 
@@ -95,17 +95,17 @@ void loop() {
         solar.serialprint();
         if (c == '\n' && currentLineIsBlank) {
           // send a power summary
-          client.println("grid,realpower="+String(grid.realPower));
-          client.println("grid,apparentPower="+String(grid.apparentPower));
-          client.println("grid,supplyVoltage="+String(grid.Vrms));
-          client.println("grid,currentRMS="+String(grid.Irms));
-          client.println("grid,powerFActor="+String(grid.powerFactor));
+          client.println("grid,realpower=" + String(grid.realPower));
+          client.println("grid,apparentPower=" + String(grid.apparentPower));
+          client.println("grid,supplyVoltage=" + String(grid.Vrms));
+          client.println("grid,currentRMS=" + String(grid.Irms));
+          client.println("grid,powerFActor=" + String(grid.powerFactor));
 
-          client.println("solar,realpower="+String(grid.realPower));
-          client.println("solar,apparentPower="+String(grid.apparentPower));
-          client.println("solar,supplyVoltage="+String(grid.Vrms));
-          client.println("solar,currentRMS="+String(grid.Irms));
-          client.println("solar,powerFActor="+String(grid.powerFactor));  
+          client.println("solar,realpower=" + String(grid.realPower));
+          client.println("solar,apparentPower=" + String(grid.apparentPower));
+          client.println("solar,supplyVoltage=" + String(grid.Vrms));
+          client.println("solar,currentRMS=" + String(grid.Irms));
+          client.println("solar,powerFActor=" + String(grid.powerFactor));
           break;
         }
         if (c == '\n') {
