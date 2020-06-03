@@ -144,28 +144,11 @@ void loop() {
         // so you can send a reply
 
         if (c == '\n' && currentLineIsBlank) {
-                  grid.serialprint();           // Print out all variables (realpower, apparent power, Vrms, Irms, power factor)
-        solar.serialprint();
-                    client.println("HTTP/1.1 200 OK");
-          client.println("Content-Type: text/html");
-          client.println("Connection: close");  // the connection will be closed after completion of the response
-          client.println("Refresh: 5");  // refresh the page automatically every 5 sec
-          client.println();
-          client.println("<!DOCTYPE HTML>");
-          client.println("<html>");
+
           // output the value of each analog input pin
           // send a power summary
-          client.println("grid,realpower=" + String(grid.realPower));
-          client.println("grid,apparentPower=" + String(grid.apparentPower));
-          client.println("grid,supplyVoltage=" + String(grid.Vrms));
-          client.println("grid,currentRMS=" + String(grid.Irms));
-          client.println("grid,powerFActor=" + String(grid.powerFactor));
-
-          client.println("solar,realpower=" + String(grid.realPower));
-          client.println("solar,apparentPower=" + String(grid.apparentPower));
-          client.println("solar,supplyVoltage=" + String(grid.Vrms));
-          client.println("solar,currentRMS=" + String(grid.Irms));
-          client.println("solar,powerFActor=" + String(grid.powerFactor));
+          client.println("grid," + String(grid.realPower) + "," + String(grid.apparentPower) + "," + String(grid.Vrms) + "," + String(grid.Irms) + "," + String(grid.powerFactor));
+          client.println("solar," + String(solar.realPower) + "," + String(solar.apparentPower) + "," + String(solar.Vrms) + "," + String(solar.Irms) + "," + String(solar.powerFactor));
           break;
         }
         if (c == '\n') {
@@ -182,29 +165,29 @@ void loop() {
     // close the connection:
     client.stop();
     Serial.println("client disconnected");
-  }  
+  }
 
-    Serial.print("GRID : ");
-    grid.calcVI(20, 500);        // Calculate all. No.of half wavelengths (crossings), time-out
-    grid.serialprint();
-    Serial.print("SOLAR : ");
-    solar.calcVI(20, 500); // Calculate all. No.of half wavelengths (crossings), time-out
-    solar.serialprint();
-    int gridp = (int)grid.realPower;
-    int solarp = (int)solar.realPower;
+  Serial.print("GRID : ");
+  grid.calcVI(20, 500);        // Calculate all. No.of half wavelengths (crossings), time-out
+  grid.serialprint();
+  Serial.print("SOLAR : ");
+  solar.calcVI(20, 500); // Calculate all. No.of half wavelengths (crossings), time-out
+  solar.serialprint();
+  int gridp = (int)grid.realPower;
+  int solarp = (int)solar.realPower;
 
-    display.clearDisplay();
+  display.clearDisplay();
 
-    display.setTextSize(2);
-    display.setTextColor(WHITE);
-    display.setCursor(0, 2);
-    // Display static text
-    display.println("GRD:" + String(gridp));
-    display.setCursor(0, 22);
-    display.println("SLR:" + String(solarp));
-    display.setCursor(0, 42);
-    int homePower = (int)(solar.realPower - grid.realPower);
-    display.println("HME:" + String(homePower));
-    display.display();
-    delay(500);
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 2);
+  // Display static text
+  display.println("GRD:" + String(gridp));
+  display.setCursor(0, 22);
+  display.println("SLR:" + String(solarp));
+  display.setCursor(0, 42);
+  int homePower = (int)(solar.realPower - grid.realPower);
+  display.println("HME:" + String(homePower));
+  display.display();
+  delay(500);
 }
