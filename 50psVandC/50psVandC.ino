@@ -1,19 +1,6 @@
 /*
-  Web Server
-
-  A simple web server that shows the value of the analog input pins.
-  using an Arduino Wiznet Ethernet shield.
-
-  Circuit:
-   Ethernet shield attached to pins 10, 11, 12, 13
-   Analog inputs attached to pins A0 through A5 (optional)
-
-  created 18 Dec 2009
-  by David A. Mellis
-  modified 9 Apr 2012
-  by Tom Igoe
-  modified 02 Sept 2015
-  by Arturo Guadalupi
+Home energy monitor
+To upload with ethernet shield attached we need to reset the power, click upload, then power on 0.5 seconds later
 
 */
 
@@ -130,6 +117,38 @@ void setup() {
 
 void loop() {
   // listen for incoming clients
+  int realgridp = (int)grid.realPower;
+  int realsolarp = (int)solar.realPower;
+  int realHomePower = (int)(solar.realPower - grid.realPower);
+  int appgridp = (int)grid.apparentPower;
+  int appsolarp = (int)solar.apparentPower;
+  int appHomePower = (int)(solar.apparentPower - grid.apparentPower);
+
+  
+  Serial.print("GRID : ");
+  grid.calcVI(20, 500);        // Calculate all. No.of half wavelengths (crossings), time-out
+  grid.serialprint();
+  Serial.print("SOLAR : ");
+  solar.calcVI(20, 500); // Calculate all. No.of half wavelengths (crossings), time-out
+  solar.serialprint();
+ 
+
+  display.clearDisplay();
+
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 2);
+  // Display static text
+  display.println("GRD:" + String(realgridp));
+  display.setCursor(0, 22);
+  display.println("SLR:" + String(realsolarp));
+  display.setCursor(0, 42);
+
+  display.println("HME:" + String(realHomePower));
+  display.display();
+  delay(500);
+
+  
   EthernetClient client = server.available();
   if (client) {
     Serial.println("new client");
@@ -147,8 +166,7 @@ void loop() {
 
           // output the value of each analog input pin
           // send a power summary
-          client.println("grid," + String(grid.realPower) + "," + String(grid.apparentPower) + "," + String(grid.Vrms) + "," + String(grid.Irms) + "," + String(grid.powerFactor));
-          client.println("solar," + String(solar.realPower) + "," + String(solar.apparentPower) + "," + String(solar.Vrms) + "," + String(solar.Irms) + "," + String(solar.powerFactor));
+          client.println(String(grid.realPower) + "," + String(grid.apparentPower) + "," + String(grid.Vrms) + "," + String(grid.Irms) + "," + String(grid.powerFactor)+","+String(solar.realPower) + "," + String(solar.apparentPower) + "," + String(solar.Vrms) + "," + String(solar.Irms) + "," + String(solar.powerFactor)+","+String(realHomePower)+","+String(appHomePower));
           break;
         }
         if (c == '\n') {
@@ -167,27 +185,4 @@ void loop() {
     Serial.println("client disconnected");
   }
 
-  Serial.print("GRID : ");
-  grid.calcVI(20, 500);        // Calculate all. No.of half wavelengths (crossings), time-out
-  grid.serialprint();
-  Serial.print("SOLAR : ");
-  solar.calcVI(20, 500); // Calculate all. No.of half wavelengths (crossings), time-out
-  solar.serialprint();
-  int gridp = (int)grid.realPower;
-  int solarp = (int)solar.realPower;
-
-  display.clearDisplay();
-
-  display.setTextSize(2);
-  display.setTextColor(WHITE);
-  display.setCursor(0, 2);
-  // Display static text
-  display.println("GRD:" + String(gridp));
-  display.setCursor(0, 22);
-  display.println("SLR:" + String(solarp));
-  display.setCursor(0, 42);
-  int homePower = (int)(solar.realPower - grid.realPower);
-  display.println("HME:" + String(homePower));
-  display.display();
-  delay(500);
 }
