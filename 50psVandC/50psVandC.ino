@@ -119,10 +119,10 @@ void loop() {
   // listen for incoming clients
   int realgridp = (int)grid.realPower;
   int realsolarp = (int)solar.realPower;
-  int realHomePower = (int)(solar.realPower - grid.realPower);
+  int realHomePower = (int)(solar.realPower + grid.realPower);
   int appgridp = (int)grid.apparentPower;
   int appsolarp = (int)solar.apparentPower;
-  int appHomePower = (int)(solar.apparentPower - grid.apparentPower);
+  int appHomePower = (int)(solar.apparentPower + grid.apparentPower);
 
   
   Serial.print("GRID : ");
