@@ -53,6 +53,5 @@ curl -i -XPOST 'http://localhost:8086/write?db=power' --data-binary "$grid_vrms_
 grid_irms_data=$(echo "grid_irms,host=server01,source=grid value=$grid_irms")
 curl -i -XPOST 'http://localhost:8086/write?db=power' --data-binary "$grid_irms_data"
  	echo "Press [CTRL+C] to stop.."
-	sleep 10
+sleep 1
 done
-

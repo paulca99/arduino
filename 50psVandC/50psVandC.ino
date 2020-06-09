@@ -89,10 +89,10 @@ void setup() {
   server.begin();
   Serial.print("server is at ");
   Serial.println(Ethernet.localIP());
-  grid.voltage(2, 224.26, 1.7);  // Voltage: input pin, calibration, phase_shift
-  grid.current(1, 49.9);
-  solar.voltage(2, 224.26, 1.7);  // Voltage: input pin, calibration, phase_shift
-  solar.current(3, 49.9);
+  grid.voltage(2, 221.26, 1.9);  // Voltage: input pin, calibration, phase_shift
+  grid.current(1, 48.9);
+  solar.voltage(2, 221.26, 1.9);  // Voltage: input pin, calibration, phase_shift
+  solar.current(3, 48.9);
   //*********init DISPLAY
   // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
@@ -126,11 +126,11 @@ void loop() {
 
   
   Serial.print("GRID : ");
-  grid.calcVI(20, 500);        // Calculate all. No.of half wavelengths (crossings), time-out
+  grid.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
   grid.serialprint();
-  Serial.print("SOLAR : ");
-  solar.calcVI(20, 500); // Calculate all. No.of half wavelengths (crossings), time-out
-  solar.serialprint();
+ // Serial.print("SOLAR : ");
+  solar.calcVI(20, 2000); // Calculate all. No.of half wavelengths (crossings), time-out
+  //solar.serialprint();
  
 
   display.clearDisplay();
@@ -151,13 +151,13 @@ void loop() {
   
   EthernetClient client = server.available();
   if (client) {
-    Serial.println("new client");
+   // Serial.println("new client");
     // an http request ends with a blank line
     boolean currentLineIsBlank = true;
     while (client.connected()) {
       if (client.available()) {
         char c = client.read();
-        Serial.write(c);
+     //   Serial.write(c);
         // if you've gotten to the end of the line (received a newline
         // character) and the line is blank, the http request has ended,
         // so you can send a reply
@@ -166,7 +166,7 @@ void loop() {
 
           // output the value of each analog input pin
           // send a power summary
-          client.println(String(grid.realPower) + "," + String(grid.apparentPower) + "," + String(grid.Vrms) + "," + String(grid.Irms) + "," + String(grid.powerFactor)+","+String(solar.realPower) + "," + String(solar.apparentPower) + "," + String(solar.Vrms) + "," + String(solar.Irms) + "," + String(solar.powerFactor)+","+String(realHomePower)+","+String(appHomePower));
+          client.println(String(grid.realPower) + "," + String(grid.apparentPower) + "," + String(grid.Vrms) + "," + String(grid.Irms) + "," + String(grid.powerFactor)+","+String(solar.realPower) + "," + String(solar.apparentPower) + "," + String(solar.Vrms) + "," + String(solar.Irms) + "," + String(solar.powerFactor)+","+String(realHomePower)+","+String(appHomePower)+",EOT");
           break;
         }
         if (c == '\n') {
@@ -182,7 +182,7 @@ void loop() {
     delay(1);
     // close the connection:
     client.stop();
-    Serial.println("client disconnected");
+  //  Serial.println("client disconnected");
   }
 
 }
