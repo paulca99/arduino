@@ -55,7 +55,22 @@ IPAddress ip(192, 168, 1, 177);
 // with the IP address and port you want to use
 // (port 80 is default for HTTP):
 EthernetServer server(80);
+  // listen for incoming clients
+int realgridp;
+int realsolarp;
+int realHomePower;
+int appgridp;
+int appsolarp;
+int appHomePower;  
+float gridVRMS;
+float gridIRMS;
+float gridPFactor;
+float solarIRMS;
+float solarVRMS;
+float solarPFactor;
+     
 
+  
 void setup() {
   // You can use Ethernet.init(pin) to configure the CS pin
   //Ethernet.init(10);  // Most Arduino shields
@@ -89,10 +104,10 @@ void setup() {
   server.begin();
   Serial.print("server is at ");
   Serial.println(Ethernet.localIP());
-  grid.voltage(2, 221.26, 1.9);  // Voltage: input pin, calibration, phase_shift
-  grid.current(1, 48.9);
-  solar.voltage(2, 221.26, 1.9);  // Voltage: input pin, calibration, phase_shift
-  solar.current(3, 48.9);
+  grid.voltage(2, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
+  grid.current(1, 50);
+  solar.voltage(2, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
+  solar.current(3, 50);
   //*********init DISPLAY
   // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
@@ -117,20 +132,30 @@ void setup() {
 
 void loop() {
   // listen for incoming clients
-  int realgridp = (int)grid.realPower;
-  int realsolarp = (int)solar.realPower;
-  int realHomePower = (int)(solar.realPower + grid.realPower);
-  int appgridp = (int)grid.apparentPower;
-  int appsolarp = (int)solar.apparentPower;
-  int appHomePower = (int)(solar.apparentPower + grid.apparentPower);
+
+
+
+
 
   
   Serial.print("GRID : ");
   grid.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
-  grid.serialprint();
+  realgridp = (int)grid.realPower;
+  appgridp = (int)grid.apparentPower;
+  gridVRMS = grid.Vrms;
+  gridIRMS = grid.Irms;
+  gridPFactor = grid.powerFactor;
+//  grid.serialprint();
  // Serial.print("SOLAR : ");
   solar.calcVI(20, 2000); // Calculate all. No.of half wavelengths (crossings), time-out
+  realsolarp = (int)solar.realPower;
+  appsolarp = (int)solar.apparentPower;
+  solarVRMS = solar.Vrms;
+  solarIRMS = solar.Irms;
+  solarPFactor = solar.powerFactor;
   //solar.serialprint();
+  realHomePower = realsolarp + realgridp;
+  appHomePower = appsolarp + appgridp;
  
 
   display.clearDisplay();
@@ -146,7 +171,7 @@ void loop() {
 
   display.println("HME:" + String(realHomePower));
   display.display();
-  delay(500);
+  //delay(500);
 
   
   EthernetClient client = server.available();
@@ -166,7 +191,7 @@ void loop() {
 
           // output the value of each analog input pin
           // send a power summary
-          client.println(String(grid.realPower) + "," + String(grid.apparentPower) + "," + String(grid.Vrms) + "," + String(grid.Irms) + "," + String(grid.powerFactor)+","+String(solar.realPower) + "," + String(solar.apparentPower) + "," + String(solar.Vrms) + "," + String(solar.Irms) + "," + String(solar.powerFactor)+","+String(realHomePower)+","+String(appHomePower)+",EOT");
+          client.println(String(realgridp) + "," + String(appgridp) + "," + String(gridVRMS) + "," + String(gridIRMS) + "," + String(gridPFactor)+","+String(realsolarp) + "," + String(appsolarp) + "," + String(solarVRMS) + "," + String(solarIRMS) + "," + String(solarPFactor)+","+String(realHomePower)+","+String(appHomePower)+",EOT");
           break;
         }
         if (c == '\n') {
