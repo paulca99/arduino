@@ -13,7 +13,9 @@
         # date=1 totalpower=2 powerstring1 voltagestring1 powerstring2 voltagestring2 temp acvolts totalKWh
         time=$(echo $REPLY | awk -v position=1 '{split($0,a," "); print a[position]}')
         timestampStr="$3-$2-$1T$time"
-        timestamp=$(date -d "$timestampStr" +%s)
+        timestamp1=$(date -d "$timestampStr" +%s)
+        echo "***timestamp1=$timestamp1"
+        timestamp="${timestamp1}000000000"
         echo "***timestamp=$timestamp"
         totalpower=$(echo $REPLY | awk -v position=2 '{split($0,a," "); print a[position]}')
         powerstring1=$(echo $REPLY | awk -v position=3 '{split($0,a," "); print a[position]}')
