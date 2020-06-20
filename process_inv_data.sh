@@ -3,6 +3,7 @@
     insertData (){
         echo "first=$1"
         echo "second=$2"
+        echo "third=$3"
         curlstring=$(echo "$1,host=server01,source=grid value=$2 $3" )
         curl -i -XPOST 'http://localhost:8086/write?db=power' --data-binary "$curlstring"
    }
@@ -11,9 +12,9 @@
         echo "REPLy = $REPLY"
         # date=1 totalpower=2 powerstring1 voltagestring1 powerstring2 voltagestring2 temp acvolts totalKWh
         time=$(echo $REPLY | awk -v position=1 '{split($0,a," "); print a[position]}')
-        timestampStr="$1/$2/$3 $time"
-        timestamp=$(date -d '$timestampStr' +"%s") 
-        echo "***timestamp=$timestampStr"
+        timestampStr="$3-$2-$1T$time"
+        timestamp=$(date -d "$timestampStr" +%s)
+        echo "***timestamp=$timestamp"
         totalpower=$(echo $REPLY | awk -v position=2 '{split($0,a," "); print a[position]}')
         powerstring1=$(echo $REPLY | awk -v position=3 '{split($0,a," "); print a[position]}')
         voltstring1=$(echo $REPLY | awk -v position=4 '{split($0,a," "); print a[position]}')
