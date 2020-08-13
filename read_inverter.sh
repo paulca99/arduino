@@ -2,9 +2,9 @@
 
 #/home/pi/aurora/2020/d2_20200618.txt
 
-yesterday_year=$(date -d "1 day ago" '+%Y')
-yesterday_month=$(date -d "1 day ago" '+%m')
-yesterday_day=$(date -d "1 day ago" '+%d')
+yesterday_year=$(date -d "3 day ago" '+%Y')
+yesterday_month=$(date -d "3 day ago" '+%m')
+yesterday_day=$(date -d "3 day ago" '+%d')
 year=$(date +"%Y")
 month=$(date +"%m")
 day=$(date +"%d")
