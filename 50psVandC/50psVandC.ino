@@ -7,8 +7,6 @@ To upload with ethernet shield attached we need to reset the power, click upload
 #include <SPI.h>
 #include <Ethernet.h>
 #include "EmonLib.h"             // Include Emon Library
-EnergyMonitor grid;             // Gridmon
-EnergyMonitor solar;            // Solarmon
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -55,6 +53,8 @@ IPAddress ip(192, 168, 1, 177);
 // with the IP address and port you want to use
 // (port 80 is default for HTTP):
 EthernetServer server(80);
+EnergyMonitor grid;             // Gridmon
+EnergyMonitor solar;            // Solarmon
   // listen for incoming clients
 int realgridp;
 int realsolarp;
@@ -68,17 +68,61 @@ float gridPFactor;
 float solarIRMS;
 float solarVRMS;
 float solarPFactor;
+
+int INITIAL=0;
+int TUNING=1;
+int NIGHT=2;
+int STATE=INITIAL;
+int chargerVoltage;
+
      
 const byte numResistorPins = 6;
 byte resistorPins[] = {22, 24, 26, 28, 30, 32};
 //22-32 = resistor pins, 34 and 36 are GTI and Charger power relay
+
+void setChargerVoltage(int i)
+{
+    for (byte b=0; b<numResistorPins; b++) 
+    {
+      byte state = bitRead(63-i, b);
+      digitalWrite(resistorPins[b], state);
+    }
+}
+
+void switchChargerOn()
+{
+      digitalWrite(34, 0);
+}
+
+void switchGTIOn()
+{
+      digitalWrite(36, 0);
+}
+
+void switchChargerOff()
+{
+      digitalWrite(34, 1);
+}
+
+void switchGTIOff()
+{
+      digitalWrite(36, 1);
+}
+
+void processCommand(String command)
+{
+ // Serial.print("command="+command);
+}
+
 void setup() {
   // You can use Ethernet.init(pin) to configure the CS pin
- //for(byte i = 0; i < 17; i=i+2)
- //{ 
-  // pinMode(i+22,OUTPUT);
- //}
-
+ for(byte i = 0; i < 15; i=i+2)
+ { 
+   pinMode(i+22,OUTPUT);
+ }
+ switchChargerOff();
+ switchGTIOff();
+ 
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
   while (!Serial) {
@@ -128,52 +172,84 @@ void setup() {
   delay(2000);
 }
 
-void setChargerVoltage(int i)
-{
-    for (byte b=0; b<numResistorPins; b++) 
-    {
-      byte state = bitRead(63-i, b);
-      digitalWrite(resistorPins[b], state);
-    }
-}
 
-void switchCharger(int onOff)
-{
-      digitalWrite(34, onOff);
-}
-
-void switchGTI(int onOff)
-{
-      digitalWrite(36, onOff);
-}
-
-void processCommand(String command)
-{
-  Serial.print("command="+command);
-}
 
 void loop() {
   // listen for incoming clients
   
-  Serial.print("GRID : ");
+  //Serial.print("GRID : ");
   grid.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realgridp = (int)grid.realPower;
   appgridp = (int)grid.apparentPower;
   gridVRMS = grid.Vrms;
   gridIRMS = grid.Irms;
   gridPFactor = grid.powerFactor;
-  grid.serialprint();
-  Serial.print("SOLAR : ");
+  //grid.serialprint();
+  //Serial.print("SOLAR : ");
   solar.calcVI(20, 2000); // Calculate all. No.of half wavelengths (crossings), time-out
   realsolarp = (int)solar.realPower;
   appsolarp = (int)solar.apparentPower;
   solarVRMS = solar.Vrms;
   solarIRMS = solar.Irms;
   solarPFactor = solar.powerFactor;
-  solar.serialprint();
+  //solar.serialprint();
   realHomePower = realsolarp + realgridp;
   appHomePower = appsolarp + appgridp;
- 
+
+
+
+//******************CONTROL LOOP
+//******************CONTROL LOOP
+//******************CONTROL LOOP
+
+if(STATE == TUNING)
+    Serial.print("state  = tuning");
+{
+  if(realgridp < -50 && realgridp > -200)
+  {
+    Serial.print("power stable");
+  }
+  else
+  {
+    if(realgridp < -200)
+    { 
+      Serial.print("Switching on charger");
+      switchChargerOn();
+      switchGTIOff();
+      chargerVoltage++;
+    }
+    else
+    {
+      chargerVoltage--;  
+    }
+  }
+  
+  if(chargerVoltage < 0)
+  {
+    switchChargerOff();
+    chargerVoltage=0;
+    switchGTIOn();
+  }
+  if(chargerVoltage > 45)
+  {
+    chargerVoltage=45;
+  } 
+  String  chargerVoltStr = String(chargerVoltage);
+  Serial.println("currentV="+chargerVoltStr);
+  setChargerVoltage(chargerVoltage );
+  
+}
+
+if(STATE == INITIAL)
+{
+    STATE = TUNING;  
+}
+
+
+
+//******************CONTROL LOOP 
+//******************CONTROL LOOP
+//******************CONTROL LOOP
 
   display.clearDisplay();
 
@@ -201,7 +277,7 @@ void loop() {
       if (client.available()) {
         char c = client.read();
         command += c;
-        Serial.write(c);
+        //Serial.write(c);
         // if you've gotten to the end of the line (received a newline
         // character) and the line is blank, the http request has ended,
         // so you can send a reply
@@ -228,5 +304,4 @@ void loop() {
     client.stop();
   //  Serial.println("client disconnected");
   }
-
 }
