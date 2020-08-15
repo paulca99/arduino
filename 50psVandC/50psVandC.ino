@@ -69,16 +69,15 @@ float solarIRMS;
 float solarVRMS;
 float solarPFactor;
      
-
-  
+const byte numResistorPins = 6;
+byte resistorPins[] = {22, 24, 26, 28, 30, 32};
+//22-32 = resistor pins, 34 and 36 are GTI and Charger power relay
 void setup() {
   // You can use Ethernet.init(pin) to configure the CS pin
-  //Ethernet.init(10);  // Most Arduino shields
-  //Ethernet.init(5);   // MKR ETH shield
-  //Ethernet.init(0);   // Teensy 2.0
-  //Ethernet.init(20);  // Teensy++ 2.0
-  //Ethernet.init(15);  // ESP8266 with Adafruit Featherwing Ethernet
-  //Ethernet.init(33);  // ESP32 with Adafruit Featherwing Ethernet
+ //for(byte i = 0; i < 17; i=i+2)
+ //{ 
+  // pinMode(i+22,OUTPUT);
+ //}
 
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
@@ -129,14 +128,32 @@ void setup() {
   delay(2000);
 }
 
+void setChargerVoltage(int i)
+{
+    for (byte b=0; b<numResistorPins; b++) 
+    {
+      byte state = bitRead(63-i, b);
+      digitalWrite(resistorPins[b], state);
+    }
+}
+
+void switchCharger(int onOff)
+{
+      digitalWrite(34, onOff);
+}
+
+void switchGTI(int onOff)
+{
+      digitalWrite(36, onOff);
+}
+
+void processCommand(String command)
+{
+  Serial.print("command="+command);
+}
 
 void loop() {
   // listen for incoming clients
-
-
-
-
-
   
   Serial.print("GRID : ");
   grid.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
@@ -145,15 +162,15 @@ void loop() {
   gridVRMS = grid.Vrms;
   gridIRMS = grid.Irms;
   gridPFactor = grid.powerFactor;
-//  grid.serialprint();
- // Serial.print("SOLAR : ");
+  grid.serialprint();
+  Serial.print("SOLAR : ");
   solar.calcVI(20, 2000); // Calculate all. No.of half wavelengths (crossings), time-out
   realsolarp = (int)solar.realPower;
   appsolarp = (int)solar.apparentPower;
   solarVRMS = solar.Vrms;
   solarIRMS = solar.Irms;
   solarPFactor = solar.powerFactor;
-  //solar.serialprint();
+  solar.serialprint();
   realHomePower = realsolarp + realgridp;
   appHomePower = appsolarp + appgridp;
  
@@ -178,17 +195,19 @@ void loop() {
   if (client) {
    // Serial.println("new client");
     // an http request ends with a blank line
+    String command="";
     boolean currentLineIsBlank = true;
     while (client.connected()) {
       if (client.available()) {
         char c = client.read();
-     //   Serial.write(c);
+        command += c;
+        Serial.write(c);
         // if you've gotten to the end of the line (received a newline
         // character) and the line is blank, the http request has ended,
         // so you can send a reply
 
         if (c == '\n' && currentLineIsBlank) {
-
+          processCommand(command);
           // output the value of each analog input pin
           // send a power summary
           client.println(String(realgridp) + "," + String(appgridp) + "," + String(gridVRMS) + "," + String(gridIRMS) + "," + String(gridPFactor)+","+String(realsolarp) + "," + String(appsolarp) + "," + String(solarVRMS) + "," + String(solarIRMS) + "," + String(solarPFactor)+","+String(realHomePower)+","+String(appHomePower)+",EOT");
