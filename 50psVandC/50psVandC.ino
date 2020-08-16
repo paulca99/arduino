@@ -95,7 +95,8 @@ int STATE=INITIAL;
 int chargerVoltage;
 int chargeUpperThreshold=-50;
 int chargeLowerThreshold=chargeUpperThreshold-150;
-int chargerMaxPower=400;
+//maxPower is actually 50 % for some weird reason.
+int chargerMaxPower=390;
 int chargerPin=34;
 int gtiPin=36;
 
@@ -262,10 +263,10 @@ if(STATE == TUNING)
     { 
       //Serial.print("Switching on charger");
       switchChargerOn();
-     // if(realgtip < 50) // only switch off if power is low.
-      //{
+      if(realgtip < 25) // only switch off GTI if power is low enough.
+      {
         switchGTIOff();
-      //}
+      }
       chargerVoltage++;
       if (realchargerp > chargerMaxPower ) // DO NOT Exceed 22A output
       {
