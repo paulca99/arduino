@@ -55,27 +55,50 @@ IPAddress ip(192, 168, 1, 177);
 EthernetServer server(80);
 EnergyMonitor grid;             // Gridmon
 EnergyMonitor solar;            // Solarmon
+EnergyMonitor gti;            // Solarmon
+EnergyMonitor charger;            // Solarmon
+
+
   // listen for incoming clients
-int realgridp;
+
+int appHomePower;  
+
 int realsolarp;
 int realHomePower;
-int appgridp;
-int appsolarp;
-int appHomePower;  
-float gridVRMS;
-float gridIRMS;
-float gridPFactor;
 float solarIRMS;
 float solarVRMS;
 float solarPFactor;
+int appsolarp;
+
+int realgridp;
+int appgridp;
+float gridVRMS;
+float gridIRMS;
+float gridPFactor;
+
+int realchargerp;
+int appchargerp;
+float chargerVRMS;
+float chargerIRMS;
+float chargerPFactor;
+
+int realgtip;
+int appgtip;
+float gtiVRMS;
+float gtiIRMS;
+float gtiPFactor;
 
 int INITIAL=0;
 int TUNING=1;
 int NIGHT=2;
 int STATE=INITIAL;
 int chargerVoltage;
+int chargeUpperThreshold=-50;
+int chargeLowerThreshold=chargeUpperThreshold-150;
+int chargerMaxPower=400
+int chargerPin=34;
+int gtiPin=36;
 
-     
 const byte numResistorPins = 6;
 byte resistorPins[] = {22, 24, 26, 28, 30, 32};
 //22-32 = resistor pins, 34 and 36 are GTI and Charger power relay
@@ -91,12 +114,12 @@ void setChargerVoltage(int i)
 
 void switchChargerOn()
 {
-      digitalWrite(34, 0);
+      digitalWrite(chargerPin, 0);
 }
 
 void switchGTIOn()
 {
-      digitalWrite(36, 0);
+      digitalWrite(gtiPin, 0);
 }
 
 void switchChargerOff()
@@ -147,10 +170,19 @@ void setup() {
   server.begin();
   Serial.print("server is at ");
   Serial.println(Ethernet.localIP());
+  
   grid.voltage(2, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
   grid.current(1, 50);
+  
   solar.voltage(2, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
   solar.current(3, 50);
+  
+  gti.voltage(2, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
+  gti.current(4, 50);
+  
+  charger.voltage(2, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
+  charger.current(5, 50);
+  
   //*********init DISPLAY
   // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
@@ -177,24 +209,39 @@ void setup() {
 void loop() {
   // listen for incoming clients
   
-  //Serial.print("GRID : ");
   grid.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realgridp = (int)grid.realPower;
   appgridp = (int)grid.apparentPower;
   gridVRMS = grid.Vrms;
   gridIRMS = grid.Irms;
   gridPFactor = grid.powerFactor;
-  //grid.serialprint();
-  //Serial.print("SOLAR : ");
+  
+
   solar.calcVI(20, 2000); // Calculate all. No.of half wavelengths (crossings), time-out
   realsolarp = (int)solar.realPower;
   appsolarp = (int)solar.apparentPower;
   solarVRMS = solar.Vrms;
   solarIRMS = solar.Irms;
   solarPFactor = solar.powerFactor;
-  //solar.serialprint();
-  realHomePower = realsolarp + realgridp;
+
+  charger.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
+  realchargerp = (int)charger.realPower;
+  appchargerp = (int)charger.apparentPower;
+  chargerVRMS = charger.Vrms;
+  chargerIRMS = charger.Irms;
+  chargerPFactor = charger.powerFactor;
+
+  gti.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
+  realgtip = (int)gti.realPower;
+  appgtip = (int)gti.apparentPower;
+  gtiVRMS = gti.Vrms;
+  gtiIRMS = gti.Irms;
+  gtiPFactor = gti.powerFactor;
+
+  realHomePower = realsolarp + realgridp ;
   appHomePower = appsolarp + appgridp;
+  
+  Serial.println(" chargerp=" + String(realchargerp) + "  gtip=" + String(realgtip) + "   solar:"+String(realsolarp)+"  gridp="+String(realgridp)  );
 
 
 
@@ -203,20 +250,27 @@ void loop() {
 //******************CONTROL LOOP
 
 if(STATE == TUNING)
-    Serial.print("state  = tuning");
+
 {
-  if(realgridp < -50 && realgridp > -200)
+  if(realgridp < chargeUpperThreshold && realgridp > chargeLowerThreshold)
   {
     Serial.print("power stable");
   }
   else
   {
-    if(realgridp < -200)
+    if(realgridp < chargeLowerThreshold)
     { 
-      Serial.print("Switching on charger");
+      //Serial.print("Switching on charger");
       switchChargerOn();
-      switchGTIOff();
+     // if(realgtip < 50) // only switch off if power is low.
+      //{
+        switchGTIOff();
+      //}
       chargerVoltage++;
+      if (realchargerp > chargerMaxPower ) // DO NOT Exceed 22A output
+      {
+        chargerVoltage--;
+      }
     }
     else
     {
@@ -235,7 +289,7 @@ if(STATE == TUNING)
     chargerVoltage=45;
   } 
   String  chargerVoltStr = String(chargerVoltage);
-  Serial.println("currentV="+chargerVoltStr);
+  Serial.print("currentV="+chargerVoltStr);
   setChargerVoltage(chargerVoltage );
   
 }
