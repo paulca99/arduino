@@ -97,12 +97,12 @@ int chargeUpperThreshold=-50;
 int chargeLowerThreshold=chargeUpperThreshold-150;
 //maxPower is actually 50 % for some weird reason.
 int chargerMaxPower=390;
-int chargerPin=34;
-int gtiPin=36;
+int chargerPin=36;
 
-const byte numResistorPins = 6;
-byte resistorPins[] = {22, 24, 26, 28, 30, 32};
-//22-32 = resistor pins, 34 and 36 are GTI and Charger power relay
+
+const byte numResistorPins = 7;
+byte resistorPins[] = {22, 24, 26, 28, 30, 32, 34};
+//22-34 = resistor pins, 36 is Charger power relay
 
 void setChargerVoltage(int i)
 {
@@ -120,17 +120,17 @@ void switchChargerOn()
 
 void switchGTIOn()
 {
-      digitalWrite(gtiPin, 0);
+      digitalWrite(chargerPin, 1);
 }
 
 void switchChargerOff()
 {
-      digitalWrite(34, 1);
+      digitalWrite(chargerPin, 1);
 }
 
 void switchGTIOff()
 {
-      digitalWrite(36, 1);
+      digitalWrite(chargerPin, 0);
 }
 
 void processCommand(String command)
@@ -145,7 +145,6 @@ void setup() {
    pinMode(i+22,OUTPUT);
  }
  switchChargerOff();
- switchGTIOff();
  
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
@@ -263,19 +262,16 @@ if(STATE == TUNING)
     { 
       //Serial.print("Switching on charger");
       switchChargerOn();
-      if(realgtip < 25) // only switch off GTI if power is low enough.
-      {
-        switchGTIOff();
-      }
+
       chargerVoltage++;
       if (realchargerp > chargerMaxPower ) // DO NOT Exceed 22A output
       {
-        chargerVoltage--;
+        chargerVoltage=chargerVoltage-5;
       }
     }
     else
     {
-      chargerVoltage--;  
+       chargerVoltage=chargerVoltage-5;  
     }
   }
   
@@ -283,7 +279,6 @@ if(STATE == TUNING)
   {
     switchChargerOff();
     chargerVoltage=0;
-    switchGTIOn();
   }
   if(chargerVoltage > 45)
   {
