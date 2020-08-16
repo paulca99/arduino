@@ -95,7 +95,7 @@ int STATE=INITIAL;
 int chargerVoltage;
 int chargeUpperThreshold=-50;
 int chargeLowerThreshold=chargeUpperThreshold-150;
-int chargerMaxPower=400
+int chargerMaxPower=400;
 int chargerPin=34;
 int gtiPin=36;
 
