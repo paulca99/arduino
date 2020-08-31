@@ -76,7 +76,8 @@ float gridVRMS;
 float gridIRMS;
 float gridPFactor;
 
-int realchargerp;
+int realchargerp=0;
+int previouschargerp=0;
 int appchargerp;
 float chargerVRMS;
 float chargerIRMS;
@@ -314,6 +315,20 @@ void setup() {
   delay(2000);
 }
 
+int workOutIncrement()
+{
+  int retval=1;
+  int powerdiff = (realchargerp - previouschargerp) * (realchargerp - previouschargerp);
+  if(powerdiff < 10)
+  {
+    retval=10;
+  }
+  else
+  {
+    retval=5;
+    STATE = TUNING;
+  }
+}
 
 
 void loop() {
@@ -369,8 +384,8 @@ void loop() {
 //******************CONTROL LOOP
 
 if(STATE == TUNING)
-
 {
+  Serial.printlm("STATE=TUNING");
   if(realgridp < chargeUpperThreshold && realgridp > chargeLowerThreshold)
   {
     Serial.print("power stable");
@@ -400,6 +415,7 @@ if(STATE == TUNING)
     switchChargerOff();
     switchGTIOn();
     chargerVoltage=0;
+    STATE=INITIAL;
   }
   if(chargerVoltage > 255)
   {
@@ -413,7 +429,45 @@ if(STATE == TUNING)
 
 if(STATE == INITIAL)
 {
-    STATE = TUNING;  
+  Serial.printlm("STATE=INITIAL");
+  if(realgridp < chargeUpperThreshold && realgridp > chargeLowerThreshold)
+  {
+  }
+  else
+  {
+    if(realgridp < chargeLowerThreshold)
+    { 
+      Serial.print("Switching on charger");
+     
+      switchChargerOn();
+      switchGTIOff();
+      int vdelta=workOutIncrement();
+      if(vdelta < 10)
+      {
+        STATE=TUNING;
+      }
+      previouschargerp = realchargerp;
+      chargerVoltage=chargerVoltage+vdelta;
+      if (realchargerp > chargerMaxPower ) // DO NOT Exceed 22A output
+      {
+        chargerVoltage=chargerVoltage-10;
+        STATE=TUNING;
+      }
+    }
+    else
+    {
+       chargerVoltage=chargerVoltage-5;  
+    }
+  }
+  
+  if(chargerVoltage > 255)
+  {
+    chargerVoltage=255;
+  } 
+  String  chargerVoltStr = String(chargerVoltage);
+  Serial.println("currentV="+chargerVoltStr);
+  setChargerVoltage(chargerVoltage );
+
 }
 
 
