@@ -92,23 +92,62 @@ int INITIAL=0;
 int TUNING=1;
 int NIGHT=2;
 int STATE=INITIAL;
+
+int displayCounter=0;
+
 int chargerVoltage;
 int chargeUpperThreshold=-50;
 int chargeLowerThreshold=chargeUpperThreshold-150;
 //maxPower is actually 50 % for some weird reason.
 int chargerMaxPower=390;
-int chargerPin=36;
+int chargerPin=38;
+int gtiPin=40;
+
+float b1volts;
+float b2volts;
+float b3volts;
+float b4volts;
 
 
-const byte numResistorPins = 7;
-byte resistorPins[] = {22, 24, 26, 28, 30, 32, 34};
+const byte numResistorPins = 8;
+byte resistorPins[] = {22, 24, 26, 28, 30, 32, 34, 36};
+
 //22-34 = resistor pins, 36 is Charger power relay
+
+float readApin(int pin)
+{
+  float retval=0.0;
+  for(int i = 0; i < 10; i++)
+  {
+      retval = retval + (analogRead(pin) * 0.0049);  // read the input pin
+      delay(50);
+  }
+  return retval / 10;
+}
+
+void readBatteryVoltages()
+{
+    Serial.println("");
+  float v1 = readApin(14);  // read the input pin
+  Serial.println("v1= " + String (v1,2));
+  b1volts = v1 * 4.042;
+  float v2 = readApin(13);  // read the input pin
+  Serial.println("v2= " + String (v2,2));  
+  b2volts = (v2 * 7.67826) - b1volts;
+  float v3 = readApin(12);  // read the input pin
+  Serial.println("v3= " + String (v3,2));
+  b3volts = (v3 * 10.948) - b2volts -b1volts;
+  float v4 = analogRead(11);  // read the input pin
+  Serial.println("v4= " + String (v4,2));
+  b4volts = (v4 * 20) - b3volts -b2volts -b1volts;
+}
+
 
 void setChargerVoltage(int i)
 {
     for (byte b=0; b<numResistorPins; b++) 
     {
-      byte state = bitRead(63-i, b);
+      byte state = bitRead(255-i, b);
       digitalWrite(resistorPins[b], state);
     }
 }
@@ -120,7 +159,7 @@ void switchChargerOn()
 
 void switchGTIOn()
 {
-      digitalWrite(chargerPin, 1);
+      digitalWrite(gtiPin, 0);
 }
 
 void switchChargerOff()
@@ -130,12 +169,42 @@ void switchChargerOff()
 
 void switchGTIOff()
 {
-      digitalWrite(chargerPin, 0);
+      digitalWrite(gtiPin, 1);
 }
 
 void processCommand(String command)
 {
  // Serial.print("command="+command);
+}
+void displayPowerStats()
+{
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 2);
+  // Display static text
+  display.println("GRD:" + String(realgridp));
+  display.setCursor(0, 22);
+  display.println("SLR:" + String(realsolarp));
+  display.setCursor(0, 42);
+
+  display.println("HME:" + String(realHomePower));
+  display.display();
+}
+
+void displayBatteryVolts()
+{
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 2);
+  // Display static text
+  display.println("B1:" + String(b1volts));
+  display.setCursor(0, 22);
+  display.println("B2:" + String(b2volts));
+  display.setCursor(0, 42);
+  display.println("B3:" + String(b3volts));
+  display.display();
 }
 
 void setup() {
@@ -209,7 +278,7 @@ void setup() {
 void loop() {
   // listen for incoming clients
   
-  grid.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
+  grid.calcVI(10, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realgridp = (int)grid.realPower;
   appgridp = (int)grid.apparentPower;
   gridVRMS = grid.Vrms;
@@ -217,21 +286,21 @@ void loop() {
   gridPFactor = grid.powerFactor;
   
 
-  solar.calcVI(20, 2000); // Calculate all. No.of half wavelengths (crossings), time-out
+  solar.calcVI(10, 1000); // Calculate all. No.of half wavelengths (crossings), time-out
   realsolarp = (int)solar.realPower;
   appsolarp = (int)solar.apparentPower;
   solarVRMS = solar.Vrms;
   solarIRMS = solar.Irms;
   solarPFactor = solar.powerFactor;
 
-  charger.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
+  charger.calcVI(10, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realchargerp = (int)charger.realPower;
   appchargerp = (int)charger.apparentPower;
   chargerVRMS = charger.Vrms;
   chargerIRMS = charger.Irms;
   chargerPFactor = charger.powerFactor;
 
-  gti.calcVI(20, 2000);        // Calculate all. No.of half wavelengths (crossings), time-out
+  gti.calcVI(10, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realgtip = (int)gti.realPower;
   appgtip = (int)gti.apparentPower;
   gtiVRMS = gti.Vrms;
@@ -301,19 +370,11 @@ if(STATE == INITIAL)
 //******************CONTROL LOOP
 //******************CONTROL LOOP
 
-  display.clearDisplay();
-
-  display.setTextSize(2);
-  display.setTextColor(WHITE);
-  display.setCursor(0, 2);
-  // Display static text
-  display.println("GRD:" + String(realgridp));
-  display.setCursor(0, 22);
-  display.println("SLR:" + String(realsolarp));
-  display.setCursor(0, 42);
-
-  display.println("HME:" + String(realHomePower));
-  display.display();
+  if(displayCounter < 2)
+    displayPowerStats();
+  else
+    displayBatteryVolts();
+  
   //delay(500);
 
   
@@ -336,7 +397,7 @@ if(STATE == INITIAL)
           processCommand(command);
           // output the value of each analog input pin
           // send a power summary
-          client.println(String(realgridp) + "," + String(appgridp) + "," + String(gridVRMS) + "," + String(gridIRMS) + "," + String(gridPFactor)+","+String(realsolarp) + "," + String(appsolarp) + "," + String(solarVRMS) + "," + String(solarIRMS) + "," + String(solarPFactor)+","+String(realHomePower)+","+String(appHomePower)+",EOT");
+          client.println(String(realgridp) + "," + String(appgridp) + "," + String(gridVRMS) + "," + String(gridIRMS) + "," + String(gridPFactor)+","+String(realsolarp) + "," + String(appsolarp) + "," + String(solarVRMS) + "," + String(solarIRMS) + "," + String(solarPFactor)+","+String(realHomePower)+","+String(appHomePower)+","+String(b1volts,2)+","+String(b2volts,2)+","+String(b3volts,2)+","+String(b4volts,2)+",EOT");
           break;
         }
         if (c == '\n') {
@@ -354,4 +415,7 @@ if(STATE == INITIAL)
     client.stop();
   //  Serial.println("client disconnected");
   }
+  displayCounter++;
+  if (displayCounter>20) { displayCounter=0;}
+  readBatteryVoltages();
 }

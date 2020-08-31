@@ -24,6 +24,11 @@ processData $arduino_values 9 "solar_irms"
 processData $arduino_values 10 "solar_pfactor"
 processData $arduino_values 11 "home_real_power"
 processData $arduino_values 12 "home_app_power"
+processData $arduino_values 13 "b1volts"
+processData $arduino_values 14 "b2volts"
+processData $arduino_values 15 "b3volts"
+processData $arduino_values 16 "b4volts"
+
 
  	echo "Press [CTRL+C] to stop.."
 sleep 1
