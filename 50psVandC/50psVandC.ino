@@ -134,16 +134,16 @@ void setBaseR(int i)
   // 0 is 31.7K , 1 is 41.7K , 2 is 68K , 3 is 78K
       Serial.println("Setting base R to " + String(i));
   if(i == 0){
-    digitalWrite(42, 1);digitalWrite(44, 1);
+    digitalWrite(42, HIGH);digitalWrite(44, HIGH);
   }
   if(i == 1){
-    digitalWrite(42, 0);digitalWrite(44, 1);
+    digitalWrite(42, LOW);digitalWrite(44, HIGH);
   }
   if(i == 2){
-    digitalWrite(42, 1);digitalWrite(44, 0);
+    digitalWrite(42, HIGH);digitalWrite(44, LOW);
   }
   if(i == 3){
-    digitalWrite(42, 0);digitalWrite(44, 0);
+    digitalWrite(42, LOW);digitalWrite(44, LOW);
   }
 }
 
@@ -182,22 +182,22 @@ void setChargerVoltage(int i)
 
 void switchChargerOn()
 {
-      digitalWrite(chargerPin, 0);
+      digitalWrite(chargerPin, LOW);
 }
 
 void switchGTIOn()
 {
-      digitalWrite(gtiPin, 0);
+      digitalWrite(gtiPin, LOW);
 }
 
 void switchChargerOff()
 {
-      digitalWrite(chargerPin, 1);
+      digitalWrite(chargerPin, HIGH);
 }
 
 void switchGTIOff()
 {
-      digitalWrite(gtiPin, 1);
+      digitalWrite(gtiPin, HIGH);
 }
 
 void processCommand(String command)
