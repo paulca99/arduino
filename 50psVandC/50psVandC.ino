@@ -99,30 +99,51 @@ int chargerVoltage;
 int chargeUpperThreshold=-50;
 int chargeLowerThreshold=chargeUpperThreshold-150;
 //maxPower is actually 50 % for some weird reason.
-int chargerMaxPower=390;
-int chargerPin=38;
-int gtiPin=40;
+int chargerMaxPower=350;
+int chargerPin=40;
+int gtiPin=46;
 
 float b1volts;
 float b2volts;
 float b3volts;
 float b4volts;
-
+float btotalvolts;
 
 const byte numResistorPins = 8;
 byte resistorPins[] = {22, 24, 26, 28, 30, 32, 34, 36};
+byte resistorBasePins[] = {42,44};
 
 //22-34 = resistor pins, 36 is Charger power relay
 
 float readApin(int pin)
 {
+  int samples=10;
+  delay(10);
   float retval=0.0;
-  for(int i = 0; i < 10; i++)
+  for(int i = 0; i < samples; i++)
   {
       retval = retval + (analogRead(pin) * 0.0049);  // read the input pin
-      delay(50);
+      delay(5);
   }
-  return retval / 10;
+  return retval / samples;
+}
+
+void setBaseR(int i)
+{
+  // 0 is 31.7K , 1 is 41.7K , 2 is 68K , 3 is 78K
+      Serial.println("Setting base R to " + String(i));
+  if(i == 0){
+    digitalWrite(42, 1);digitalWrite(44, 1);
+  }
+  if(i == 1){
+    digitalWrite(42, 0);digitalWrite(44, 1);
+  }
+  if(i == 2){
+    digitalWrite(42, 1);digitalWrite(44, 0);
+  }
+  if(i == 3){
+    digitalWrite(42, 0);digitalWrite(44, 0);
+  }
 }
 
 void readBatteryVoltages()
@@ -137,9 +158,15 @@ void readBatteryVoltages()
   float v3 = readApin(12);  // read the input pin
   Serial.println("v3= " + String (v3,2));
   b3volts = (v3 * 10.948) - b2volts -b1volts;
-  float v4 = analogRead(11);  // read the input pin
+  float v4 = readApin(11);  // read the input pin
   Serial.println("v4= " + String (v4,2));
-  b4volts = (v4 * 20) - b3volts -b2volts -b1volts;
+  b4volts = (v4 * 16) - b3volts -b2volts -b1volts;
+  if(b4volts  <38 || b4volts > 60)
+  {
+    b4volts=0.0; // it's floating
+  }
+  btotalvolts= b1volts+b2volts+b3volts+b4volts;
+  
 }
 
 
@@ -213,6 +240,11 @@ void setup() {
  { 
    pinMode(i+22,OUTPUT);
  }
+ for(byte i = 0; i < 9; i=i+2)
+ { 
+   pinMode(i+40,OUTPUT);
+ }
+
  switchChargerOff();
  
   // Open serial communications and wait for port to open:
@@ -235,6 +267,15 @@ void setup() {
     Serial.println("Ethernet cable is not connected.");
   }
 
+ /*delay(5000);
+ setChargerVoltage(0);
+ for(int i=0; i<4;i++)
+ {
+   setBaseR(i);
+   delay(10000);
+ }
+*/
+ 
   // start the server
   server.begin();
   Serial.print("server is at ");
@@ -277,6 +318,15 @@ void setup() {
 
 void loop() {
   // listen for incoming clients
+  readBatteryVoltages();
+  if(b4volts > 6)
+  {
+    setBaseR(2);
+  }
+  else
+  {
+    setBaseR(1);
+  }
   
   grid.calcVI(10, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realgridp = (int)grid.realPower;
@@ -329,9 +379,10 @@ if(STATE == TUNING)
   {
     if(realgridp < chargeLowerThreshold)
     { 
-      //Serial.print("Switching on charger");
+      Serial.print("Switching on charger");
+     
       switchChargerOn();
-
+      switchGTIOff();
       chargerVoltage++;
       if (realchargerp > chargerMaxPower ) // DO NOT Exceed 22A output
       {
@@ -347,11 +398,12 @@ if(STATE == TUNING)
   if(chargerVoltage < 0)
   {
     switchChargerOff();
+    switchGTIOn();
     chargerVoltage=0;
   }
-  if(chargerVoltage > 45)
+  if(chargerVoltage > 255)
   {
-    chargerVoltage=45;
+    chargerVoltage=255;
   } 
   String  chargerVoltStr = String(chargerVoltage);
   Serial.print("currentV="+chargerVoltStr);
@@ -397,7 +449,7 @@ if(STATE == INITIAL)
           processCommand(command);
           // output the value of each analog input pin
           // send a power summary
-          client.println(String(realgridp) + "," + String(appgridp) + "," + String(gridVRMS) + "," + String(gridIRMS) + "," + String(gridPFactor)+","+String(realsolarp) + "," + String(appsolarp) + "," + String(solarVRMS) + "," + String(solarIRMS) + "," + String(solarPFactor)+","+String(realHomePower)+","+String(appHomePower)+","+String(b1volts,2)+","+String(b2volts,2)+","+String(b3volts,2)+","+String(b4volts,2)+",EOT");
+          client.println(String(realgridp) + "," + String(appgridp) + "," + String(gridVRMS) + "," + String(gridIRMS) + "," + String(gridPFactor)+","+String(realsolarp) + "," + String(appsolarp) + "," + String(solarVRMS) + "," + String(solarIRMS) + "," + String(solarPFactor)+","+String(realHomePower)+","+String(appHomePower)+","+String(b1volts,2)+","+String(b2volts,2)+","+String(b3volts,2)+","+String(b4volts,2)+","+String(realchargerp,2)+","+String(realgtip,2)+",EOT");
           break;
         }
         if (c == '\n') {
