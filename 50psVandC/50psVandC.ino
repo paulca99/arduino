@@ -100,8 +100,8 @@ int chargeUpperThreshold=-50;
 int chargeLowerThreshold=chargeUpperThreshold-150;
 //maxPower is actually 50 % for some weird reason.
 int chargerMaxPower=300;
-int chargerPin=40;
-int gtiPin=46;
+int chargerPin=47;
+int gtiPin=53;
 
 float b1volts;
 float b2volts;
@@ -112,7 +112,7 @@ float bmaxvolts=42.0;
 
 const byte numResistorPins = 8;
 byte resistorPins[] = {22, 24, 26, 28, 30, 32, 34, 36};
-byte resistorBasePins[] = {42,44};
+byte resistorBasePins[] = {49,51};
 
 //22-34 = resistor pins, 36 is Charger power relay
 
@@ -134,16 +134,16 @@ void setBaseR(int i)
   // 0 is 31.7K , 1 is 41.7K , 2 is 68K , 3 is 78K
       Serial.println("Setting base R to " + String(i));
   if(i == 0){
-    digitalWrite(42, HIGH);digitalWrite(44, HIGH);
+    digitalWrite(49, HIGH);digitalWrite(51, HIGH);
   }
   if(i == 1){
-    digitalWrite(42, LOW);digitalWrite(44, HIGH);
+    digitalWrite(49, LOW);digitalWrite(51, HIGH);
   }
   if(i == 2){
-    digitalWrite(42, HIGH);digitalWrite(44, LOW);
+    digitalWrite(49, HIGH);digitalWrite(51, LOW);
   }
   if(i == 3){
-    digitalWrite(42, LOW);digitalWrite(44, LOW);
+    digitalWrite(49, LOW);digitalWrite(51, LOW);
   }
 }
 
@@ -241,12 +241,17 @@ void setup() {
  { 
    pinMode(i+22,OUTPUT);
  }
- for(byte i = 0; i < 9; i=i+2)
+ for(byte i = 0; i < 7; i=i+2)
  { 
-   pinMode(i+40,OUTPUT);
+   pinMode(i+47,OUTPUT);
  }
 
  switchChargerOff();
+ switchGTIOff();
+ delay(1000);
+  switchGTIOn();
+   delay(1000);
+  switchGTIOff();
  
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
@@ -370,8 +375,9 @@ void loop() {
 //******************CONTROL LOOP
 
 if(STATE == TUNING)
-
 {
+ 
+  
   if(realgridp < chargeUpperThreshold && realgridp > chargeLowerThreshold)
   {
     Serial.println("power stable");
@@ -398,7 +404,10 @@ if(STATE == TUNING)
   if(chargerVoltage < 100)
   {
     switchChargerOff();
-    switchGTIOn();
+    if(realsolarp  > 99) // only bother if daytime.
+    {
+       switchGTIOn();
+    }       
     chargerVoltage=100;
   }
   if(chargerVoltage > 255)
