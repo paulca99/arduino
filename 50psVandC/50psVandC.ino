@@ -94,12 +94,13 @@ int NIGHT=2;
 int STATE=INITIAL;
 
 int displayCounter=0;
-
+boolean batteriesHaveCharge=false;
+boolean beenCharging=false;
 int chargerVoltage=100;
 int chargeUpperThreshold=-50;
 int chargeLowerThreshold=chargeUpperThreshold-150;
 //maxPower is actually 50 % for some weird reason.
-int chargerMaxPower=300;
+int chargerMaxPower=600;
 int chargerPin=47;
 int gtiPin=53;
 
@@ -108,8 +109,10 @@ float b2volts;
 float b3volts;
 float b4volts;
 float btotalvolts;
-float bmaxvolts=42.0;
 
+float bmaxvolts=41.0;
+
+int minChargerVolts=100; //if 3 batteries
 const byte numResistorPins = 8;
 byte resistorPins[] = {22, 24, 26, 28, 30, 32, 34, 36};
 byte resistorBasePins[] = {49,51};
@@ -151,16 +154,16 @@ void readBatteryVoltages()
 {
     Serial.println("");
   float v1 = readApin(14);  // read the input pin
-  Serial.println("v1= " + String (v1,2));
-  b1volts = v1 * 4.042;
+  //Serial.println("v1= " + String (v1,2));
+  b1volts = v1 * 4.172;
   float v2 = readApin(13);  // read the input pin
-  Serial.println("v2= " + String (v2,2));  
-  b2volts = (v2 * 7.67826) - b1volts;
+  //Serial.println("v2= " + String (v2,2));  
+  b2volts = (v2 * 7.80826) - b1volts;
   float v3 = readApin(12);  // read the input pin
-  Serial.println("v3= " + String (v3,2));
-  b3volts = (v3 * 10.948) - b2volts -b1volts;
+  //Serial.println("v3= " + String (v3,2));
+  b3volts = (v3 * 10.988) - b2volts -b1volts;
   float v4 = readApin(11);  // read the input pin
-  Serial.println("v4= " + String (v4,2));
+  //Serial.println("v4= " + String (v4,2));
   b4volts = (v4 * 16) - b3volts -b2volts -b1volts;
   if(b4volts  <38 || b4volts > 60)
   {
@@ -246,12 +249,9 @@ void setup() {
    pinMode(i+47,OUTPUT);
  }
 
+ switchGTIOn();
  switchChargerOff();
- switchGTIOff();
- delay(1000);
-  switchGTIOn();
-   delay(1000);
-  switchGTIOff();
+
  
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
@@ -272,15 +272,6 @@ void setup() {
   if (Ethernet.linkStatus() == LinkOFF) {
     Serial.println("Ethernet cable is not connected.");
   }
-
- /*delay(5000);
- setChargerVoltage(0);
- for(int i=0; i<4;i++)
- {
-   setBaseR(i);
-   delay(10000);
- }
-*/
  
   // start the server
   server.begin();
@@ -294,10 +285,10 @@ void setup() {
   solar.current(3, 50);
   
   gti.voltage(2, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
-  gti.current(4, 50);
+  gti.current(5, 50);
   
   charger.voltage(2, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
-  charger.current(5, 50);
+  charger.current(4, 50);
   
   //*********init DISPLAY
   // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
@@ -317,22 +308,83 @@ void setup() {
   // Show the display buffer on the screen. You MUST call display() after
   // drawing commands to make them visible on screen!
   display.display();
-  delay(2000);
-}
 
-
-
-void loop() {
-  // listen for incoming clients
-  readBatteryVoltages();
+   readBatteryVoltages();
   if(b4volts > 6)
   {
     setBaseR(2);
+    minChargerVolts=0;
   }
   else
   {
     setBaseR(1);
+    minChargerVolts=90;
   }
+  chargerVoltage=minChargerVolts;
+}
+
+
+int getRampDown()
+{
+  int diff = chargerVoltage - minChargerVolts;
+  int rampdown= diff/10;
+  if(rampdown<1)
+  {
+    rampdown=1;
+  }
+  return rampdown;
+}
+
+int getRampUp()
+{
+  int diff = 100-(chargerVoltage - minChargerVolts);
+  int ramp= diff/10;
+  if(ramp <1)
+  {
+    ramp=1;
+  }
+  return ramp;
+}
+boolean inStableCondition()
+{
+  boolean retval=false;
+  retval = (realgridp < chargeUpperThreshold && realgridp > chargeLowerThreshold);
+  retval = (retval || ( btotalvolts < bmaxvolts && btotalvolts >  (bmaxvolts-0.5)));
+  retval = retval && (realchargerp < chargerMaxPower );
+  retval = retval && (btotalvolts < bmaxvolts);
+  retval = retval && (realgridp < chargeUpperThreshold);
+  return retval;
+}
+
+boolean mustRampDown()
+{
+  boolean retval=false;
+  retval = (realgridp > chargeUpperThreshold);
+  retval = retval || (btotalvolts > bmaxvolts);
+  retval = retval || (realchargerp > chargerMaxPower );
+  return retval;
+}
+
+void checkBatteriesHaveCharge()
+{ 
+  int b4check=15; 
+    if(b4volts > 6)
+    {
+      b4check=b4volts;
+    }
+    if(b1volts <10.5 || b2volts < 10.5 || b3volts < 10.5 || b4check < 10.5)
+    {
+       batteriesHaveCharge= false;
+    }
+    else
+    {
+      batteriesHaveCharge = true;
+    }
+  
+}
+void loop() {
+  // listen for incoming clients
+
   
   grid.calcVI(10, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realgridp = (int)grid.realPower;
@@ -349,22 +401,22 @@ void loop() {
   solarIRMS = solar.Irms;
   solarPFactor = solar.powerFactor;
 
-  charger.calcVI(10, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
+  charger.calcVI(5, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realchargerp = (int)charger.realPower;
   appchargerp = (int)charger.apparentPower;
   chargerVRMS = charger.Vrms;
   chargerIRMS = charger.Irms;
   chargerPFactor = charger.powerFactor;
 
-  gti.calcVI(10, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
+  gti.calcVI(5, 1000);        // Calculate all. No.of half wavelengths (crossings), time-out
   realgtip = (int)gti.realPower;
   appgtip = (int)gti.apparentPower;
   gtiVRMS = gti.Vrms;
   gtiIRMS = gti.Irms;
   gtiPFactor = gti.powerFactor;
 
-  realHomePower = realsolarp + realgridp ;
-  appHomePower = appsolarp + appgridp;
+  realHomePower = realsolarp + realgridp + realgtip;
+  appHomePower = appsolarp + appgridp + realgtip;
   
   Serial.println(" chargerp=" + String(realchargerp) + "  gtip=" + String(realgtip) + "   solar:"+String(realsolarp)+"  gridp="+String(realgridp)  );
 
@@ -377,45 +429,61 @@ void loop() {
 if(STATE == TUNING)
 {
  
-  
-  if(realgridp < chargeUpperThreshold && realgridp > chargeLowerThreshold)
+  if(inStableCondition())
   {
+    // do nowt
     Serial.println("power stable");
+   // switchChargerOn(); // will aready be  on, unless we've just dropped into the -50 -> -200 range.
   }
   else
   {
-    if((realgridp < chargeLowerThreshold) && (bmaxvolts > btotalvolts))
+    if(!mustRampDown())
     { 
-      Serial.println("Switching on charger");
+      Serial.println("Ramping up");
+      //switchGTIOff();
       switchChargerOn();
-      switchGTIOff();
-      chargerVoltage++;
-      if (realchargerp > chargerMaxPower ) // DO NOT Exceed 22A output
-      {
-        chargerVoltage=chargerVoltage-5;
-      }
+      chargerVoltage=chargerVoltage+getRampUp();
+      batteriesHaveCharge=true;
+      beenCharging=true;
     }
-    else
+    else //  must rampDown
     {
-       chargerVoltage=chargerVoltage-5;  
+       Serial.println("Ramping DOWN");
+       chargerVoltage=chargerVoltage-getRampDown();  
+       checkBatteriesHaveCharge();
     }
   }
+
   
-  if(chargerVoltage < 100)
+  if(realsolarp  < 20 || !batteriesHaveCharge)  // if nightTime or batteries in danger switch GTI off
+  {
+      switchGTIOff();
+  }
+  
+
+  
+  if(chargerVoltage < minChargerVolts) // 100 @ 36V // happens every cycle
   {
     switchChargerOff();
-    if(realsolarp  > 99) // only bother if daytime.
+
+    if(realsolarp  > 20 && batteriesHaveCharge && beenCharging) // only happens after charging 
     {
+       Serial.println("Switching GTI on");
        switchGTIOn();
-    }       
-    chargerVoltage=100;
+       beenCharging=false;
+    }   
+    else if (realsolarp  < 20 || !batteriesHaveCharge)
+    {   
+       switchGTIOff(); 
+    }
+    chargerVoltage=minChargerVolts;
   }
   if(chargerVoltage > 255)
   {
     chargerVoltage=255;
   } 
   String  chargerVoltStr = String(chargerVoltage);
-  Serial.print("currentV="+chargerVoltStr);
+  Serial.print("currentChargerV="+chargerVoltStr);
   setChargerVoltage(chargerVoltage );
   
 }
