@@ -99,8 +99,8 @@ boolean beenCharging=false;
 int chargerVoltage=100;
 int chargeUpperThreshold=-50;
 int chargeLowerThreshold=chargeUpperThreshold-150;
-//maxPower is actually 50 % for some weird reason.
-int chargerMaxPower=600;
+
+int chargerMaxPower=760;
 int chargerPin=47;
 int gtiPin=53;
 
@@ -110,7 +110,7 @@ float b3volts;
 float b4volts;
 float btotalvolts;
 
-float bmaxvolts=41.0;
+float bmaxvolts=42.0;
 
 int minChargerVolts=100; //if 3 batteries
 const byte numResistorPins = 8;
@@ -155,13 +155,13 @@ void readBatteryVoltages()
     Serial.println("");
   float v1 = readApin(14);  // read the input pin
   //Serial.println("v1= " + String (v1,2));
-  b1volts = v1 * 4.172;
+  b1volts = v1 * 4.108;
   float v2 = readApin(13);  // read the input pin
   //Serial.println("v2= " + String (v2,2));  
-  b2volts = (v2 * 7.80826) - b1volts;
+  b2volts = (v2 * 7.82496) - b1volts;
   float v3 = readApin(12);  // read the input pin
   //Serial.println("v3= " + String (v3,2));
-  b3volts = (v3 * 10.988) - b2volts -b1volts;
+  b3volts = (v3 * 11.132) - b2volts -b1volts;
   float v4 = readApin(11);  // read the input pin
   //Serial.println("v4= " + String (v4,2));
   b4volts = (v4 * 16) - b3volts -b2volts -b1volts;
@@ -337,7 +337,7 @@ int getRampDown()
 
 int getRampUp()
 {
-  int diff = 100-(chargerVoltage - minChargerVolts);
+  int diff = 130-(chargerVoltage - minChargerVolts);
   int ramp= diff/10;
   if(ramp <1)
   {
@@ -362,6 +362,7 @@ boolean mustRampDown()
   retval = (realgridp > chargeUpperThreshold);
   retval = retval || (btotalvolts > bmaxvolts);
   retval = retval || (realchargerp > chargerMaxPower );
+  retval = retval || (realgtip > 200);
   return retval;
 }
 
@@ -372,7 +373,7 @@ void checkBatteriesHaveCharge()
     {
       b4check=b4volts;
     }
-    if(b1volts <10.5 || b2volts < 10.5 || b3volts < 10.5 || b4check < 10.5)
+    if(b1volts <10.9 || b2volts < 10.9 || b3volts < 10.9 || b4check < 10.9)
     {
        batteriesHaveCharge= false;
     }
@@ -415,8 +416,8 @@ void loop() {
   gtiIRMS = gti.Irms;
   gtiPFactor = gti.powerFactor;
 
-  realHomePower = realsolarp + realgridp + realgtip;
-  appHomePower = appsolarp + appgridp + realgtip;
+  realHomePower = realsolarp + realgridp + realgtip -realchargerp;
+  appHomePower = appsolarp + appgridp + appgtip - appchargerp;
   
   Serial.println(" chargerp=" + String(realchargerp) + "  gtip=" + String(realgtip) + "   solar:"+String(realsolarp)+"  gridp="+String(realgridp)  );
 
@@ -455,7 +456,7 @@ if(STATE == TUNING)
   }
 
   
-  if(realsolarp  < 20 || !batteriesHaveCharge)  // if nightTime or batteries in danger switch GTI off
+  if(!batteriesHaveCharge)  // if nightTime or batteries in danger switch GTI off
   {
       switchGTIOff();
   }
@@ -466,13 +467,13 @@ if(STATE == TUNING)
   {
     switchChargerOff();
 
-    if(realsolarp  > 20 && batteriesHaveCharge && beenCharging) // only happens after charging 
+    if(batteriesHaveCharge && beenCharging) // only happens after charging 
     {
        Serial.println("Switching GTI on");
        switchGTIOn();
        beenCharging=false;
     }   
-    else if (realsolarp  < 20 || !batteriesHaveCharge)
+    else if (!batteriesHaveCharge)
     {   
        switchGTIOff(); 
     }
