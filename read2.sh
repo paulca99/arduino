@@ -28,8 +28,8 @@ processData $arduino_values 13 "b1volts"
 processData $arduino_values 14 "b2volts"
 processData $arduino_values 15 "b3volts"
 processData $arduino_values 16 "b4volts"
-
+processData $arduino_values 17 "chargerp"
+processData $arduino_values 18 "gtip"
 
  	echo "Press [CTRL+C] to stop.."
-sleep 1
 done
