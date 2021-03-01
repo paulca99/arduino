@@ -1,0 +1,107 @@
+last_energy_generated=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT LAST(*) FROM total_lifetime_energy_generated" | jq -M '.results[].series[].values[][-1]')
+last_energy_used=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT LAST(*) FROM total_lifetime_energy_used" | jq -M '.results[].series[].values[][-1]')
+
+echo  "leg = $last_energy_generated"
+echo  "leu = $last_energy_used"
+
+energy_used_last_5_mins=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(value) / 12 FROM grid_real_power WHERE time >= now() - 5m" | jq -M '.results[].series[].values[][-1]')
+energy_generated_last_5_mins=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(value) / 12 FROM solar_real_power WHERE time >= now() - 5m" | jq -M '.results[].series[].values[][-1]')
+
+echo  "u5 = $energy_used_last_5_mins"
+echo  "g5 = $energy_generated_last_5_mins"
+
+
+avg_power_usage_last_5_mins=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(value)  FROM grid_real_power WHERE time >= now() - 5m" | jq -M '.results[].series[].values[][-1]')
+avg_power_generated_last_5_mins=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(value)  FROM solar_real_power WHERE time >= now() - 5m" | jq -M '.results[].series[].values[][-1]')
+
+echo  "pu5 = $avg_power_usage_last_5_mins"
+echo  "pg5 = $avg_power_generated_last_5_mins"
+
+new_energy_used="$( bc <<<"$energy_used_last_5_mins + $last_energy_used" )"
+curlstring=$(echo "total_lifetime_energy_used,host=server01,source=grid value=$new_energy_used")
+curl -i -XPOST 'http://192.168.1.63:8086/write?db=power' --data-binary "$curlstring"
+
+new_energy_generated="$( bc <<<"$energy_generated_last_5_mins + $last_energy_generated" )"
+curlstring=$(echo "total_lifetime_energy_generated,host=server01,source=grid value=$new_energy_generated")
+curl -i -XPOST 'http://192.168.1.63:8086/write?db=power' --data-binary "$curlstring"
+
+echo  "newU = $new_energy_used"
+echo  "newG = $new_energy_generated"
+
+date=$(date +%Y%m%d)
+time=$(date +%H:%M)
+echo "strings = curl -d \"d=$date\" -d \"t=$time\" -d \"v1=$new_energy_generated\" -d \"v2=$avg_power_generated_last_5_mins\" -d \"v3=$new_energy_used\" -d \"v4=$avg_power_usage_last_5_mins\" -d \"c1=1\" -H \"X-Pvoutput-Apikey: 4a50099c09c275f52484aa4b4f3c308f334807d7\" -H \"X-Pvoutput-SystemId: 6417\" https://pvoutput.org/service/r2/addstatus.jsp"
+curl -d "d=$date" -d "t=$time" -d "v1=$new_energy_generated" -d "v2=$avg_power_generated_last_5_mins" -d "v3=$new_energy_used" -d "v4=$avg_power_usage_last_5_mins" -d "c1=1" -H "X-Pvoutput-Apikey: 4a50099c09c275f52484aa4b4f3c308f334807d7" -H "X-Pvoutput-SystemId: 6417" https://pvoutput.org/service/r2/addstatus.jsp
+
+
+
+
+
+
+curl -d "d=20210228" -d "t=19:05" -d "v1=900" -d "v2=250" -H "X-Pvoutput-Apikey: 4a50099c09c275f52484aa4b4f3c308f334807d7" -H "X-Pvoutput-SystemId: 6417" https://pvoutput.org/service/r2/addstatus.jsp
+
+curl -d "d=20210228" -d "t=19:05" -d "v1=900" -d "v2=250" -d "v3=250" d "v4=400" d "c1=1" -H "X-Pvoutput-Apikey: 4a50099c09c275f52484aa4b4f3c308f334807d7" -H "X-Pvoutput-SystemId: 6417" https://pvoutput.org/service/r2/addstatus.jsp
+
+curl -G 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(*) FROM b1volts WHERE time >= now() - 5m"
+
+last_energy_generated=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT LAST(*) FROM total_lifetime_energy_generated" | jq -M '.results[].series[].values[][-1]')
+last_energy_used=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT LAST(*) FROM total_lifetime_energy_used" | jq -M '.results[].series[].values[][-1]')
+
+
+energy_used_last_5_mins=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(value) / 12 FROM grid_real_power WHERE time >= now() - 5m" | jq -M '.results[].series[].values[][-1]')
+energy_generated_last_5_mins=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(value) / 12 FROM solar_real_power WHERE time >= now() - 5m" | jq -M '.results[].series[].values[][-1]')
+
+avg_power_usage_last_5_mins=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(value)  FROM grid_real_power WHERE time >= now() - 5m" | jq -M '.results[].series[].values[][-1]')
+avg_power_generated_last_5_mins=$(curl -s 'http://192.168.1.63:8086/query?pretty=false' --data-urlencode "db=power" --data-urlencode "q=SELECT MEAN(value)  FROM solar_real_power WHERE time >= now() - 5m" | jq -M '.results[].series[].values[][-1]')
+
+
+new_energy_used="$( bc <<<"$energy_used_last_5_mins + $last_energy_used" )"
+curlstring=$(echo "total_lifetime_energy_used,host=server01,source=grid value=$new_energy_used")
+curl -i -XPOST 'http://192.168.1.63:8086/write?db=power' --data-binary "$curlstring"
+
+new_energy_generated="$( bc <<<"$energy_generated_last_5_mins + $last_energy_generated" )"
+curlstring=$(echo "total_lifetime_energy_generated,host=server01,source=grid value=$new_energy_generated")
+curl -i -XPOST 'http://192.168.1.63:8086/write?db=power' --data-binary "$curlstring"
+
+date=$(date +%Y%m%d)
+time=$(date +%H:%m)
+
+curl -d "d=$date" -d "t=$time" -d "v1=$new_energy_generated" -d "v2=$avg_power_generated_last_5_mins" -d "v3=$energy_used_last_5_mins" d "v4=$avg_power_usage_last_5_mins" d "c1=1" -H "X-Pvoutput-Apikey: 4a50099c09c275f52484aa4b4f3c308f334807d7" -H "X-Pvoutput-SystemId: 6417" https://pvoutput.org/service/r2/addstatus.jsp
+
+
+    curlstring=$(echo "total_lifetime_power_generated,host=server01,source=grid value=$value")
+    curl -i -XPOST 'http://localhost:8086/write?db=power' --data-binary "$curlstring"
+
+    curlstring=$(echo "total_power_consumed,host=server01,source=grid value=$value")
+    curl -i -XPOST 'http://localhost:8086/write?db=power' --data-binary "$curlstring"
+
+
+
+PVoutput API fields
+---------------------
+Parameter	Field	Required	Format	Unit	Example	Since	
+d	Date	Yes	yyyymmdd	date	20100830	r1	
+t	Time	Yes	hh:mm	time	14:12	r1	
+v1	Energy Generation	No1	number	watt hours	10000	r1	
+v2	Power Generation	No	number	watts	2000	r1	
+v3	Energy Consumption	No	number	watt hours	10000	r1	
+v4	Power Consumption	No	number	watts	2000	r1	
+v5	Temperature	No	decimal	celsius	23.4	r2	
+v6	Voltage	No	decimal	volts	210.7	r2	
+c1	Cumulative Flag	No	number	-	1	r1	
+n	Net Flag	No	number	-	1	r2	
+v7	Extended Value 1	No	number	User Defined	100.5	r2	DONATION MODE
+v8	Extended Value 2	No	number	User Defined	328	r2	DONATION MODE
+v9	Extended Value 3	No	number	User Defined	-291	r2	DONATION MODE
+v10	Extended Value 4	No	number	User Defined	29	r2	DONATION MODE
+v11	Extended Value 5	No	number	User Defined	192	r2	DONATION MODE
+v12	Extended Value 6	No	number	User Defined	9281.24	r2	DONATION MODE
+m1	Text Message 1	No	text	30 chars max		r2	DONATION MODE
+
+Cumulative Energy
+
+The following values are valid for the c1 flag.
+
+1 Both v1 and v3 values are lifetime energy values. Consumption and generation energy is reset to 0 at the start of the day.
+2 Only v1 generation is a lifetime energy value.
+3 Only v3 consumption is a lifetime energy value.
