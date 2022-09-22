@@ -431,7 +431,11 @@ void loop() {
 /*Lithium requires different charger states.
 (1) 0.1C constant current
 (2) 0.5C constant current
-(3) constant voltage (4.2 * 14s)*/
+(3) constant voltage (4.2 * 14s) = 58.8V
+
+Resistors in pot divider for battery V will need to change for 44 -> 58.8 V
+if boost converter experiments fail , Possible new circuit using LM338/LM317 adjusttable voltage regulators.
+New circuit will allow more current , hence more power.*/
 
 
 if(STATE == TUNING)
