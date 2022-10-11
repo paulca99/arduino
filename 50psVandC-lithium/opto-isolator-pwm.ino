@@ -1,4 +1,4 @@
-//Initializing LED Pin
+//Initializing PWM Pin
 int led_pin = 7;
 void setup() {
   //Declaring PWM pin output
