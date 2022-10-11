@@ -31,7 +31,7 @@ float getChargerCurrent()
     delay(2);
   }
   avgSensorVal = (avgSensorVal / sampleCount) / 2;
-  float volts = avgSensorVal - halfVCC // remove the offset
+  float volts = avgSensorVal - halfVCC ;// remove the offset
   float amps = volts / howManyVoltsPerAmp;  
   return amps;
 
@@ -88,7 +88,7 @@ void jumpDownwards() {
 }
 
 
-void setTargetPositiosetTargetResistancen(int target) {
+void setTargetResistance(int target) {
   int numPSUsThatNeedToBeOnFull = target / 255;
   int remainder = target % 255;
   for (int i = 0; i < numPSUsThatNeedToBeOnFull; i++) {
