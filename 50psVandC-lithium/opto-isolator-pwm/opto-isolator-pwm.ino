@@ -2,7 +2,8 @@
 const int psu_count = 5;
 const int current_limit = 20;  //1kw for starters
 const float halfVCC = 2.5000; // for current calcs
-const float howManyVoltsPerAmp = 0.066; // for current calcs
+const float howManyVoltsPerAmp = 0.066; // for current calcs, how much voltage changes per AMP
+int chargerVoltagePin = 15;   //voltage is 1 : 20 ratio.
 int chargerCurrentSensorPins [] = {13,14};
 int power240pins[] = { 8, 9, 10, 11, 12 };  // 240V relays
 int psu_voltage_pins[] = { 3, 4, 5, 6, 7 };
@@ -30,16 +31,28 @@ float getChargerCurrent()
     avgSensorVal += analogRead(chargerCurrentSensorPins[i+1]);
     delay(2);
   }
-  avgSensorVal = (avgSensorVal / sampleCount) / 2;
+  avgSensorVal = (avgSensorVal / sampleCount);
   float volts = avgSensorVal - halfVCC ;// remove the offset
   float amps = volts / howManyVoltsPerAmp;  
   return amps;
 
 }
 
+float getChargerVoltage()
+{
+  //voltage is 1 : 20 ratio.
+  float avgSensorVal = 0.0;
+  int sampleCount=5;
+  for (int i = 0; i < sampleCount; i++)
+  {
+    avgSensorVal += analogRead(chargerVoltagePin);
+    delay(2);
+  }
+  return 20*(avgSensorVal / sampleCount);
+}
 
 
-int getOverallPowerPosition() {
+int getOverallResistanceValue() {
   int avgSensorVal = 0;
   for (int i = 0; i < psu_count; i++) {
     avgSensorVal = avgSensorVal + psu_resistance_values[i];
@@ -58,7 +71,7 @@ void searchUpwards() {
 // set search direction as UP/DOWN
 //
 // **** jump in search direction by jump-value
-// read the present battery voltage and battery current, if we're within 650W-750W break out;
+// read the present battery voltage and battery current, if we're within 50W break out;
 // reduce jump-value by half..... jump-value=jump-value / 2
 // if we've overshot flip-direction, GO BACK TO *****
 //
@@ -74,14 +87,16 @@ void searchUpwards() {
 }
 void jumpUpwards() {
   //Increase voltage means decreasing values
-  setTargetResistance(getOverallPowerPosition() / 2);
+  setTargetResistance(getOverallResistanceValue
+() / 2);
 }
 
 void jumpDownwards() {
   //Decreasing voltage means increasing values
   // find difference from max value , halve it , and add it where we are.
   int maxValue = psu_count * 255;
-  int currentPosition = getOverallPowerPosition();
+  int currentPosition = getOverallResistanceValue
+();
   int incrementRequired = (maxValue - currentPosition) / 2;
   int newTarget = currentPosition + incrementRequired;
   setTargetResistance(newTarget);
@@ -104,7 +119,7 @@ void setTargetResistance(int target) {
 
 void incrementPower() {
   for (int i = 0; i < psu_count; i++) {
-    if (psu_resistance_values[i] > 0) {
+    if (psu_resistance_values[i] > 0) { //it's not at max power
       psu_resistance_values[i]--;
       analogWrite(psu_voltage_pins[i], psu_resistance_values[i]);
       break;
@@ -113,8 +128,8 @@ void incrementPower() {
 }
 
 void decrementPower() {
-  for (int i = 0; i < psu_count; i++) {
-    if (psu_resistance_values[i] < 255) {
+  for (int i = psu_count-1; i >= 0; i--) {
+    if (psu_resistance_values[i] < 255) {//its not aready at min power
       psu_resistance_values[i]++;
       analogWrite(psu_voltage_pins[i], psu_resistance_values[i]);
       break;
