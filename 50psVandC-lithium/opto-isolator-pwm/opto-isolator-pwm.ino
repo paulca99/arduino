@@ -2,13 +2,36 @@
 #include <SPI.h>
 #include <Ethernet.h>
 #include "EmonLib.h"  // Include Emon Library
-#include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
+#define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+EthernetServer server(80);
+
+static const unsigned char PROGMEM logo_bmp[] =
+{
+  B01110111,B01010100,
+B01010101,B01010100,
+B01110111,B01010100,
+B01000101,B01010100,
+B01000101,B01110111,
+B00000000,B00000000,
+B01110111,B01110111,
+B01000101,B01000010,
+B01110101,B01110010,
+B00010101,B01000010,
+B01110111,B01000010
+};
+
+byte mac[] = {
+  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
+};
+IPAddress ip(192, 168, 1, 177);
 
 const int MANUAL_STATE = 0;
 const int AUTO_STATE = 1;
@@ -20,7 +43,8 @@ int psu_pointer = 0;
 const int psu_count = 5;
 const int grid_current_pin = 0;
 const int grid_voltage_pin = 1;
-const int current_limit = 20;            //1kw for starters
+const int solar_current_pin = 2;
+const int current_limit = 10;            //500w for starters
 const float voltage_limit = 58.6;        // for growatt GBLI5001
 const float halfVCC = 2.3700;            //TODO check ...for current calcs
 const float howManyVoltsPerAmp = 0.066;  // for current calcs, how much voltage changes per AMP
@@ -28,16 +52,20 @@ int chargerVoltagePin = 3;               //voltage is 1 : 20 ratio.
 int chargerCurrentSensorPins[] = { 6, 7 };
 int power240pins[] = { 31, 33, 35, 37, 39 };  // 240V relays
 int manualButtonPin = 29;
-int controlPotPin = 2;  //ANALOG
+int controlPotPin = 5;  //ANALOG
 int psu_voltage_pins[] = { 3, 4, 5, 6, 7 };
 int psu_resistance_values[] = { 255, 255, 255, 255, 255 };  // higher the R the lower the V
 int dampingCoefficient = 10;                                // How many ms to wait after adjusting charger voltage before taking next reading
 
 
 EnergyMonitor grid;
+EnergyMonitor solar;
+
 
 void setup() {
 
+
+  Serial.begin(9600);
 
   //INPUTS
   pinMode(manualButtonPin, INPUT);
@@ -47,6 +75,7 @@ void setup() {
   pinMode(chargerCurrentSensorPins[1], INPUT);
   pinMode(grid_current_pin, INPUT);
   pinMode(grid_voltage_pin, INPUT);
+  pinMode(solar_current_pin, INPUT);
 
   //OUTPUTS
 
@@ -59,8 +88,13 @@ void setup() {
 
   grid.voltage(grid_voltage_pin, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
   grid.current(grid_current_pin, 50);
+  solar.voltage(grid_voltage_pin, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
+  solar.current(solar_current_pin, 50);
   attachInterrupt(manualButtonPin, manualButtonOn, RISING);
   attachInterrupt(manualButtonPin, manualButtonOff, FALLING);
+
+  setupDisplay();
+  setupEthernet();
 }
 
 //////INTERRUPTS//////
@@ -73,7 +107,31 @@ void manualButtonOff() {
 }
 /////END INTERRUPTS/////
 
+void setupDisplay() {
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {  // Address 0x3D for 128x64
+    Serial.println(F("SSD1306 allocation failed"));
+  }
+  display.display();
+  delay(5000);  // Pause for 2 seconds
+  // Clear the buffer
+  display.clearDisplay();
+  // Draw a single pixel in white
+  display.drawPixel(10, 10, SSD1306_WHITE);
+  // Show the display buffer on the screen. You MUST call display() after
+  // drawing commands to make them visible on screen!
+  display.display();
+}
 
+void setupEthernet() {
+  Ethernet.begin(mac, ip);
+  // Check for Ethernet hardware present
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    Serial.println("Ethernet shield was not found.  Sorry, can't run without hardware. :(");
+  }
+  if (Ethernet.linkStatus() == LinkOFF) {
+    Serial.println("Ethernet cable is not connected.");
+  }
+}
 
 float getChargerCurrent() {
   //2.5V = ZERO amps .... 66mv per AMP
@@ -124,7 +182,7 @@ int getOverallResistanceValue() {
 
 void changeToTargetVoltage(int choice) {
   //choice is between 0 and 1023. make same as our range (1275)
-  float newchoice = choice * 1.24633; //1023 ->1275
+  float newchoice = choice * 1.24633;  //1023 ->1275
   int totalcounter = 0;
   for (int i = 0; i < psu_count; i++) {
     for (int x = 0; x < 255; x++) {
@@ -132,7 +190,7 @@ void changeToTargetVoltage(int choice) {
         analogWrite(power240pins[i], LOW);
         psu_resistance_values[i] = x;
       } else {
-        if (x == 0) { analogWrite(power240pins[i], HIGH); }        
+        if (x == 0) { analogWrite(power240pins[i], HIGH); }
       }
       totalcounter++;
     }
@@ -196,12 +254,11 @@ boolean currentLimitReached() {
   }
   return false;
 }
-boolean voltageLimitReached(){
+boolean voltageLimitReached() {
   if (getChargerVoltage() > voltage_limit) {
     return true;
   }
   return false;
-
 }
 
 void increaseChargerPower(float startingChargerPower) {
@@ -218,7 +275,7 @@ void increaseChargerPower(float startingChargerPower) {
 void reduceChargerPower(float startingChargerPower) {
   //the grid is +ve, decrease power to charger by the magnitude
   float target = startingChargerPower - grid.realPower;
-  target = target + 50;  //keep grid negative
+  target = target - 50;  //keep grid negative
 
   while (getChargerPower() > target && !isAtMinPower()) {
     decrementPower();
@@ -228,11 +285,11 @@ void reduceChargerPower(float startingChargerPower) {
 
 
 void adjustCharger() {
-  float startingChargerPower = getChargerPower();
+  float presentChargerPower = getChargerPower();
   if (grid.realPower > 0 || currentLimitReached()) {
-    reduceChargerPower(startingChargerPower);
+    reduceChargerPower(presentChargerPower);
   } else if (SOC < 99) {
-    increaseChargerPower(startingChargerPower);
+    increaseChargerPower(presentChargerPower);
   }
 }
 
@@ -253,6 +310,7 @@ void updateManualDisplay() {
 }
 void autoLoop() {
   grid.calcVI(20, 1000);
+  solar.calcVI(20, 1000);  // TODO reduce frequency , not used for calcs , could be 1 loop in 5/10/20.
   adjustCharger();
   updateAutoDisplay();
 }
@@ -263,8 +321,7 @@ void manualLoop() {
   updateManualDisplay();
 }
 
-void testLoop()
-{
+void testLoop() {
   Serial.println("testing");
 }
 
@@ -276,4 +333,44 @@ void loop() {
     autoLoop();
   else
     testLoop();
+}
+
+void ethernetLoop() {
+  EthernetClient client = server.available();
+  if (client) {
+    // Serial.println("new client");
+    // an http request ends with a blank line
+    String command = "";
+    boolean currentLineIsBlank = true;
+    while (client.connected()) {
+      if (client.available()) {
+        char c = client.read();
+        command += c;
+        //Serial.write(c);
+        // if you've gotten to the end of the line (received a newline
+        // character) and the line is blank, the http request has ended,
+        // so you can send a reply
+
+        if (c == '\n' && currentLineIsBlank) {
+          //processCommand(command);
+          // output the value of each analog input pin
+          // send a power summary
+          client.println(String(grid.realPower) + "," + String(grid.apparentPower) + "," + String(grid.Vrms) + "," + String(grid.Irms) + "," + String(grid.powerFactor) + "," + String(solar.realPower) + "," + String(solar.apparentPower) + "," + String(solar.Vrms) + "," + String(solar.Irms) + "," + String(solar.powerFactor) + "," + String("0") + "," + String("0") + "," + String(getChargerVoltage(), 2) + "," + String("0.0") + "," + String("0.0") + "," + String("0.0") + "," + String(getChargerPower()) + "," + String("0.0") + ",EOT");
+          break;
+        }
+        if (c == '\n') {
+          // you're starting a new line
+          currentLineIsBlank = true;
+        } else if (c != '\r') {
+          // you've gotten a character on the current line
+          currentLineIsBlank = false;
+        }
+      }
+    }
+    // give the web browser time to receive the data
+    delay(1);
+    // close the connection:
+    client.stop();
+    //  Serial.println("client disconnected");
+  }
 }
