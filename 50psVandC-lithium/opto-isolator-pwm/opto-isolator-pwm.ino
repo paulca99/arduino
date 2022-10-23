@@ -1,5 +1,6 @@
 // Initializing PWM Pin
 #include <SPI.h>
+#include "ACS712.h"
 #include <Ethernet.h>
 #include "EmonLib.h"  // Include Emon Library
 #include <Wire.h>
@@ -9,7 +10,8 @@
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 #define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
-
+ACS712  currentSensor1(A6, 5.1, 1023, 66);
+ACS712  currentSensor2(A7, 5.1, 1023, 66);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 EthernetServer server(80);
 
@@ -36,11 +38,12 @@ IPAddress ip(192, 168, 1, 177);
 const int MANUAL_STATE = 0;
 const int AUTO_STATE = 1;
 const int TEST_STATE = 2;
-int state = TEST_STATE;
+int state = MANUAL_STATE;
 int SOC = 0;
 
 int psu_pointer = 0;
 const int psu_count = 5;
+const int charger_ct_pin = 2;
 const int grid_current_pin = 0;
 const int grid_voltage_pin = 1;
 const int solar_current_pin = 2;
@@ -59,12 +62,14 @@ int dampingCoefficient = 10;                                // How many ms to wa
 
 
 EnergyMonitor grid;
+EnergyMonitor charger;
 EnergyMonitor solar;
 
 
 void setup() {
 
-
+currentSensor1.autoMidPoint();
+currentSensor2.autoMidPoint();
   Serial.begin(9600);
 
   //INPUTS
@@ -86,10 +91,12 @@ void setup() {
     digitalWrite(power240pins[i], HIGH);                         // turn off the 240 supply..HIGH=off
   }
 
-  grid.voltage(grid_voltage_pin, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
-  grid.current(grid_current_pin, 50);
-  solar.voltage(grid_voltage_pin, 155.16, 2.40);  // Voltage: input pin, calibration, phase_shift
-  solar.current(solar_current_pin, 50);
+
+  grid.voltage(grid_voltage_pin, 163.36, 2.40);  // Voltage: input pin, calibration, phase_shift
+  grid.current(grid_current_pin, 29);
+  charger.current(charger_ct_pin,15);
+  solar.voltage(1, 163.36, 2.40);  // Voltage: input pin, calibration, phase_shift
+  solar.current(solar_current_pin, 29);
   attachInterrupt(manualButtonPin, manualButtonOn, RISING);
   attachInterrupt(manualButtonPin, manualButtonOff, FALLING);
 
@@ -134,19 +141,16 @@ void setupEthernet() {
 }
 
 float getChargerCurrent() {
-  //2.5V = ZERO amps .... 66mv per AMP
-  float avgSensorVal = 0.0;
-  int sampleCount = 20;
-  for (int i = 0; i < sampleCount; i = i + 2) {
-    avgSensorVal += analogRead(chargerCurrentSensorPins[i]);
-    delay(2);
-    avgSensorVal += analogRead(chargerCurrentSensorPins[i + 1]);
-    delay(2);
-  }
-  avgSensorVal = (avgSensorVal / sampleCount);
-  float volts = avgSensorVal - halfVCC;  // remove the offset
-  float amps = volts / howManyVoltsPerAmp;
-  return amps;
+    double Irms = charger.calcIrms(200);
+
+  return Irms;//draws 0.8 at idle
+  /*int mA1 = currentSensor1.mA_DC();
+  int mA2 = currentSensor2.mA_DC();
+
+  Serial.println(mA1);
+  Serial.println(mA2);
+  delay(1000);
+return (float)mA1+mA2;*/
 }
 void setSOC(float voltage) {
   /*range is 0 :48V  100 : 58V
@@ -156,20 +160,24 @@ void setSOC(float voltage) {
 }
 
 float getChargerVoltage() {
-  //voltage is 1 : 20 ratio.
-  float avgSensorVal = 0.0;
-  int sampleCount = 5;
-  for (int i = 0; i < sampleCount; i++) {
-    avgSensorVal += analogRead(chargerVoltagePin);
-    delay(2);
-  }
-  float voltage = 20 * (avgSensorVal / sampleCount);  //needs work
-  setSOC(voltage);
-  return voltage;
+   float retval=0.0;
+   for (int i =0; i<10; i++)
+   {
+     retval+=(1023.0-analogRead(chargerVoltagePin));
+     delay(2);
+   }
+   retval=retval/10;
+   //40=45.6 V 980=58.5V spread=13.1
+   retval=retval/39;
+   retval=retval+41;
+   return retval;
+
+
 }
 
 float getChargerPower() {
   return getChargerCurrent() * getChargerVoltage();
+
 }
 
 int getOverallResistanceValue() {
@@ -186,7 +194,7 @@ void changeToTargetVoltage(int choice) {
   int totalcounter = 0;
   for (int i = 0; i < psu_count; i++) {
     for (int x = 0; x < 255; x++) {
-      if (newchoice < totalcounter) {
+      if (newchoice > totalcounter) {
         analogWrite(power240pins[i], LOW);
         psu_resistance_values[i] = x;
       } else {
@@ -304,7 +312,8 @@ void updateAutoDisplay() {
 }
 
 void updateManualDisplay() {
-  Serial.println(getChargerVoltage());
+ getChargerVoltage();
+
 
   //displayDCVoltageand current
 }
@@ -316,13 +325,26 @@ void autoLoop() {
 }
 
 void manualLoop() {
+ // grid.calcVI(20, 1000);
+
+  delay(3);
   int choice = analogRead(controlPotPin);
+  //Serial.println(choice);
   changeToTargetVoltage(choice);
   updateManualDisplay();
+  String stats="Power:"+(String)getChargerPower()+":"+(String)getChargerVoltage()+":"+(String)getChargerCurrent();
+  Serial.println(stats);
 }
 
 void testLoop() {
-  Serial.println("testing");
+   for (int i = 0; i < psu_count; i++) {
+  delay(1000);     
+    analogWrite(power240pins[i], LOW);
+  }
+     for (int i = 0; i < psu_count; i++) {
+  delay(1000);
+    analogWrite(power240pins[i], HIGH);
+  }
 }
 
 
