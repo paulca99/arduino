@@ -10,24 +10,23 @@
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 #define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
-ACS712  currentSensor1(A6, 5.1, 1023, 66);
-ACS712  currentSensor2(A7, 5.1, 1023, 66);
+ACS712 currentSensor1(A6, 5.1, 1023, 66);
+ACS712 currentSensor2(A7, 5.1, 1023, 66);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 EthernetServer server(80);
 
-static const unsigned char PROGMEM logo_bmp[] =
-{
-  B01110111,B01010100,
-B01010101,B01010100,
-B01110111,B01010100,
-B01000101,B01010100,
-B01000101,B01110111,
-B00000000,B00000000,
-B01110111,B01110111,
-B01000101,B01000010,
-B01110101,B01110010,
-B00010101,B01000010,
-B01110111,B01000010
+static const unsigned char PROGMEM logo_bmp[] = {
+  B01110111, B01010100,
+  B01010101, B01010100,
+  B01110111, B01010100,
+  B01000101, B01010100,
+  B01000101, B01110111,
+  B00000000, B00000000,
+  B01110111, B01110111,
+  B01000101, B01000010,
+  B01110101, B01110010,
+  B00010101, B01000010,
+  B01110111, B01000010
 };
 
 byte mac[] = {
@@ -68,8 +67,8 @@ EnergyMonitor solar;
 
 void setup() {
 
-currentSensor1.autoMidPoint();
-currentSensor2.autoMidPoint();
+  currentSensor1.autoMidPoint();
+  currentSensor2.autoMidPoint();
   Serial.begin(9600);
 
   //INPUTS
@@ -94,7 +93,7 @@ currentSensor2.autoMidPoint();
 
   grid.voltage(grid_voltage_pin, 163.36, 2.40);  // Voltage: input pin, calibration, phase_shift
   grid.current(grid_current_pin, 29);
-  charger.current(charger_ct_pin,15);
+  charger.current(charger_ct_pin, 15);
   solar.voltage(1, 163.36, 2.40);  // Voltage: input pin, calibration, phase_shift
   solar.current(solar_current_pin, 29);
   attachInterrupt(manualButtonPin, manualButtonOn, RISING);
@@ -141,9 +140,9 @@ void setupEthernet() {
 }
 
 float getChargerCurrent() {
-    double Irms = charger.calcIrms(200);
+  double Irms = charger.calcIrms(200);
 
-  return Irms;//draws 0.8 at idle
+  return Irms;  //draws 0.8 at idle
   /*int mA1 = currentSensor1.mA_DC();
   int mA2 = currentSensor2.mA_DC();
 
@@ -160,24 +159,20 @@ void setSOC(float voltage) {
 }
 
 float getChargerVoltage() {
-   float retval=0.0;
-   for (int i =0; i<10; i++)
-   {
-     retval+=(1023.0-analogRead(chargerVoltagePin));
-     delay(2);
-   }
-   retval=retval/10;
-   //40=45.6 V 980=58.5V spread=13.1
-   retval=retval/39;
-   retval=retval+41;
-   return retval;
-
-
+  float retval = 0.0;
+  for (int i = 0; i < 10; i++) {
+    retval += (1023.0 - analogRead(chargerVoltagePin));
+    delay(2);
+  }
+  retval = retval / 10;
+  //40=45.6 V 980=58.5V spread=13.1
+  retval = retval / 39;
+  retval = retval + 41;
+  return retval;
 }
 
 float getChargerPower() {
   return getChargerCurrent() * getChargerVoltage();
-
 }
 
 int getOverallResistanceValue() {
@@ -187,23 +182,32 @@ int getOverallResistanceValue() {
   }
   return avgSensorVal;
 }
+void setMinPower()
+{
+psu_resistance_values[] = { 255, 255, 255, 255, 255 }; 
+psu_pointer=0;
+}
 
 void changeToTargetVoltage(int choice) {
   //choice is between 0 and 1023. make same as our range (1275)
   float newchoice = choice * 1.24633;  //1023 ->1275
+  setMinPower();
   int totalcounter = 0;
-  for (int i = 0; i < psu_count; i++) {
-    for (int x = 0; x < 255; x++) {
+  for (int x = 0; x < 255; x++) {
+    for (int i = 0; i < psu_count; i++) {
       if (newchoice > totalcounter) {
-        analogWrite(power240pins[i], LOW);
-        psu_resistance_values[i] = x;
-      } else {
-        if (x == 0) { analogWrite(power240pins[i], HIGH); }
+
+       incrementPower(false);
+      }
+      else
+      {
+       x=256;
+       break;
       }
       totalcounter++;
     }
   }
-  writePowerValuesToPSUs();
+writePowerValuesToPSUs();
 }
 
 
@@ -213,7 +217,7 @@ void writePowerValuesToPSUs() {
   }
 }
 
-void incrementPower() {  //means reducinng resistance
+void incrementPower(boolean write) {  //means reducinng resistance
   //255,255,255,255,255   ->  254,255,255,255,255  ->  254,254,255,255,255
   if (!isAtMaxPower()) {
     psu_resistance_values[psu_pointer]--;
@@ -222,10 +226,13 @@ void incrementPower() {  //means reducinng resistance
       psu_pointer = 0;
     }
   }
+  if(write)
+  {
   writePowerValuesToPSUs();
+  }
 }
 
-void decrementPower() {  //means increasing resistance
+void decrementPower(boolean write) {  //means increasing resistance
   //00000 , 00001 , 00011 , 00111 , 01111 , 11111 , 11112
   if (!isAtMinPower()) {
     psu_pointer--;
@@ -234,7 +241,10 @@ void decrementPower() {  //means increasing resistance
     }
     psu_resistance_values[psu_pointer]++;
   }
+   if(write)
+  {
   writePowerValuesToPSUs();
+  }
 }
 
 boolean isAtMaxPower() {
@@ -275,7 +285,7 @@ void increaseChargerPower(float startingChargerPower) {
   target = target - 50;  //keep grid negative
 
   while (getChargerPower() < target && !currentLimitReached() && !voltageLimitReached() && !isAtMaxPower()) {
-    incrementPower();
+    incrementPower(true);
     delay(dampingCoefficient);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
 }
@@ -286,7 +296,7 @@ void reduceChargerPower(float startingChargerPower) {
   target = target - 50;  //keep grid negative
 
   while (getChargerPower() > target && !isAtMinPower()) {
-    decrementPower();
+    decrementPower(true);
     delay(dampingCoefficient);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
 }
@@ -312,7 +322,7 @@ void updateAutoDisplay() {
 }
 
 void updateManualDisplay() {
- getChargerVoltage();
+  getChargerVoltage();
 
 
   //displayDCVoltageand current
@@ -325,24 +335,24 @@ void autoLoop() {
 }
 
 void manualLoop() {
- // grid.calcVI(20, 1000);
+  // grid.calcVI(20, 1000);
 
   delay(3);
   int choice = analogRead(controlPotPin);
   //Serial.println(choice);
   changeToTargetVoltage(choice);
   updateManualDisplay();
-  String stats="Power:"+(String)getChargerPower()+":"+(String)getChargerVoltage()+":"+(String)getChargerCurrent();
+  String stats = "Power:" + (String)getChargerPower() + ":" + (String)getChargerVoltage() + ":" + (String)getChargerCurrent();
   Serial.println(stats);
 }
 
 void testLoop() {
-   for (int i = 0; i < psu_count; i++) {
-  delay(1000);     
+  for (int i = 0; i < psu_count; i++) {
+    delay(1000);
     analogWrite(power240pins[i], LOW);
   }
-     for (int i = 0; i < psu_count; i++) {
-  delay(1000);
+  for (int i = 0; i < psu_count; i++) {
+    delay(1000);
     analogWrite(power240pins[i], HIGH);
   }
 }
