@@ -98,11 +98,26 @@ void setup() {
   solar.current(solar_current_pin, 29);
   attachInterrupt(manualButtonPin, manualButtonOn, RISING);
   attachInterrupt(manualButtonPin, manualButtonOff, FALLING);
-
+switchAllPsus(true);
   setupDisplay();
   setupEthernet();
 }
+void switchAllPsus(boolean On) {
+  if(On)
+  {
+  for (int i = 0; i < psu_count; i++) {
+    delay(100);
+    digitalWrite(power240pins[i], LOW);
+  }
+  }
+  else
+  {
+      for (int i = 0; i < psu_count; i++) {
+    digitalWrite(power240pins[i], HIGH);
+  }
+  }
 
+}
 //////INTERRUPTS//////
 void manualButtonOn() {
   //TODO add logic here to check for a full sweep of the pot to avoid accidental manual switch
@@ -184,8 +199,10 @@ int getOverallResistanceValue() {
 }
 void setMinPower()
 {
-psu_resistance_values[] = { 255, 255, 255, 255, 255 }; 
-psu_pointer=0;
+      for (int i = 0; i < psu_count; i++) {
+        psu_resistance_values[i]=255;
+      }
+      psu_pointer=0;
 }
 
 void changeToTargetVoltage(int choice) {
@@ -346,14 +363,17 @@ void manualLoop() {
   Serial.println(stats);
 }
 
+
 void testLoop() {
   for (int i = 0; i < psu_count; i++) {
     delay(1000);
-    analogWrite(power240pins[i], LOW);
+    digitalWrite(power240pins[i], HIGH);
+    Serial.println("HIGH");
   }
   for (int i = 0; i < psu_count; i++) {
     delay(1000);
-    analogWrite(power240pins[i], HIGH);
+    digitalWrite(power240pins[i], LOW);
+        Serial.println("LOW");
   }
 }
 
