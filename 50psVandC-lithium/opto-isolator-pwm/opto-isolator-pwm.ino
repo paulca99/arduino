@@ -37,13 +37,14 @@ IPAddress ip(192, 168, 1, 177);
 const int MANUAL_STATE = 0;
 const int AUTO_STATE = 1;
 const int TEST_STATE = 2;
-int state = MANUAL_STATE;
+int state = AUTO_STATE;
 int SOC = 0;
 
 int psu_pointer = 0;
 const int psu_count = 5;
 const int charger_ct_pin = 2;
 const int grid_current_pin = 0;
+const int grid_voltage_pin = 1;
 
 const int solar_current_pin = 4;
 const float current_limit = 4;            //240W for starters
@@ -89,7 +90,8 @@ void setup() {
     digitalWrite(power240pins[i], HIGH);                         // turn off the 240 supply..HIGH=off
   }
 
-  grid.current(grid_current_pin, 29);
+ grid.voltage(grid_voltage_pin, 250.36, 2.4);  // Voltage: input pin, calibration, phase_shift
+   grid.current(grid_current_pin, 17);
   charger.current(charger_ct_pin, 6);
   solar.current(solar_current_pin, 29);
 
@@ -171,20 +173,24 @@ void setSOC(float voltage) {
 }
 
 float getChargerVoltage() {
+  //0.37=47v   3.88=60.3V
+  // rough 2 per 10V , 1 per 5v
   float retval = 0.0;
-  for (int i = 0; i < 100; i++) {
-    retval += (1023.0 - analogRead(chargerVoltagePin));
-    delay(4);
+  for (int i = 0; i < 30; i++) {
+    retval += (analogRead(chargerVoltagePin));
+    delay(1);
   }
-  retval = retval / 100;
-  //40=45.6 V 980=58.5V spread=13.1
-  retval = retval / 39;
-  retval = retval + 35;
+  retval = retval / 30;
+  Serial.println("analog read:"+(String)retval);
+  retval= (retval/1024) *5.0; //actual voltage
+  Serial.println("ActualVoltageOnPin:"+(String)retval);
+  retval=retval*3.74;
+  retval=retval+45.77;
   return retval;
 }
 
 float getChargerPower() {
-  return getChargerCurrent() * 240;
+  return getChargerCurrent() * grid.Vrms;
 }
 
 int getOverallResistanceValue() {
@@ -207,7 +213,7 @@ void changeToTargetVoltage(int choice) {
   //choice is between 0 and 1023. make same as our range (1275)
   float newchoice = choice * 1.24633;  //1023 ->1275
   setMinPower();
-  if(newchoice < 30)
+  if(newchoice < 0)
 {
   switchAllPsus(false);
   return;
@@ -309,12 +315,12 @@ void increaseChargerPower(float startingChargerPower) {
   float target = (grid.realPower *-1 ) + startingChargerPower;
   target = target - 50;  //keep grid negative
     Serial.println("target:"+String(target));
-  float chargerCurrent = startingChargerPower/240;
+  float chargerCurrent = startingChargerPower/grid.Vrms;
   float chargerPower = startingChargerPower;
   while (chargerPower< target && (chargerCurrent < current_limit)&& !voltageLimitReached() && !isAtMaxPower()) {
     incrementPower(true);
    chargerCurrent = getChargerCurrent();
-   chargerPower = chargerCurrent*240;
+   chargerPower = chargerCurrent*grid.Vrms;
     delay(dampingCoefficient);  // Damping coefficient, can be reduced if we don't overshoot too badly
 
   }
@@ -323,13 +329,13 @@ void increaseChargerPower(float startingChargerPower) {
 void reduceChargerPower(float startingChargerPower) {
   //the grid is +ve, decrease power to charger by the magnitude
   float target = startingChargerPower - grid.realPower;
-  float chargerCurrent = startingChargerPower/240;
+  float chargerCurrent = startingChargerPower/grid.Vrms;
   float chargerPower = startingChargerPower;
   target = target - 50;  //keep grid negative
   Serial.println("target:"+String(target));
   while (chargerPower > target && !isAtMinPower()) {
    chargerCurrent = getChargerCurrent();
-   chargerPower = chargerCurrent*240;
+   chargerPower = chargerCurrent*grid.Vrms;
     decrementPower(true);
     delay(dampingCoefficient);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
@@ -339,7 +345,7 @@ void reduceChargerPower(float startingChargerPower) {
 void adjustCharger() {
   Serial.println("adjustCharger");
   float presentChargerCurrent = getChargerCurrent();
-  float presentChargerPower=presentChargerCurrent*240;
+  float presentChargerPower=presentChargerCurrent*grid.Vrms;
   if (grid.realPower > 0 ) {
     if(isAtMinPower())
     {
@@ -358,37 +364,38 @@ void adjustCharger() {
 void updateAutoDisplay() {
   String stats = "ChargerPower:" + (String)getChargerPower();
 
-  Serial.println(stats);
+  /*Serial.println(stats);
   Serial.println("GridPower:"+(String)(grid.realPower));
     Serial.println("DCVoltage:"+(String)getChargerVoltage());
+    Serial.println("power factor"+(String)grid.powerFactor);
   int choice = analogRead(controlPotPin);  //0 to 1023
   //if(choice > 100)
   //display power set 1
   //display power set 2
   // display voltages
-  // display battery etc
+  // display battery etc*/
 }
 
 void updateManualDisplay() {
-  String stats = "ChargerPower:" + (String)getChargerPower();
+  String stats = "ChargerVoltage:" + (String)getChargerVoltage();
 
   Serial.println(stats);
-  Serial.println("GridPower:"+(String)(grid.realPower+2500.0));
-    Serial.println("DCVoltage:"+(String)getChargerVoltage());
+ // Serial.println("GridPower:"+(String)(grid.realPower+2500.0));
+   // Serial.println("DCVoltage:"+(String)getChargerVoltage());
 
 
   //displayDCVoltageand current
 }
 void autoLoop() {
-  float gridCurrent = grid.calcIrms(300);
-  grid.realPower=gridCurrent*240;
+  grid.calcVI(20, 1000);
+  grid.serialprint();
   adjustCharger();
   updateAutoDisplay();
 }
 
 void manualLoop() {
  float gridCurrent=grid.calcIrms(300);
-  grid.realPower=gridCurrent*240;
+  grid.realPower=gridCurrent*grid.Vrms;
 
 
   delay(3);
