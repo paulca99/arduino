@@ -25,7 +25,6 @@ void setup(){
 void loop(){
   // increase the LED brightness
   rampUp(pwmChannel,range,delayIn);
-
   // decrease the LED brightness
   rampDown(pwmChannel,range,delayIn);
 }
