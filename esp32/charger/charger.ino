@@ -5,8 +5,6 @@ EnergyMonitor grid;
 
 // setting PWM properties
 
-
- 
 void setup()
 {
   wifiSetup();
