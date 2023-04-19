@@ -30,5 +30,5 @@ analogSetAttenuation(ADC_11db);
 void loop()
 {
   Serial.println(analogRead(ZMPT101B_PIN));
-  delay(17);
+  delay(19);
 }
