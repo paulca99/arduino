@@ -1,19 +1,17 @@
 // Initializing PWM Pin
 #include <SPI.h>
-#include "ACS712.h"
 #include <Ethernet.h>
 #include "EmonLib.h"  // Include Emon Library
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include "analogWrite.h"
 
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 #define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
-ACS712 currentSensor1(A6, 5.1, 1023, 66);
-ACS712 currentSensor2(A7, 5.1, 1023, 66);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-EthernetServer server(80);
+//EthernetServer server(80);
 
 static const unsigned char PROGMEM logo_bmp[] = {
   B01110111, B01010100,
@@ -68,8 +66,6 @@ EnergyMonitor solar;
 
 void setup() {
 
-  currentSensor1.autoMidPoint();
-  currentSensor2.autoMidPoint();
   Serial.begin(9600);
 
   //INPUTS
@@ -430,7 +426,7 @@ void loop() {
     testLoop();
 }
 
-void ethernetLoop() {
+/*void ethernetLoop() {
   EthernetClient client = server.available();
   if (client) {
     // Serial.println("new client");
@@ -469,3 +465,4 @@ void ethernetLoop() {
     //  Serial.println("client disconnected");
   }
 }
+*/
