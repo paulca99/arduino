@@ -1,17 +1,15 @@
+#include "pcwifi.h"
+#include "pcemon.h"
 #include "pwmFunctions.h"
-#include "pc-wifi.h"
-#include "EmonLib.h"
-EnergyMonitor grid;
 
-// setting PWM properties
-
-void setup()
-{
-  wifiSetup();
+void setup(){
   pwmSetup();
+  wifiSetup();
 }
  
 void loop(){
+  readGrid();
   rampUp();
   rampDown();
+  readCharger();
 }

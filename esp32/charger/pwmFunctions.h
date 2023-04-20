@@ -1,5 +1,5 @@
-#ifndef pwmFunctions.h
-#define pwmFunctions.h
+#ifndef PWM_FUNCTION_H
+#define PWM_FUNCTION_H
 void pwmSetup();
 void rampUp();
 void rampDown();

@@ -1,4 +1,4 @@
-#include "pwmFunctions.h"
+
 #include "Arduino.h"
 
 const int freq = 5000;
@@ -13,6 +13,26 @@ const int delayIn = 4;
 int range=(pow(2, resolution))-1;
 int psu_count = sizeof psu_resistance_values / sizeof psu_resistance_values[0];
 int psu_pointer=0;
+
+bool isAtMaxPower() {
+  for (int i = 0; i < psu_count; i++) {
+    if (psu_resistance_values[i] > 0) {
+      return false;
+    }
+  }
+  Serial.println("MAX POWER");
+  return true;
+}
+
+bool isAtMinPower() {
+  for (int i = 0; i < psu_count; i++) {
+    if (psu_resistance_values[i] < 255) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 void pwmSetup(){
   // configure LED PWM functionalitites
@@ -79,26 +99,6 @@ void decrementPower(boolean write) {  //means increasing resistance
   {
   writePowerValuesToPSUs();
   }
-}
-
-bool isAtMaxPower() {
-  for (int i = 0; i < psu_count; i++) {
-    if (psu_resistance_values[i] > 0) {
-      return false;
-    }
-  }
-  Serial.println("MAX POWER");
-  return true;
-}
-
-bool isAtMinPower() {
-  for (int i = 0; i < psu_count; i++) {
-    if (psu_resistance_values[i] < 255) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 void rampUp()
