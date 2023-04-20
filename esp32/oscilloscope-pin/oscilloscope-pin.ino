@@ -14,6 +14,7 @@
 
 void setup()
 {
+ 
   Serial.begin(115200);
 
 // Analog attenuation: When using 0-1V sensors the attenuation should be decreased to improve accuracy.
@@ -25,10 +26,13 @@ void setup()
 analogSetAttenuation(ADC_11db);
 
   pinMode(ZMPT101B_PIN, INPUT);
+  pinMode(27, OUTPUT);
+  digitalWrite(27,LOW);
 }
 
 void loop()
 {
+
   Serial.println(analogRead(ZMPT101B_PIN));
   delay(19);
 }

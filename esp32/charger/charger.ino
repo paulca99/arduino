@@ -5,11 +5,21 @@
 void setup(){
   pwmSetup();
   wifiSetup();
+  setupEmon();
 }
  
 void loop(){
-  readGrid();
-  rampUp();
-  rampDown();
-  readCharger();
+  autoLoop();
+ // rampUp();
+ // rampDown();
+ // readCharger();
+
 }
+
+
+void autoLoop() {
+  readGrid();
+  readCharger();
+  adjustCharger();
+}
+
