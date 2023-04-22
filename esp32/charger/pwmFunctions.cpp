@@ -13,6 +13,8 @@ int powerPin=27;
 int psu_voltage_pins[] = { 19, 18, 5, 17, 16 };
 int pwmChannels[] = { 0, 1, 2, 3, 4 }; 
 const int delayIn = 1;
+int upperChargerLimit = -100; //point to turn charger off
+int lowerChargerLimit = -300; // point to turn charger on
 
 int range=(pow(2, resolution))-1;
 int psu_resistance_values[] = { range-1, range-1, range-1, range-1, range-1 }; 
@@ -131,13 +133,16 @@ void rampDown()
 }
 
 void increaseChargerPower(float startingChargerPower) {
-  //the grid is -ve, increasePower to charger by the magnitude
-  float target = (grid.realPower *-1 ) + startingChargerPower;
-  target = target - 50;  //keep grid negative
-    Serial.println("target:"+String(target));
-  float chargerCurrent = startingChargerPower/grid.Vrms;
+  //the grid will be -ve .... need to work out the gap between the charger lower limit
+  // and where the grid is...then thats the target we need to increase by.
+
+  float target = ((grid.realPower *-1 ) +lowerChargerLimit) + startingChargerPower;
+  //eg..  -1000 * -1 = +1000 + (-300) = 700 + 200 = 900.....so need charger to use 700 more watts to get grid to -300
+  //eg..  -1000 * -1 = +1000 + (0) = 1000 +200 = 1200 .... so need charger to use 1000W more to get grid to 0
+  target = target *0.95; // onnly go to 95% to be safe
+  Serial.println("target:"+String(target));
   float chargerPower = startingChargerPower;
-  while (chargerPower< target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower()) {
+  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower()) {
      incrementPower(true);
      readCharger();
      chargerPower = charger.Irms*grid.Vrms;
@@ -146,11 +151,21 @@ void increaseChargerPower(float startingChargerPower) {
 }
 
 void reduceChargerPower(float startingChargerPower) {
-  //the grid is +ve, decrease power to charger by the magnitude
-  float target = startingChargerPower - grid.realPower;
-  float chargerCurrent = startingChargerPower/grid.Vrms;
+  //the grid could be -ve or positive .... need to work out the gap between the charger upper limit
+  // and where the grid is...then thats the target we need to decrease by.
+
+//e.g.   grid= 200W , chargerUpperLimit= -100W ....need to decrease by 300W
+//e.g.   grid= -50W , chargerUpperLimit = -100W .... need to decrease by 50W
+// so    chargerUpperLimit - grid.realPower  = reductionAmount... will be negative
+// startingChargerPower + reductionAmount = target 
+//e.g.  500W + (-300) = 200W
+//e.g.  500W + (-50) = 450W
+// if target is -ve , we'll be turning the charger off
+  float reductionAmount = upperChargerLimit - grid.realPower;
+  float target = startingChargerPower + reductionAmount;
+
   float chargerPower = startingChargerPower;
-  target = target - 50;  //keep grid negative
+  target = target *0.95;  //keep grid negative
   Serial.println("target:"+String(target));
   while (chargerPower > target && !isAtMinPower()) {
     readCharger();
@@ -163,13 +178,13 @@ void reduceChargerPower(float startingChargerPower) {
 void adjustCharger() {
   float presentChargerCurrent = charger.Irms;
   float presentChargerPower=presentChargerCurrent*grid.Vrms;
-  if (grid.realPower > -100 ) {
+  if (grid.realPower > upperChargerLimit ) {
     if(isAtMinPower())
     {
       digitalWrite(powerPin,LOW); //turn off
     }
     reduceChargerPower(presentChargerPower);
-  } else if (SOC < 99 && grid.realPower < -300) {
+  } else if (SOC < 99 && grid.realPower < lowerChargerLimit) {
     if(isAtMinPower())
     {
       digitalWrite(powerPin,HIGH); // turn on
