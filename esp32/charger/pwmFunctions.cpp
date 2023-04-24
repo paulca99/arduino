@@ -2,18 +2,20 @@
 #include "Arduino.h"
 #include "EmonLib.h"
 #include "pcemon.h"
+#include "battery.h"
 
 const int freq = 500;
 int SOC = 90; // TODO neds calculating
+float voltageLimit=55;
 const float current_limit=10;
-const int resolution = 13; //2^8 = 256
+const int resolution = 8; //2^8 = 256
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
-int powerPin=27;
+int powerPin=22;
 int psu_voltage_pins[] = { 19, 18, 5, 17, 16 };
 int pwmChannels[] = { 0, 1, 2, 3, 4 }; 
 const int delayIn = 1;
-int upperChargerLimit = -100; //point to turn charger off
+int upperChargerLimit = -200; //point to turn charger off
 int lowerChargerLimit = -300; // point to turn charger on
 
 int range=(pow(2, resolution))-1;
@@ -33,18 +35,20 @@ bool isAtMaxPower() {
 
 bool isAtMinPower() {
   for (int i = 0; i < psu_count; i++) {
-    if (psu_resistance_values[i] < 255) {
+    if (psu_resistance_values[i] < (range-1)) {
       return false;
     }
   }
-
+  Serial.println("IsAtMinPower");
   return true;
 }
 
 boolean voltageLimitReached() {
-//  if (getChargerVoltage() > voltage_limit) {
-//    return true;
-//  }
+  float presentVoltage = readBattery();
+  if(presentVoltage > voltageLimit)
+  {
+    return true;
+  }
   return false;
 }
 
@@ -62,7 +66,7 @@ void pwmSetup(){
 }
 void setMinPower(){
       for (int i = 0; i < psu_count; i++) {
-        psu_resistance_values[i]=255;
+        psu_resistance_values[i]=range-1;
       }
       psu_pointer=0;
 }
@@ -73,8 +77,11 @@ void writePowerValuesToPSUs() {
     ledcWrite(pwmChannels[i], psu_resistance_values[i]);
   }
 }
+void turnOff()
+{
 
-
+      digitalWrite(powerPin,HIGH);
+}
 void incrementPower(boolean write) {  //means reducinng resistance
  // Serial.println("IncrementPower");
   //255,255,255,255,255   ->  254,255,255,255,255  ->  254,254,255,255,255
@@ -83,7 +90,7 @@ void incrementPower(boolean write) {  //means reducinng resistance
   }
 
    // Serial.println("decrementing values "+(String)psu_pointer);
-    psu_resistance_values[psu_pointer]--;
+    psu_resistance_values[psu_pointer]=psu_resistance_values[psu_pointer]-2;
     psu_pointer++;
     if (psu_pointer == psu_count) {
       psu_pointer = 0;
@@ -103,7 +110,7 @@ void decrementPower(boolean write) {  //means increasing resistance
     if (psu_pointer == -1) {
       psu_pointer = psu_count - 1;
     }
-    psu_resistance_values[psu_pointer]++;
+    psu_resistance_values[psu_pointer]=psu_resistance_values[psu_pointer]+4;
   }
   else
   {
@@ -133,45 +140,37 @@ void rampDown()
 }
 
 void increaseChargerPower(float startingChargerPower) {
-  //the grid will be -ve .... need to work out the gap between the charger lower limit
-  // and where the grid is...then thats the target we need to increase by.
-
-  float target = ((grid.realPower *-1 ) +lowerChargerLimit) + startingChargerPower;
-  //eg..  -1000 * -1 = +1000 + (-300) = 700 + 200 = 900.....so need charger to use 700 more watts to get grid to -300
-  //eg..  -1000 * -1 = +1000 + (0) = 1000 +200 = 1200 .... so need charger to use 1000W more to get grid to 0
-  target = target *0.95; // onnly go to 95% to be safe
-  Serial.println("target:"+String(target));
+  //here gridp is lower than the lowerChargerLimit.
+  float fakeGridp=grid.realPower+10000;  // cancel out -ve values
+  float fakeLowerLimit = lowerChargerLimit+10000;
+  float increaseAmount = fakeLowerLimit - fakeGridp ; // will always be +ve
+  increaseAmount = increaseAmount *0.75;  //don't overshoot
+  float target = startingChargerPower + increaseAmount;
+  Serial.println("increase target:"+String(target));
   float chargerPower = startingChargerPower;
   while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower()) {
      incrementPower(true);
-     readCharger();
-     chargerPower = charger.Irms*grid.Vrms;
-     delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
+     chargerPower =readCharger();
+     //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
 }
 
 void reduceChargerPower(float startingChargerPower) {
-  //the grid could be -ve or positive .... need to work out the gap between the charger upper limit
-  // and where the grid is...then thats the target we need to decrease by.
+  //for starters here gridp is higher than the upper limit
 
-//e.g.   grid= 200W , chargerUpperLimit= -100W ....need to decrease by 300W
-//e.g.   grid= -50W , chargerUpperLimit = -100W .... need to decrease by 50W
-// so    chargerUpperLimit - grid.realPower  = reductionAmount... will be negative
-// startingChargerPower + reductionAmount = target 
-//e.g.  500W + (-300) = 200W
-//e.g.  500W + (-50) = 450W
-// if target is -ve , we'll be turning the charger off
-  float reductionAmount = upperChargerLimit - grid.realPower;
-  float target = startingChargerPower + reductionAmount;
+  float fakeGridp=grid.realPower+10000;  // cancel out -ve values
+  float fakeUpperLimit = upperChargerLimit+10000;
+  float reductionAmount = fakeGridp - fakeUpperLimit; // will always be +ve
+  reductionAmount = reductionAmount *0.75;  //don't overshoot
+  float target = startingChargerPower - reductionAmount;
 
   float chargerPower = startingChargerPower;
-  target = target *0.95;  //keep grid negative
-  Serial.println("target:"+String(target));
+
+  Serial.println("reduce target:"+String(target));
   while (chargerPower > target && !isAtMinPower()) {
-    readCharger();
-    chargerPower = charger.Irms*grid.Vrms;
+    chargerPower=readCharger();
     decrementPower(true);
-    delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
+    //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
 }
 
@@ -181,9 +180,12 @@ void adjustCharger() {
   if (grid.realPower > upperChargerLimit ) {
     if(isAtMinPower())
     {
+      Serial.println("turning off , setting pin low");
       digitalWrite(powerPin,LOW); //turn off
     }
-    reduceChargerPower(presentChargerPower);
+    else{
+       reduceChargerPower(presentChargerPower);
+    }
   } else if (SOC < 99 && grid.realPower < lowerChargerLimit) {
     if(isAtMinPower())
     {

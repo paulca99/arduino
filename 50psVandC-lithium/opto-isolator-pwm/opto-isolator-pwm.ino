@@ -344,7 +344,7 @@ void adjustCharger() {
   float presentChargerPower=presentChargerCurrent*grid.Vrms;
   if (grid.realPower > 0 ) {
     if(isAtMinPower())
-    {
+    { 
       switchAllPsus(false);
     }
     reduceChargerPower(presentChargerPower);

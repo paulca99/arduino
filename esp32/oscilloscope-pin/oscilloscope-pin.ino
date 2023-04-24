@@ -10,7 +10,7 @@
 */
 
 // Pin configuration
-#define ZMPT101B_PIN 34
+#define ZMPT101B_PIN 32
 
 void setup()
 {
@@ -26,8 +26,8 @@ void setup()
 analogSetAttenuation(ADC_11db);
 
   pinMode(ZMPT101B_PIN, INPUT);
-  pinMode(27, OUTPUT);
-  digitalWrite(27,LOW);
+  pinMode(22, OUTPUT);
+  digitalWrite(22,LOW);
 }
 
 void loop()

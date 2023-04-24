@@ -7,7 +7,7 @@
 *********/
 
 const int relay1 = 26;
-const int relay2 = 27;
+const int relay2 = 22;
 void setup() {
   Serial.begin(115200);
   pinMode(relay1, OUTPUT);
@@ -29,12 +29,12 @@ void loop() {
   delay(5000);
 
   digitalWrite(relay2, LOW);
-  Serial.println("Current Flowing");
+  Serial.println("OFF");
   delay(5000); 
   
   // Normally Open configuration, send HIGH signal stop current flow
   // (if you're usong Normally Closed configuration send LOW signal)
   digitalWrite(relay2, HIGH);
-  Serial.println("Current not Flowing");
+  Serial.println("ON");
   delay(5000);
 }
