@@ -29,7 +29,7 @@ void loop() {
   delay(5000);
 
   digitalWrite(relay2, LOW);
-  Serial.println("OFF");
+  Serial.println("");
   delay(5000); 
   
   // Normally Open configuration, send HIGH signal stop current flow
