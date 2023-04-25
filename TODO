@@ -1,0 +1,20 @@
+Network DONE
+Relay fault DONE
+
+Calibrate Charger current
+Decide on using current only @ hardcoded 240 V
+Solar sensor (optional)--needs 10uF cap.
+replace faulty PSU 
+build case
+mount switches
+
+TEST PLAN
+
+(1) Current Limit observed - Lead Acid, set low current limit
+(2) Voltage limit observed - Lead Acid, set low voltage limit
+(3) Overshoot tuning, might be unnecessary delay using CT clamp for charger current
+(4) Shutdown PSUS when grid goes from -ve to +ve.
+(5) Startup PSUS when grid goes from +ve to -ve.
+(6) Using GTI simultaneously , too dangerous , or will it be fast enough.
+(7) Ethernet switchover. does rasppi pick up metrics.
+
