@@ -5,7 +5,7 @@
 
 const int freq = 500;
 int SOC = 90;  // TODO neds calculating
-float voltageLimit = 55;
+float voltageLimit = 57.6;
 const float current_limit = 10;
 const int resolution = 8;  //2^8 = 256
 extern EnergyMonitor grid;
