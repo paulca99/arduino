@@ -1,5 +1,5 @@
 #include "Arduino.h"
-#include "EmonLib.h"
+#include "espEmonLib.h"
 
 
 const int freq = 5000;
@@ -23,7 +23,7 @@ void setupEmon()
 
 void readGrid()
 {
-  grid.calcVI(40,2000);  // Calculate all. No.of half wavelengths (crossings), time-out
+  grid.calcVI(20,1000);  // Calculate all. No.of half wavelengths (crossings), time-out
   Serial.println("gridp:"+(String)grid.realPower);
   Serial.println("grridv:"+(String)grid.Vrms);
   Serial.println("grridPF:"+(String)grid.powerFactor);

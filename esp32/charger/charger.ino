@@ -6,10 +6,11 @@
   int loopcount=0;
 
 void setup(){
-  pwmSetup();
+
   wifiSetup();
   setupEmon();
   setupBattery();
+  pwmSetup();
 }
  
 void loop(){
@@ -25,12 +26,11 @@ void autoLoop() {
  // wait till stable before adjusting anything
 
   readGrid();
-  turnOff();
   readCharger();
   if(loopcount>10)
   {
   adjustCharger();
-  Serial.println("VBBatt="+(String)readBattery());
+  //Serial.println("VBBatt="+(String)readBattery());
   loopcount=11;
   }
   loopcount++;
