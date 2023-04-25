@@ -2,7 +2,7 @@
 #include "espEmonLib.h"
 
 
-int batteryPin=22;
+int batteryPin=39;
 float batteryTotalVoltage=0.0;
 
 void setupBattery()
@@ -22,7 +22,7 @@ float readBattery()
 
   //4096=3.3V
   float voltageOnPin = (adcValue * 3.3) / 40960;
-  batteryTotalVoltage=voltageOnPin*18;
+  batteryTotalVoltage=voltageOnPin*18.35;
   return batteryTotalVoltage;
 }
 

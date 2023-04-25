@@ -45,6 +45,7 @@ bool isAtMinPower() {
 boolean voltageLimitReached() {
   float presentVoltage = readBattery();
   if (presentVoltage > voltageLimit) {
+    Serial.println("VOLTAGE LIMIT REACHED");
     return true;
   }
   return false;

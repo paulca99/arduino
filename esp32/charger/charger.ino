@@ -30,7 +30,7 @@ void autoLoop() {
   if(loopcount>10)
   {
   adjustCharger();
-  //Serial.println("VBBatt="+(String)readBattery());
+  Serial.println("VBBatt="+(String)readBattery());
   loopcount=11;
   }
   loopcount++;
