@@ -16,13 +16,12 @@ float readBattery()
   for (int i=0; i<10; i++)
   {
       adcValue += analogRead(batteryPin);
-      delay(6);
   }
 
 
   //4096=3.3V
   float voltageOnPin = (adcValue * 3.3) / 40960;
-  batteryTotalVoltage=voltageOnPin*18.35;
+  batteryTotalVoltage=voltageOnPin*22.3;
   return batteryTotalVoltage;
 }
 

@@ -3,9 +3,13 @@
 #include "pcemon.h"
 #include "battery.h"
 
+int upperChargerLimit = -150;  //point to turn charger off
+int lowerChargerLimit = -200;  // point to turn charger on
+float voltageLimit = 57.6;
+
 const int freq = 500;
 int SOC = 90;  // TODO neds calculating
-float voltageLimit = 57.6;
+
 const float current_limit = 10;
 const int resolution = 8;  //2^8 = 256
 extern EnergyMonitor grid;
@@ -14,8 +18,7 @@ int powerPin = 21;
 int psu_voltage_pins[] = { 19, 18, 5, 17, 16 };
 int pwmChannels[] = { 0, 1, 2, 3, 4 };
 const int delayIn = 1;
-int upperChargerLimit = 850;  //point to turn charger off
-int lowerChargerLimit = 800;  // point to turn charger on
+
 
 int range = (pow(2, resolution)) - 1;
 int psu_resistance_values[] = { range, range, range, range, range };
@@ -44,6 +47,7 @@ bool isAtMinPower() {
 
 boolean voltageLimitReached() {
   float presentVoltage = readBattery();
+  Serial.println("VBATT:"+(String)presentVoltage);
   if (presentVoltage > voltageLimit) {
     Serial.println("VOLTAGE LIMIT REACHED");
     return true;
@@ -184,7 +188,7 @@ void adjustCharger() {
     if (isAtMinPower()) {
       Serial.println("turning on , setting pin LOW");
       turnPowerOn();  // turn on
-      delay(8000);    //allow spike
+      //delay(8000);    //allow spike
     }
     increaseChargerPower(presentChargerPower);
   }
