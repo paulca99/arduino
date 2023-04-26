@@ -88,12 +88,12 @@ void turnPowerOff() {
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
 }
-void incrementPower(boolean write) {  //means reducinng resistance
+void incrementPower(boolean write,int stepAmount) {  //means reducinng resistance
                                       // Serial.println("IncrementPower");
                                       //255,255,255,255,255   ->  254,255,255,255,255  ->  254,254,255,255,255
 
   // Serial.println("decrementing values "+(String)psu_pointer);
-  psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] - 2;
+  psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] - stepAmount;
   if (psu_resistance_values[psu_pointer] < 0) {
     psu_resistance_values[psu_pointer] = 0;
   }
@@ -107,7 +107,7 @@ void incrementPower(boolean write) {  //means reducinng resistance
   }
 }
 
-void decrementPower(boolean write) {  //means increasing resistance
+void decrementPower(boolean write,int stepAmount) {  //means increasing resistance
                                       // Serial.println("DecrementPower");
   //00000 , 00001 , 00011 , 00111 , 01111 , 11111 , 11112
   if (!isAtMinPower()) {
@@ -115,7 +115,7 @@ void decrementPower(boolean write) {  //means increasing resistance
     if (psu_pointer == -1) {
       psu_pointer = psu_count - 1;
     }
-    psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] + 4;
+    psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] + stepAmount;
     if (psu_resistance_values[psu_pointer] > range) {
       psu_resistance_values[psu_pointer] = range;
     }
@@ -128,13 +128,13 @@ void decrementPower(boolean write) {  //means increasing resistance
 void rampUp() {
   for (int dutyCycle = 0; dutyCycle <= (range * 5); dutyCycle++) {
     // changing the LED brightness with PWM
-    incrementPower(true);
+    incrementPower(true,1);
   }
 }
 void rampDown() {
   for (int dutyCycle = (range * 5); dutyCycle >= 0; dutyCycle--) {
     // changing the LED brightness with PWM
-    decrementPower(true);
+    decrementPower(true,1);
     delay(delayIn);
   }
 }
@@ -145,11 +145,13 @@ void increaseChargerPower(float startingChargerPower) {
   float fakeLowerLimit = lowerChargerLimit + 10000;
   float increaseAmount = fakeLowerLimit - fakeGridp;  // will always be +ve
   increaseAmount = increaseAmount * 0.75;             //don't overshoot
+  int stepAmount = (increaseAmount / 100)+1; // react faster to large change 
   float target = startingChargerPower + increaseAmount;
+
   Serial.println("increase target:" + String(target));
   float chargerPower = startingChargerPower;
   while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower()) {
-    incrementPower(true);
+    incrementPower(true,stepAmount);
     chargerPower = readCharger();
     //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
@@ -162,6 +164,7 @@ void reduceChargerPower(float startingChargerPower) {
   float fakeUpperLimit = upperChargerLimit + 10000;
   float reductionAmount = fakeGridp - fakeUpperLimit;  // will always be +ve
   reductionAmount = reductionAmount * 0.75;            //don't overshoot
+  int stepAmount = (reductionAmount / 100)+1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
 
   float chargerPower = startingChargerPower;
@@ -169,7 +172,7 @@ void reduceChargerPower(float startingChargerPower) {
   Serial.println("reduce target:" + String(target));
   while (chargerPower > target && !isAtMinPower()) {
     chargerPower = readCharger();
-    decrementPower(true);
+    decrementPower(true,stepAmount);
     //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
 }

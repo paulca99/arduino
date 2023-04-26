@@ -15,6 +15,7 @@ void setup(){
  
 void loop(){
   autoLoop();
+  wifiLoop();
  // rampUp();
  // rampDown();
  // readCharger();
