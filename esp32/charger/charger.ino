@@ -15,7 +15,7 @@ void setup(){
  
 void loop(){
   autoLoop();
-  wifiLoop();
+
  // rampUp();
  // rampDown();
  // readCharger();
@@ -28,10 +28,11 @@ void autoLoop() {
 
   readGrid();
   readCharger();
+    wifiLoop();
   if(loopcount>15)
   {
   adjustCharger();
-  Serial.println("VBBatt="+(String)readBattery());
+  //Serial.println("VBBatt="+(String)readBattery());
   loopcount=16;
   }
   loopcount++;

@@ -1,4 +1,3 @@
-
 #include "Arduino.h"
 #include <WiFi.h>
 #include "espEmonLib.h"
@@ -7,6 +6,9 @@
 
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
+extern int psu_resistance_values[];
+extern int upperChargerLimit;
+extern int lowerChargerLimit;
 
 // Replace with your network credentials
 const char* ssid = "TP-LINK_73F3";
@@ -56,9 +58,26 @@ void wifiLoop() {
       currentTime = millis();
       if (client.available()) {  // if there's bytes to read from the client,
         char c = client.read();  // read a byte, then
-        Serial.write(c);         // print it out the serial monitor
+        //Serial.write(c);         // print it out the serial monitor
         header += c;
         if (c == '\n') {  // if the byte is a newline character
+          Serial.println(header);
+          int upperpos= header.indexOf("?upper=");
+          int lowerpos= header.indexOf("&lower=");
+          Serial.println((String)upperpos);
+          Serial.println((String)lowerpos);
+          if(upperpos==20)
+          {
+            String upper=header.substring(upperpos+7,lowerpos);
+            upper.trim();
+            String lower=header.substring(lowerpos+7,lowerpos+11);
+            lower.trim();
+            upperChargerLimit=upper.toInt();
+            lowerChargerLimit=lower.toInt();
+
+          }
+
+          
           // if the current line is blank, you got two newline characters in a row.
           // that's the end of the client HTTP request, so send a response:
           if (currentLine.length() == 0) {
@@ -68,16 +87,43 @@ void wifiLoop() {
             client.println("Content-type:text/html");
             client.println("Connection: close");
             client.println();
-            client.println("<!DOCTYPE html><html><head><style>table, th, td {border: 1px solid black;border-collapse: collapse;}</style></head><body><h2>Power Stats</h2><table style='width:100%'><tr><th>GridP</th><th>GridV</th><th>GridPF</th><th>ChargerIrms</th><th>BatteryV</th></tr><tr>");
+            client.println("<!DOCTYPE html><html><head><style>table, th, td {border: 1px solid black;border-collapse: collapse;}</style></head><body><h2>Power Stats</h2><table style='width:100%'><tr>");
+            client.println("<th>GridP</th>");
+            client.println("<th>GridV</th>");
+            client.println("<th>GridPF</th>");
+            client.println("<th>ChargerIrms</th>");
+            client.println("<th>BatteryV</th> ");
+            client.println("<th>PSU1</th> ");
+            client.println("<th>PSU2</th> ");
+            client.println("<th>PSU3</th> ");
+            client.println("<th>PSU4</th> ");
+            client.println("<th>PSU5</th> ");
+            client.println("       </tr><tr>");
 
             client.println("<td>" + (String)grid.realPower + "</td>");
             client.println("<td>" + (String)grid.Vrms + "</td>");
             client.println("<td>" + (String)grid.powerFactor + "</td>");
             client.println("<td>" + (String)charger.Irms + "</td>");
             client.println("<td>" + (String)readBattery() + "</td>");
+            client.println("<td>" + (String)psu_resistance_values[0] + "</td>");
+            client.println("<td>" + (String)psu_resistance_values[1] + "</td>");
+            client.println("<td>" + (String)psu_resistance_values[2] + "</td>");
+            client.println("<td>" + (String)psu_resistance_values[3] + "</td>");
+            client.println("<td>" + (String)psu_resistance_values[4] + "</td>");
 
-            client.println("</tr></table></body></html>");
+
+            client.println("</tr></table>");
+            client.println("<form action='/action_page.php'>");
+              client.println("<label for='upper'>Upper Limit(W):</label>");
+              client.println("<input type='text' id='upper' name='upper' value='"+(String)upperChargerLimit+"'><br><br>");
+              client.println("<label for='lower'>Lower Limit(W):</label>");
+              client.println("<input type='text' id='lower' name='lower' value='"+(String)lowerChargerLimit+"'><br><br>");
+              client.println("<input type='submit' value='Submit'>");
+            client.println("</form>");
+            client.println("");
+            client.println("</body></html>");
             client.println();
+
             // Break out of the while loop
             break;
           } else {  // if you got a newline, then clear currentLine

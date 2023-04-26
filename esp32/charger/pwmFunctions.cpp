@@ -3,8 +3,8 @@
 #include "pcemon.h"
 #include "battery.h"
 
-int upperChargerLimit = -150;  //point to turn charger off
-int lowerChargerLimit = -200;  // point to turn charger on
+int upperChargerLimit = -100;  //point to turn charger off
+int lowerChargerLimit = -300;  // point to turn charger on
 float voltageLimit = 57.6;
 
 const int freq = 500;
