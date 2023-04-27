@@ -9,15 +9,23 @@ int gridVoltagePin=34;
 int gridCurrentPin=32;
 int chargerCurrentPin=33;
 
+float gridVoltageCalibration=690;
+float gridPhaseOffset=0.2;
+float gridCurrentCalibration=50;
+
+float chargerVoltageCalibration=690;
+float chargerPhaseOffset=0.2;
+float chargerCurrentCalibration=25;
+
 EnergyMonitor grid;
 EnergyMonitor charger;
 
 void setupEmon()
 {
-  grid.voltage(gridVoltagePin, 690, 0.2);  // Voltage: input pin, calibration, phase_shift
-  grid.current(gridCurrentPin, 50); 
-  charger.voltage(gridVoltagePin, 690, 0.2);  // Voltage: input pin, calibration, phase_shift
-  charger.current(chargerCurrentPin, 25); 
+  grid.voltage(gridVoltagePin, gridVoltageCalibration, gridPhaseOffset);  // Voltage: input pin, calibration, phase_shift
+  grid.current(gridCurrentPin, gridCurrentCalibration); 
+  charger.voltage(gridVoltagePin, chargerVoltageCalibration, chargerPhaseOffset);  // Voltage: input pin, calibration, phase_shift
+  charger.current(chargerCurrentPin, chargerCurrentCalibration); 
   charger.calcVI(40,2000);
 }
 

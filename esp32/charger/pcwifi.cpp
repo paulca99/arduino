@@ -2,13 +2,20 @@
 #include <WiFi.h>
 #include "espEmonLib.h"
 #include "battery.h"
-
+#include "pwmFunctions.h"
+#include "pcemon.h"
 
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
 extern int psu_resistance_values[];
 extern int upperChargerLimit;
 extern int lowerChargerLimit;
+extern float gridVoltageCalibration;
+extern float gridPhaseOffset;
+extern float gridCurrentCalibration;
+extern float chargerVoltageCalibration;
+extern float chargerPhaseOffset;
+extern float chargerCurrentCalibration;
 
 // Replace with your network credentials
 const char* ssid = "TP-LINK_73F3";
@@ -66,7 +73,7 @@ void wifiLoop() {
           int lowerpos= header.indexOf("&lower=");
           Serial.println((String)upperpos);
           Serial.println((String)lowerpos);
-          if(upperpos==20)
+          if(upperpos==21)
           {
             String upper=header.substring(upperpos+7,lowerpos);
             upper.trim();
@@ -74,7 +81,21 @@ void wifiLoop() {
             lower.trim();
             upperChargerLimit=upper.toInt();
             lowerChargerLimit=lower.toInt();
+          }
 
+          int gridVCpos= header.indexOf("?gridVC=");
+          int gridCCpos= header.indexOf("&gridCC=");
+          Serial.println((String)gridVCpos);
+          Serial.println((String)gridCCpos);
+          if(gridVCpos==18)
+          {
+            String gridVC=header.substring(gridVCpos+7,gridCCpos);
+            gridVC.trim();
+            String gridCC=header.substring(gridCCpos+7,gridCCpos+11);
+            gridCC.trim();
+            gridVoltageCalibration=gridVC.toFloat();
+            gridCurrentCalibration=gridCC.toFloat();
+            setupEmon();
           }
 
           
@@ -113,13 +134,23 @@ void wifiLoop() {
 
 
             client.println("</tr></table>");
-            client.println("<form action='/action_page.php'>");
+
+            client.println("<form action='/updatePowerLimits'>");
               client.println("<label for='upper'>Upper Limit(W):</label>");
               client.println("<input type='text' id='upper' name='upper' value='"+(String)upperChargerLimit+"'><br><br>");
               client.println("<label for='lower'>Lower Limit(W):</label>");
               client.println("<input type='text' id='lower' name='lower' value='"+(String)lowerChargerLimit+"'><br><br>");
               client.println("<input type='submit' value='Submit'>");
             client.println("</form>");
+
+            client.println("<form action='/updateEmonVars'>");
+              client.println("<label for='gridVC'>Grid Voltage Calibration:</label>");
+              client.println("<input type='text' id='gridVC' name='gridVC' value='"+(String)gridVoltageCalibration+"'><br><br>");
+              client.println("<label for='gridCC'>Grid Current Calibration:</label>");
+              client.println("<input type='text' id='gridCC' name='gridCC' value='"+(String)gridCurrentCalibration+"'><br><br>");
+              client.println("<input type='submit' value='Submit'>");
+            client.println("</form>");
+
             client.println("");
             client.println("</body></html>");
             client.println();
