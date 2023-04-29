@@ -61,7 +61,7 @@ void wifiSetup() {
 
 void generateCsvString()
 {
-  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(charger.Irms*grid.Vrms);
+  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(readCharger());
 }
 void wifiLoop() {
   generateCsvString();

@@ -1,5 +1,6 @@
 #include "Arduino.h"
 #include "espEmonLib.h"
+#include "pwmFunctions.h"
 
 
 const int freq = 5000;
@@ -19,7 +20,7 @@ float chargerCurrentCalibration=25;
 
 EnergyMonitor grid;
 EnergyMonitor charger;
-
+extern int range;
 void setupEmon()
 {
   grid.voltage(gridVoltagePin, gridVoltageCalibration, gridPhaseOffset);  // Voltage: input pin, calibration, phase_shift
@@ -39,6 +40,10 @@ void readGrid()
 
 float readCharger()
 {
+  if(getTotalResistance()==(range*5))
+  {
+    return 0;
+  }
   float power=0;
 
   charger.calcIrms(300);
