@@ -12,7 +12,7 @@ void setup(){
   setupBattery();
   pwmSetup();
 }
- 
+
 void loop(){
   autoLoop();
 
@@ -22,12 +22,17 @@ void loop(){
 
 }
 
-
+void testLoop()
+{
+   rampDown();
+  // wifiLoop();
+}
 void autoLoop() {
  // wait till stable before adjusting anything
 
   readGrid();
   readCharger();
+  readBattery();
     wifiLoop();
   if(loopcount>15)
   {

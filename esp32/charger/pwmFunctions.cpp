@@ -87,6 +87,7 @@ void turnPowerOff() {
 }
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
+  //delay(4000);
 }
 void incrementPower(boolean write,int stepAmount) {  //means reducinng resistance
                                       // Serial.println("IncrementPower");
@@ -126,12 +127,14 @@ void decrementPower(boolean write,int stepAmount) {  //means increasing resistan
 }
 
 void rampUp() {
+  turnPowerOn();
   for (int dutyCycle = 0; dutyCycle <= (range * 5); dutyCycle++) {
     // changing the LED brightness with PWM
     incrementPower(true,1);
   }
 }
 void rampDown() {
+  turnPowerOn();
   for (int dutyCycle = (range * 5); dutyCycle >= 0; dutyCycle--) {
     // changing the LED brightness with PWM
     decrementPower(true,1);
@@ -159,7 +162,7 @@ void increaseChargerPower(float startingChargerPower) {
 
 void reduceChargerPower(float startingChargerPower) {
   //for starters here gridp is higher than the upper limit
-
+  decrementPower(true,1); //always reduce by 1 in case vbatt is too high
   float fakeGridp = grid.realPower + 10000;  // cancel out -ve values
   float fakeUpperLimit = upperChargerLimit + 10000;
   float reductionAmount = fakeGridp - fakeUpperLimit;  // will always be +ve
@@ -178,9 +181,11 @@ void reduceChargerPower(float startingChargerPower) {
 }
 
 void adjustCharger() {
+  float vbatt=readBattery();
   float presentChargerCurrent = charger.Irms;
   float presentChargerPower = presentChargerCurrent * grid.Vrms;
-  if (grid.realPower > upperChargerLimit) {
+
+  if (grid.realPower > upperChargerLimit || vbatt > voltageLimit ) {
     if (isAtMinPower()) {
       Serial.println("turning off , setting pin HIGH");
       turnPowerOff();  //turn off

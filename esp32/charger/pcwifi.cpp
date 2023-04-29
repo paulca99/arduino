@@ -73,7 +73,7 @@ void wifiLoop() {
           int lowerpos= header.indexOf("&lower=");
           Serial.println((String)upperpos);
           Serial.println((String)lowerpos);
-          if(upperpos==21)
+          if(upperpos==22)
           {
             String upper=header.substring(upperpos+7,lowerpos);
             upper.trim();
@@ -87,11 +87,11 @@ void wifiLoop() {
           int gridCCpos= header.indexOf("&gridCC=");
           Serial.println((String)gridVCpos);
           Serial.println((String)gridCCpos);
-          if(gridVCpos==18)
+          if(gridVCpos==19)
           {
-            String gridVC=header.substring(gridVCpos+7,gridCCpos);
+            String gridVC=header.substring(gridVCpos+8,gridCCpos);
             gridVC.trim();
-            String gridCC=header.substring(gridCCpos+7,gridCCpos+11);
+            String gridCC=header.substring(gridCCpos+8,gridCCpos+13);
             gridCC.trim();
             gridVoltageCalibration=gridVC.toFloat();
             gridCurrentCalibration=gridCC.toFloat();
