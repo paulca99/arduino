@@ -4,6 +4,7 @@
 #include "battery.h"
 #include "pwmFunctions.h"
 #include "pcemon.h"
+#include <ESPAsyncWebServer.h>
 
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
@@ -33,7 +34,8 @@ unsigned long currentTime = millis();
 unsigned long previousTime = 0;
 // Define timeout time in milliseconds (example: 2000ms = 2s)
 const long timeoutTime = 2000;
-
+AsyncWebServer csvserver(8080);
+String csvString="1,2,3,4";
 void wifiSetup() {
   Serial.begin(115200);
   Serial.print(grid.Irms);
@@ -51,9 +53,18 @@ void wifiSetup() {
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
   server.begin();
+  csvserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/plain", csvString);
+  });
+  csvserver.begin();
 }
 
+void generateCsvString()
+{
+  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(charger.Irms*grid.Vrms);
+}
 void wifiLoop() {
+  generateCsvString();
   WiFiClient client = server.available();  // Listen for incoming clients
 
   if (client) {  // If a new client connects,

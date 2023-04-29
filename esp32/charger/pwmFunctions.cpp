@@ -34,7 +34,13 @@ bool isAtMaxPower() {
   Serial.println("MAX POWER");
   return true;
 }
-
+int getTotalResistance() {
+  int retval;
+  for (int i = 0; i < psu_count; i++) {
+    retval += psu_resistance_values[i];
+  }
+  return retval;
+}
 bool isAtMinPower() {
   for (int i = 0; i < psu_count; i++) {
     if (psu_resistance_values[i] < range) {

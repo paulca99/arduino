@@ -6,5 +6,6 @@ void rampDown();
 bool isAtMinPower();
 bool isAtMaxPower();
 void incrementPower();
+int getTotalResistance();
 void adjustCharger();
 #endif

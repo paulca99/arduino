@@ -44,8 +44,11 @@ float readCharger()
   charger.calcIrms(300);
   float current=charger.Irms;
   //Serial.println(""+(String)current);
-  //current = current -2.5 ; // offset is out..
-  power = current * 234;
+  current = current -0.2 ; // offset is out..
+  if(current < 0){
+    current=0;
+  }
+  power = current * grid.Vrms;
    //Serial.println("chargerp1:"+(String)power);
   /*if(power*power < 1000)
   {
