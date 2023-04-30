@@ -4,8 +4,9 @@
 #include "battery.h"
 
 int upperChargerLimit = -100;  //point to turn charger off
-int lowerChargerLimit = -300;  // point to turn charger on
+int lowerChargerLimit = -150;  // point to turn charger on
 float voltageLimit = 57.6;
+int chargePLimit = 1500; //max watts into battery
 
 const int freq = 500;
 int SOC = 90;  // TODO neds calculating
@@ -153,7 +154,8 @@ void increaseChargerPower(float startingChargerPower) {
   float fakeGridp = grid.realPower + 10000;  // cancel out -ve values
   float fakeLowerLimit = lowerChargerLimit + 10000;
   float increaseAmount = fakeLowerLimit - fakeGridp;  // will always be +ve
-  increaseAmount = increaseAmount * 0.75;             //don't overshoot
+  Serial.println((String)lowerChargerLimit+" - "+(String)grid.realPower+" = "+(String)increaseAmount);
+  increaseAmount = increaseAmount * 0.9;             //don't overshoot
   int stepAmount = (increaseAmount / 100)+1; // react faster to large change 
   float target = startingChargerPower + increaseAmount;
 
@@ -172,7 +174,7 @@ void reduceChargerPower(float startingChargerPower) {
   float fakeGridp = grid.realPower + 10000;  // cancel out -ve values
   float fakeUpperLimit = upperChargerLimit + 10000;
   float reductionAmount = fakeGridp - fakeUpperLimit;  // will always be +ve
-  reductionAmount = reductionAmount * 0.75;            //don't overshoot
+  reductionAmount = reductionAmount * 0.95;            //don't overshoot
   int stepAmount = (reductionAmount / 100)+1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
 
@@ -188,8 +190,7 @@ void reduceChargerPower(float startingChargerPower) {
 
 void adjustCharger() {
   float vbatt=readBattery();
-  float presentChargerCurrent = charger.Irms;
-  float presentChargerPower = presentChargerCurrent * grid.Vrms;
+  float presentChargerPower = readCharger();
 
   if (grid.realPower > upperChargerLimit || vbatt > voltageLimit ) {
     if (isAtMinPower()) {

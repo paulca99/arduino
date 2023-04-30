@@ -12,7 +12,7 @@ int chargerCurrentPin=33;
 
 float gridVoltageCalibration=740;
 float gridPhaseOffset=0.2;
-float gridCurrentCalibration=52;
+float gridCurrentCalibration=56;
 
 float chargerVoltageCalibration=740;
 float chargerPhaseOffset=0.2;
@@ -33,6 +33,7 @@ void setupEmon()
 void readGrid()
 {
   grid.calcVI(40,1000);  // Calculate all. No.of half wavelengths (crossings), time-out
+  grid.realPower = grid.realPower-90;
   Serial.println("gridp:"+(String)grid.realPower);
   Serial.println("grridv:"+(String)grid.Vrms);
   Serial.println("grridPF:"+(String)grid.powerFactor);
@@ -66,7 +67,7 @@ float readCharger()
 
 
 
-    Serial.println("chargerp:"+(String)power);
+   // Serial.println("chargerp:"+(String)power);
   //      Serial.println("current:"+(String)charger.Irms);
    // Serial.println("pfactor:"+(String)charger.powerFactor);
   // Serial.println("chargerRealp="+(String)(charger.realPower));
