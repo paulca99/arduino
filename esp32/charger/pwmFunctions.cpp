@@ -6,7 +6,7 @@
 int upperChargerLimit = -100;  //point to turn charger off
 int lowerChargerLimit = -150;  // point to turn charger on
 float voltageLimit = 57.6;
-int chargePLimit = 1500; //max watts into battery
+int chargerPLimit = 1500; //max watts into battery
 
 const int freq = 500;
 int SOC = 90;  // TODO neds calculating
@@ -26,7 +26,7 @@ int psu_resistance_values[] = { range, range, range, range, range };
 int psu_count = sizeof psu_resistance_values / sizeof psu_resistance_values[0];
 int psu_pointer = 0;
 
-bool isAtMaxPower() {
+bool isAtMaxPower() { 
   for (int i = 0; i < psu_count; i++) {
     if (psu_resistance_values[i] > 0) {
       return false;
@@ -161,7 +161,7 @@ void increaseChargerPower(float startingChargerPower) {
 
   Serial.println("increase target:" + String(target));
   float chargerPower = startingChargerPower;
-  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower()) {
+  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower() && chargerPower < chargerPLimit) {
     incrementPower(true,stepAmount);
     chargerPower = readCharger();
     //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
@@ -191,8 +191,10 @@ void reduceChargerPower(float startingChargerPower) {
 void adjustCharger() {
   float vbatt=readBattery();
   float presentChargerPower = readCharger();
-
-  if (grid.realPower > upperChargerLimit || vbatt > voltageLimit ) {
+  if (presentChargerPower > chargerPLimit){
+    Serial.println("CHARGE POWER LIMIT REACHED "+(String)presentChargerPower);
+  }
+  if (grid.realPower > upperChargerLimit || vbatt > voltageLimit || presentChargerPower > chargerPLimit) {
     if (isAtMinPower()) {
       Serial.println("turning off , setting pin HIGH");
       turnPowerOff();  //turn off
