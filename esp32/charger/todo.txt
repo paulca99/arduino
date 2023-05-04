@@ -1,8 +1,9 @@
-Build new op-amp circuit for GTI CT clamp 
+
+Find a working pin for the power relay on the charger sketch(think its on 39)
+Build new op-amp circuit for GTI CT clamp wired to old relay pin 
 Move GTI into rough initial_position
-Add 2nd relay for GTI wired up to MAIN input. pick a non ADC pin.
+Add switch wired up to MAIN input for GTI
 Write code to get GTI power and add it to the CSV output string.
-Write code to control relay , same as other relay, when u switch esp off, relay goes off.
 peel backing off breadboard and secure
 secure wires & tape up joints
 
