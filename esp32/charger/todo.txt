@@ -1,0 +1,19 @@
+Build new op-amp circuit for GTI CT clamp 
+Move GTI into rough initial_position
+Add 2nd relay for GTI wired up to MAIN input. pick a non ADC pin.
+Write code to get GTI power and add it to the CSV output string.
+Write code to control relay , same as other relay, switch esp off, relay goes off.
+
+
+Make sides 
+Cutout holes for Network 
+Cutout holes for power 
+Cutout holes for vents 
+line up GTI at correct height
+Cutout holes for GTI terminals
+Then drill holes for charger terminals in-line with GTI terminals.
+
+
+
+
+
