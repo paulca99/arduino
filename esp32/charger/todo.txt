@@ -14,6 +14,11 @@ Cutout holes for vents
 line up GTI at correct height
 Cutout holes for GTI terminals
 Then drill holes for charger terminals in-line with GTI terminals.
+Screw together loosely , clean all dust, and wrap it.
+Fit bolts 
+Solder connecttors 
+make busbars to connect to GTI
+
 
 
 
