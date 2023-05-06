@@ -24,7 +24,7 @@ float chargerCurrentCalibration=25;
 
 float gtiVoltageCalibration=740;
 float gtiPhaseOffset=0.2;
-float gtiCurrentCalibration=12;
+float gtiCurrentCalibration=36;
 
 EnergyMonitor grid;
 EnergyMonitor charger;
