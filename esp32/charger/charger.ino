@@ -32,6 +32,7 @@ void autoLoop() {
 
   readGrid();
   readCharger();
+  readGti();
   readBattery();
     wifiLoop();
   if(loopcount>15)

@@ -11,6 +11,9 @@ int gridCurrentPin=32;
 int chargerCurrentPin=33;
 int gtiCurrentPin=36;
 
+float chargerPower=0.0;
+float gtiPower=0.0;
+
 float gridVoltageCalibration=740;
 float gridPhaseOffset=0.2;
 float gridCurrentCalibration=56;
@@ -55,7 +58,6 @@ float readCharger()
   {
     return 0;
   }
-  float power=0;
 
   charger.calcIrms(300);
   float current=charger.Irms;
@@ -64,7 +66,7 @@ float readCharger()
   if(current < 0){
     current=0;
   }
-  power = current * grid.Vrms;
+  chargerPower = current * grid.Vrms;
    //Serial.println("chargerp1:"+(String)power);
   /*if(power*power < 1000)
   {
@@ -81,20 +83,20 @@ float readCharger()
   //      Serial.println("current:"+(String)charger.Irms);
    // Serial.println("pfactor:"+(String)charger.powerFactor);
   // Serial.println("chargerRealp="+(String)(charger.realPower));
-   return power;
+   return chargerPower;
 }
 
 
 float readGti()
 {
-  float power=0;
+
   gti.calcIrms(200);
   float current=gti.Irms;
   current = current -0.2 ; // offset is out..
   if(current < 0){
     current=0;
   }
-  power = current * grid.Vrms;
-
-   return power;
+  gtiPower = current * grid.Vrms;
+  
+   return gtiPower;
 }

@@ -17,6 +17,8 @@ extern float gridCurrentCalibration;
 extern float chargerVoltageCalibration;
 extern float chargerPhaseOffset;
 extern float chargerCurrentCalibration;
+extern float chargerPower;
+extern float gtiPower;
 
 // Replace with your network credentials
 const char* ssid = "TP-LINK_73F3";
@@ -32,6 +34,7 @@ String header;
 unsigned long currentTime = millis();
 // Previous time
 unsigned long previousTime = 0;
+const long interval=5000;
 // Define timeout time in milliseconds (example: 2000ms = 2s)
 const long timeoutTime = 2000;
 AsyncWebServer csvserver(8080);
@@ -61,12 +64,18 @@ void wifiSetup() {
 
 void generateCsvString()
 {
-  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(readCharger())+","+(String)(readGti())+",EOT\n";
+  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(chargerPower)+","+(String)(gtiPower)+",EOT\n";
 }
 void wifiLoop() {
   generateCsvString();
   WiFiClient client = server.available();  // Listen for incoming clients
-
+  if ((WiFi.status() != WL_CONNECTED) && (currentTime - previousTime >=interval)) {
+    Serial.print(millis());
+    Serial.println("Reconnecting to WiFi...");
+    WiFi.disconnect();
+    WiFi.reconnect();
+    previousTime = currentTime;
+  }
   if (client) {  // If a new client connects,
     currentTime = millis();
     previousTime = currentTime;

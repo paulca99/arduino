@@ -161,9 +161,11 @@ void increaseChargerPower(float startingChargerPower) {
 
   Serial.println("increase target:" + String(target));
   float chargerPower = startingChargerPower;
-  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower() && chargerPower < chargerPLimit) {
+  float gtiPower = readGti();
+  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower() && chargerPower < chargerPLimit && gtiPower<600) {
     incrementPower(true,stepAmount);
     chargerPower = readCharger();
+    gtiPower = readGti();
     //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
 }

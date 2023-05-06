@@ -8,6 +8,7 @@ peel backing off breadboard and secure
 secure wires & tape up joints
 
 Make sides 
+Make front
 Cutout holes for Network 
 Cutout holes for power 
 Cutout holes for vents 
