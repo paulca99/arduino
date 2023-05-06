@@ -4,7 +4,7 @@
 #include "battery.h"
 
 int upperChargerLimit = -100;  //point to turn charger off
-int lowerChargerLimit = -150;  // point to turn charger on
+int lowerChargerLimit = -200;  // point to turn charger on
 float voltageLimit = 57.6;
 int chargerPLimit = 1500; //max watts into battery
 

@@ -9,6 +9,7 @@ const int resolution = 8; //2^8 = 256
 int gridVoltagePin=34;
 int gridCurrentPin=32;
 int chargerCurrentPin=33;
+int gtiCurrentPin=36;
 
 float gridVoltageCalibration=740;
 float gridPhaseOffset=0.2;
@@ -18,8 +19,14 @@ float chargerVoltageCalibration=740;
 float chargerPhaseOffset=0.2;
 float chargerCurrentCalibration=25;
 
+float gtiVoltageCalibration=740;
+float gtiPhaseOffset=0.2;
+float gtiCurrentCalibration=12;
+
 EnergyMonitor grid;
 EnergyMonitor charger;
+EnergyMonitor gti;
+
 extern int range;
 void setupEmon()
 {
@@ -27,7 +34,10 @@ void setupEmon()
   grid.current(gridCurrentPin, gridCurrentCalibration); 
   charger.voltage(gridVoltagePin, chargerVoltageCalibration, chargerPhaseOffset);  // Voltage: input pin, calibration, phase_shift
   charger.current(chargerCurrentPin, chargerCurrentCalibration); 
-  charger.calcVI(40,2000);
+    
+  gti.voltage(gridVoltagePin, gtiVoltageCalibration, gtiPhaseOffset);  // Voltage: input pin, calibration, phase_shift
+  gti.current(gtiCurrentPin, gtiCurrentCalibration); 
+  gti.calcVI(40,2000);
 }
 
 void readGrid()
@@ -71,5 +81,20 @@ float readCharger()
   //      Serial.println("current:"+(String)charger.Irms);
    // Serial.println("pfactor:"+(String)charger.powerFactor);
   // Serial.println("chargerRealp="+(String)(charger.realPower));
+   return power;
+}
+
+
+float readGti()
+{
+  float power=0;
+  gti.calcIrms(200);
+  float current=gti.Irms;
+  current = current -0.2 ; // offset is out..
+  if(current < 0){
+    current=0;
+  }
+  power = current * grid.Vrms;
+
    return power;
 }
