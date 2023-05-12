@@ -1,24 +1,33 @@
+Rewire CT clamp for GTI as per diagram
+Mount 8 relay to plyboard at far left BUT MAKE SURE IT'S DETACHABLE so we can service the PSU'S
+Find pin to control GTI and write code.
+When powering ON charger, turnOffGti , when powering OFF charger, turnOnGti.
+Test.
+Fit new PSU in middle using bolts for power , DETACHABLE.
+Analyse why it takes 10 seconds for charger to react to grid going -ve
 
-Find a working pin for the power relay on the charger sketch(think its on 39)
-Build new op-amp circuit for GTI CT clamp wired to old relay pin 
-Move GTI into rough initial_position
-Add switch wired up to MAIN input for GTI
-Write code to get GTI power and add it to the CSV output string.
-peel backing off breadboard and secure
-secure wires & tape up joints
 
-Make sides 
-Make front
-Cutout holes for Network 
-Cutout holes for power 
-Cutout holes for vents 
-line up GTI at correct height
-Cutout holes for GTI terminals
-Then drill holes for charger terminals in-line with GTI terminals.
-Screw together loosely , clean all dust, and wrap it.
-Fit bolts 
-Solder connecttors 
-make busbars to connect to GTI
+
+-Find a working pin for the power relay on the charger sketch(think its on 39)
+-Build new op-amp circuit for GTI CT clamp wired to old relay pin 
+-Move GTI into rough initial_position
+-Add switch wired up to MAIN input for GTI
+-Write code to get GTI power and add it to the CSV output string.
+-peel backing off breadboard and secure
+-secure wires & tape up joints
+
+-Make sides 
+-Make front
+-Cutout holes for Network 
+-Cutout holes for power 
+-Cutout holes for vents 
+-line up GTI at correct height
+-Cutout holes for GTI terminals
+-Then drill holes for charger terminals in-line with GTI terminals.
+-Screw together loosely , clean all dust, and wrap it.
+-Fit bolts 
+-Solder connecttors 
+-make busbars to connect to GTI
 
 
 
