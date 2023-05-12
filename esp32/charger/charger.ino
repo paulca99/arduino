@@ -11,6 +11,7 @@ void setup(){
   setupEmon();
   setupBattery();
   pwmSetup();
+  turnPowerOff();
 }
 
 void loop(){

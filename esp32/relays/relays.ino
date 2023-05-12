@@ -6,12 +6,10 @@
   copies or substantial portions of the Software.
 *********/
 
-const int relay1 = 26;
-const int relay2 = 22;
+const int relay1 = 23;
 void setup() {
   Serial.begin(115200);
   pinMode(relay1, OUTPUT);
-  pinMode(relay2, OUTPUT);
   
 }
 
@@ -19,22 +17,15 @@ void loop() {
   // Normally Open configuration, send LOW signal to let current flow
   // (if you're usong Normally Closed configuration send HIGH signal)
   digitalWrite(relay1, LOW);
-  Serial.println("Current Flowing");
+  Serial.println("LOW");
   delay(5000); 
   
   // Normally Open configuration, send HIGH signal stop current flow
   // (if you're usong Normally Closed configuration send LOW signal)
   digitalWrite(relay1, HIGH);
-  Serial.println("Current not Flowing");
+  Serial.println("HIGH");
   delay(5000);
 
-  digitalWrite(relay2, LOW);
-  Serial.println("");
-  delay(5000); 
   
-  // Normally Open configuration, send HIGH signal stop current flow
-  // (if you're usong Normally Closed configuration send LOW signal)
-  digitalWrite(relay2, HIGH);
-  Serial.println("ON");
-  delay(5000);
+
 }

@@ -7,5 +7,6 @@ bool isAtMinPower();
 bool isAtMaxPower();
 void incrementPower();
 int getTotalResistance();
+void turnPowerOff();
 void adjustCharger();
 #endif

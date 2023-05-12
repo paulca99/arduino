@@ -3,6 +3,7 @@
 #include "pcemon.h"
 #include "battery.h"
 
+int gtiPin=23;
 int upperChargerLimit = -100;  //point to turn charger off
 int lowerChargerLimit = -200;  // point to turn charger on
 float voltageLimit = 57.6;
@@ -70,6 +71,7 @@ void writePowerValuesToPSUs() {
 void pwmSetup() {
   // configure LED PWM functionalitites
   pinMode(powerPin, OUTPUT);
+  pinMode(gtiPin, OUTPUT);
   digitalWrite(powerPin, HIGH);
   delay(20);
   for (int i = 0; i < psu_count; i++) {
@@ -90,10 +92,14 @@ void setMinPower() {
 
 
 void turnPowerOff() {
+  digitalWrite(gtiPin, HIGH);
+  delay(100);
   digitalWrite(powerPin, HIGH);
+
 }
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
+  digitalWrite(gtiPin, LOW);
   //delay(4000);
 }
 void incrementPower(boolean write,int stepAmount) {  //means reducinng resistance
