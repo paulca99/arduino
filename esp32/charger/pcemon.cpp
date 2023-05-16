@@ -20,7 +20,7 @@ float gridCurrentCalibration=56;
 
 float chargerVoltageCalibration=740;
 float chargerPhaseOffset=0.2;
-float chargerCurrentCalibration=25;
+float chargerCurrentCalibration=15;
 
 float gtiVoltageCalibration=740;
 float gtiPhaseOffset=0.2;

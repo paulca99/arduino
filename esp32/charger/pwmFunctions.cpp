@@ -6,8 +6,8 @@
 int gtiPin=23;
 int upperChargerLimit = -100;  //point to turn charger off
 int lowerChargerLimit = -200;  // point to turn charger on
-float voltageLimit = 57.6;
-int chargerPLimit = 1500; //max watts into battery
+float voltageLimit = 59.6;
+int chargerPLimit = 2000; //max watts into battery
 
 const int freq = 500;
 int SOC = 90;  // TODO neds calculating
@@ -167,11 +167,11 @@ void increaseChargerPower(float startingChargerPower) {
 
   Serial.println("increase target:" + String(target));
   float chargerPower = startingChargerPower;
-  float gtiPower = readGti();
-  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower() && chargerPower < chargerPLimit && gtiPower<600) {
+  //float gtiPower = readGti();
+  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower() && chargerPower < chargerPLimit) {
     incrementPower(true,stepAmount);
     chargerPower = readCharger();
-    gtiPower = readGti();
+   // gtiPower = readGti();
     //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
   }
 }
