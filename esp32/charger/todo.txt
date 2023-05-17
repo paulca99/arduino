@@ -1,11 +1,25 @@
-Rewire CT clamp for GTI as per diagram
-Mount 8 relay to plyboard at far left BUT MAKE SURE IT'S DETACHABLE so we can service the PSU'S
-Find pin to control GTI and write code.
-When powering ON charger, turnOffGti , when powering OFF charger, turnOnGti.
-Test.
-Fit new PSU in middle using bolts for power , DETACHABLE.
-Analyse why it takes 10 seconds for charger to react to grid going -ve
+Use pot to adjust voltage for 8V out.
+change 470 ohm resistor for smaller one 
+test on breadboard on bench so we get full range.
+Could use -12V to +5 and some different resistors ???
 
+Use bread board new controller board with smaller resistor than 470 (more range)
+
+Get Date from NTP 
+Decide on charger times....e.g.... stab 1
+Could just put the growatt on a timer plug !
+7am ...set range 200 to 300
+11...set range 100 to 200
+3pm ...set range -200 to 0
+
+
+--Rewire CT clamp for GTI as per diagram
+--Mount 8 relay to plyboard at far left BUT MAKE SURE IT'S DETACHABLE so we can service the PSU'S
+--Find pin to control GTI and write code.
+--When powering ON charger, turnOffGti , when powering OFF charger, turnOnGti.
+--Test.
+---Fit new PSU in middle using bolts for power , DETACHABLE in case it pops again
+---Analyse why it takes 10 seconds for charger to react to grid going -ve
 
 
 -Find a working pin for the power relay on the charger sketch(think its on 39)
