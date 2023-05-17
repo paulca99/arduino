@@ -1,9 +1,15 @@
 Use pot to adjust voltage for 8V out.
-change 470 ohm resistor for smaller one 
+Use pot to get 14V out.
+For each measure voltage, then disconnect pot and measure Ra and Rb 
+write it all down 
+
+change opto boards 100 ohm resistor for larger one
+and the 470 ohm resistor for smaller one based on Ra and Rb above
+
 test on breadboard on bench so we get full range.
 Could use -12V to +5 and some different resistors ???
+Could try -12 and +12 ???
 
-Use bread board new controller board with smaller resistor than 470 (more range)
 
 Get Date from NTP 
 Decide on charger times....e.g.... stab 1
