@@ -16,24 +16,24 @@ void setup(){
 
 void loop(){
   autoLoop();
-
- // rampUp();
- // rampDown();
- // readCharger();
+  //testLoop();
 
 }
 
 void testLoop()
 {
    rampDown();
+   delay(5000);
+   //rampUp();
   // wifiLoop();
 }
 void autoLoop() {
  // wait till stable before adjusting anything
 
-  readGrid();
+
   readCharger();
-  //readGti();
+  readGrid();
+  readGti();
   readBattery();
     wifiLoop();
   if(loopcount>15)

@@ -3,21 +3,23 @@
 #include "pcemon.h"
 #include "battery.h"
 
+boolean powerOn=false;
 int gtiPin=23;
-int upperChargerLimit = -100;  //point to turn charger off
-int lowerChargerLimit = -200;  // point to turn charger on
+int upperChargerLimit = 50;  //point to turn charger off
+int lowerChargerLimit = -50;  // point to turn charger on
 float voltageLimit = 59.6;
-int chargerPLimit = 2000; //max watts into battery
+int chargerPLimit = 4000; //max watts into charger ( prob 2000 into battery)
 
-const int freq = 500;
+const int freq = 200;
 int SOC = 90;  // TODO neds calculating
 
 const float current_limit = 10;
 const int resolution = 8;  //2^8 = 256
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
+extern float chargerPower;
 int powerPin = 21;
-int psu_voltage_pins[] = { 19, 18, 5, 17, 16 };
+int psu_voltage_pins[] = { 19, 18, 5, 22, 16 };
 int pwmChannels[] = { 0, 1, 2, 3, 4 };
 const int delayIn = 1;
 
@@ -64,15 +66,29 @@ boolean voltageLimitReached() {
 }
 void writePowerValuesToPSUs() {
   for (int i = 0; i < psu_count; i++) {
-    //Serial.println("Writing " +(String)psu_resistance_values[i] + " to psu " + (String)i);
+    Serial.println("Writing " +(String)psu_resistance_values[i] + " to psu " + (String)i);
     ledcWrite(pwmChannels[i], psu_resistance_values[i]);
   }
 }
+
+void turnPowerOff() {
+  digitalWrite(gtiPin, HIGH);
+  delay(100);
+  digitalWrite(powerPin, HIGH);
+  powerOn=false;
+
+}
+void turnPowerOn() {
+  digitalWrite(powerPin, LOW);
+  digitalWrite(gtiPin, LOW);
+  powerOn=true;
+}
+
 void pwmSetup() {
   // configure LED PWM functionalitites
   pinMode(powerPin, OUTPUT);
   pinMode(gtiPin, OUTPUT);
-  digitalWrite(powerPin, HIGH);
+  turnPowerOff();
   delay(20);
   for (int i = 0; i < psu_count; i++) {
 
@@ -91,17 +107,6 @@ void setMinPower() {
 }
 
 
-void turnPowerOff() {
-  digitalWrite(gtiPin, HIGH);
-  delay(100);
-  digitalWrite(powerPin, HIGH);
-
-}
-void turnPowerOn() {
-  digitalWrite(powerPin, LOW);
-  digitalWrite(gtiPin, LOW);
-  //delay(4000);
-}
 void incrementPower(boolean write,int stepAmount) {  //means reducinng resistance
                                       // Serial.println("IncrementPower");
                                       //255,255,255,255,255   ->  254,255,255,255,255  ->  254,254,255,255,255
@@ -144,6 +149,7 @@ void rampUp() {
   for (int dutyCycle = 0; dutyCycle <= (range * 5); dutyCycle++) {
     // changing the LED brightness with PWM
     incrementPower(true,1);
+    delay(10);
   }
 }
 void rampDown() {
@@ -151,16 +157,17 @@ void rampDown() {
   for (int dutyCycle = (range * 5); dutyCycle >= 0; dutyCycle--) {
     // changing the LED brightness with PWM
     decrementPower(true,1);
-    delay(delayIn);
+    //delay(200);
   }
 }
 
 void increaseChargerPower(float startingChargerPower) {
   //here gridp is lower than the lowerChargerLimit.
+ 
   float fakeGridp = grid.realPower + 10000;  // cancel out -ve values
   float fakeLowerLimit = lowerChargerLimit + 10000;
   float increaseAmount = fakeLowerLimit - fakeGridp;  // will always be +ve
-  Serial.println((String)lowerChargerLimit+" - "+(String)grid.realPower+" = "+(String)increaseAmount);
+  Serial.println("startingCpower="+(String)startingChargerPower+ (String)lowerChargerLimit+" - "+(String)grid.realPower+" = "+(String)increaseAmount);
   increaseAmount = increaseAmount * 0.9;             //don't overshoot
   int stepAmount = (increaseAmount / 100)+1; // react faster to large change 
   float target = startingChargerPower + increaseAmount;
@@ -210,10 +217,16 @@ void adjustCharger() {
       reduceChargerPower(presentChargerPower);
     }
   } else if (SOC < 99 && grid.realPower < lowerChargerLimit) {
-    if (isAtMinPower()) {
+    if (!powerOn) {
       Serial.println("turning on , setting pin LOW");
       turnPowerOn();  // turn on
-      //delay(8000);    //allow spike
+         //allow spike
+      readGrid();
+      for(int i=0; i<50; i++) // reading the charger a few times stops the power on spike
+      {
+         readCharger();
+      } 
+      presentChargerPower = readCharger();
     }
     increaseChargerPower(presentChargerPower);
   }
