@@ -70,9 +70,18 @@ void writePowerValuesToPSUs() {
     ledcWrite(pwmChannels[i], psu_resistance_values[i]);
   }
 }
+void enableGti(){  //only enable discharge if grid is over 300W
+  if(grid.realPower > 300){
+    digitalWrite(gtiPin, HIGH);
+  }
+  else
+  {
+    digitalWrite(gtiPin, HIGH);
+  }
 
+}
 void turnPowerOff() {
-  digitalWrite(gtiPin, HIGH);
+  enableGti();
   delay(100);
   digitalWrite(powerPin, HIGH);
   powerOn=false;
@@ -80,7 +89,7 @@ void turnPowerOff() {
 }
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
-  digitalWrite(gtiPin, LOW);
+  enableGti();
   powerOn=true;
 }
 
