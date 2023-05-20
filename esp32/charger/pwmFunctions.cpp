@@ -5,8 +5,8 @@
 
 boolean powerOn=false;
 int gtiPin=23;
-int upperChargerLimit = 50;  //point to turn charger off
-int lowerChargerLimit = -50;  // point to turn charger on
+int upperChargerLimit = 0;  //point to turn charger off
+int lowerChargerLimit = -100;  // point to turn charger on
 float voltageLimit = 59.6;
 int chargerPLimit = 4000; //max watts into charger ( prob 2000 into battery)
 
@@ -70,26 +70,18 @@ void writePowerValuesToPSUs() {
     ledcWrite(pwmChannels[i], psu_resistance_values[i]);
   }
 }
-void enableGti(){  //only enable discharge if grid is over 300W
-  if(grid.realPower > 300){
-    digitalWrite(gtiPin, HIGH);
-  }
-  else
-  {
-    digitalWrite(gtiPin, HIGH);
-  }
 
-}
 void turnPowerOff() {
-  enableGti();
-  delay(100);
+
+
   digitalWrite(powerPin, HIGH);
+  digitalWrite(gtiPin, HIGH);
   powerOn=false;
 
 }
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
-  enableGti();
+    digitalWrite(gtiPin, LOW);
   powerOn=true;
 }
 
@@ -98,7 +90,6 @@ void pwmSetup() {
   pinMode(powerPin, OUTPUT);
   pinMode(gtiPin, OUTPUT);
   turnPowerOff();
-  delay(20);
   for (int i = 0; i < psu_count; i++) {
 
     pinMode(psu_voltage_pins[i], OUTPUT);
@@ -177,8 +168,8 @@ void increaseChargerPower(float startingChargerPower) {
   float fakeLowerLimit = lowerChargerLimit + 10000;
   float increaseAmount = fakeLowerLimit - fakeGridp;  // will always be +ve
   Serial.println("startingCpower="+(String)startingChargerPower+ (String)lowerChargerLimit+" - "+(String)grid.realPower+" = "+(String)increaseAmount);
-  increaseAmount = increaseAmount * 0.9;             //don't overshoot
-  int stepAmount = (increaseAmount / 100)+1; // react faster to large change 
+  increaseAmount = increaseAmount * 0.95;             //don't overshoot
+  int stepAmount = (increaseAmount / 50)+1; // react faster to large change 
   float target = startingChargerPower + increaseAmount;
 
   Serial.println("increase target:" + String(target));
@@ -199,7 +190,7 @@ void reduceChargerPower(float startingChargerPower) {
   float fakeUpperLimit = upperChargerLimit + 10000;
   float reductionAmount = fakeGridp - fakeUpperLimit;  // will always be +ve
   reductionAmount = reductionAmount * 0.95;            //don't overshoot
-  int stepAmount = (reductionAmount / 100)+1; // react faster to large change
+  int stepAmount = (reductionAmount / 50)+1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
 
   float chargerPower = startingChargerPower;
