@@ -1,14 +1,22 @@
-Use pot to adjust voltage for 8V out.
-Use pot to get 14V out.
-For each measure voltage, then disconnect pot and measure Ra and Rb 
-write it all down 
+Battery is 2.5% too low 
+also use 100 samples.
+when charger on range should be 0 to 100
+when charger off range should be -100 to 0
 
-change opto boards 100 ohm resistor for larger one
-and the 470 ohm resistor for smaller one based on Ra and Rb above
+turnPowerOff we can subtract 100 from each limit
+turnPowerOn add 100 to each.
 
-test on breadboard on bench so we get full range.
-Could use -12V to +5 and some different resistors ???
-Could try -12 and +12 ???
+-Use pot to adjust voltage for 8V out.
+-Use pot to get 14V out.
+-F-or each measure voltage, then disconnect pot and measure Ra and Rb 
+-w-rite it all down 
+
+-change opto boards 100 ohm resistor for larger one
+-and the 470 ohm resistor for smaller one based on Ra and Rb above
+
+-test on breadboard on bench so we get full range.
+-Could use -12V to +5 and some different resistors ???
+-Could try -12 and +12 ???
 
 
 Get Date from NTP 
