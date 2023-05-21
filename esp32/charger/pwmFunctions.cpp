@@ -5,8 +5,8 @@
 
 boolean powerOn=false;
 int gtiPin=23;
-int upperChargerLimit = 200;  //point to turn charger off
-int lowerChargerLimit = 100;  // point to turn charger on
+int upperChargerLimit = 100;  //point to turn charger off
+int lowerChargerLimit = -20;  // point to turn charger on
 float voltageLimit = 59.6;
 int chargerPLimit = 4000; //max watts into charger ( prob 2000 into battery)
 
@@ -213,7 +213,7 @@ void adjustCharger() {
     Serial.println("CHARGE POWER LIMIT REACHED "+(String)presentChargerPower);
   }
   if (grid.realPower > upperChargerLimit || vbatt > voltageLimit || presentChargerPower > chargerPLimit) {
-    if (isAtMinPower()) {
+    if (isAtMinPower() && powerOn) {
       Serial.println("turning off , setting pin HIGH");
       turnPowerOff();  //turn off
     } else {
