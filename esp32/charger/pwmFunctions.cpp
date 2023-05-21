@@ -5,8 +5,8 @@
 
 boolean powerOn=false;
 int gtiPin=23;
-int upperChargerLimit = 0;  //point to turn charger off
-int lowerChargerLimit = -100;  // point to turn charger on
+int upperChargerLimit = 200;  //point to turn charger off
+int lowerChargerLimit = 100;  // point to turn charger on
 float voltageLimit = 59.6;
 int chargerPLimit = 4000; //max watts into charger ( prob 2000 into battery)
 
@@ -73,16 +73,19 @@ void writePowerValuesToPSUs() {
 
 void turnPowerOff() {
 
-
   digitalWrite(powerPin, HIGH);
   digitalWrite(gtiPin, HIGH);
   powerOn=false;
+  upperChargerLimit = upperChargerLimit-100;  
+  lowerChargerLimit = lowerChargerLimit-100;
 
 }
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
-    digitalWrite(gtiPin, LOW);
+  digitalWrite(gtiPin, LOW);
   powerOn=true;
+  upperChargerLimit = upperChargerLimit+100;  
+  lowerChargerLimit = lowerChargerLimit+100;
 }
 
 void pwmSetup() {

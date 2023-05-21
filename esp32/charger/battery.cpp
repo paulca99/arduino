@@ -4,7 +4,7 @@
 
 int batteryPin=39;
 float batteryTotalVoltage=0.0;
-float history[5];
+float history[100];
 int historyPointer=0;
 void setupBattery()
 {
@@ -15,7 +15,7 @@ void addToHistory(float value)
 {
   history[historyPointer]=value;
   historyPointer++;
-  if (historyPointer==5){
+  if (historyPointer==100){
     historyPointer=0;
   }
 }
@@ -23,11 +23,11 @@ void addToHistory(float value)
 float getAverageValue()
 {
   float retval=0.0;
-  for(int i=0; i<5; i++)
+  for(int i=0; i<100; i++)
   {
      retval+=history[i];
   }
-  retval=retval/5;
+  retval=retval/100;
   return retval;
 }
 float readBattery()
@@ -46,7 +46,7 @@ float readBattery()
   */
   //
   float voltageOnPin = (adcValue * 3.3) / 4095;
-  float rV = voltageOnPin*22.7;
+  float rV = voltageOnPin*22.85;
 
   batteryTotalVoltage= (rV - 39.5)* (61.6-44.5) / (63.5 - 39.5) + 44.5;
   
