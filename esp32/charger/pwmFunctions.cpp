@@ -3,11 +3,12 @@
 #include "pcemon.h"
 #include "battery.h"
 
+boolean VOLTAGE_HIGH=false;
 boolean powerOn=false;
 int gtiPin=23;
 int upperChargerLimit = 100;  //point to turn charger off
 int lowerChargerLimit = -20;  // point to turn charger on
-float voltageLimit = 59.6;
+float voltageLimit = 57.6;
 int chargerPLimit = 4000; //max watts into charger ( prob 2000 into battery)
 
 const int freq = 200;
@@ -55,13 +56,22 @@ bool isAtMinPower() {
   return true;
 }
 
-boolean voltageLimitReached() {
-  float presentVoltage = readBattery();
+bool voltageLimitReached2(){
+    float presentVoltage = readBattery();
   Serial.println("VBATT:"+(String)presentVoltage);
-  if (presentVoltage > voltageLimit) {
-    Serial.println("VOLTAGE LIMIT REACHED");
-    return true;
+
+  if(VOLTAGE_HIGH && (presentVoltage < (voltageLimit-1)))
+  {
+    VOLTAGE_HIGH=false;
   }
+
+  if (presentVoltage >= voltageLimit || VOLTAGE_HIGH) {
+    Serial.println("VOLTAGE LIMIT TRIPPED");
+    VOLTAGE_HIGH=true;
+    return true;
+
+  }
+    Serial.println("VOLTAGE OK");
   return false;
 }
 void writePowerValuesToPSUs() {
@@ -178,7 +188,7 @@ void increaseChargerPower(float startingChargerPower) {
   Serial.println("increase target:" + String(target));
   float chargerPower = startingChargerPower;
   //float gtiPower = readGti();
-  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached() && !isAtMaxPower() && chargerPower < chargerPLimit) {
+  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached2() && !isAtMaxPower() && chargerPower < chargerPLimit) {
     incrementPower(true,stepAmount);
     chargerPower = readCharger();
    // gtiPower = readGti();
@@ -208,6 +218,7 @@ void reduceChargerPower(float startingChargerPower) {
 
 void adjustCharger() {
   float vbatt=readBattery();
+  bool vLimitHit=voltageLimitReached2();
   float presentChargerPower = readCharger();
   if (presentChargerPower > chargerPLimit){
     Serial.println("CHARGE POWER LIMIT REACHED "+(String)presentChargerPower);
@@ -216,10 +227,12 @@ void adjustCharger() {
     if (isAtMinPower() && powerOn) {
       Serial.println("turning off , setting pin HIGH");
       turnPowerOff();  //turn off
-    } else {
-      reduceChargerPower(presentChargerPower);
+    } 
+    else{
+    reduceChargerPower(presentChargerPower);
     }
-  } else if (SOC < 99 && grid.realPower < lowerChargerLimit) {
+    
+  } else if (SOC < 99 && grid.realPower < lowerChargerLimit  && !vLimitHit) {
     if (!powerOn) {
       Serial.println("turning on , setting pin LOW");
       turnPowerOn();  // turn on
