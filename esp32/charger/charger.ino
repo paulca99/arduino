@@ -4,9 +4,16 @@
 #include "battery.h"
 
   int loopcount=0;
+  hw_timer_t * timer = NULL;
+void ARDUINO_ISR_ATTR onTimer(){
+    ESP.restart();
+}
 
 void setup(){
-
+  timer = timerBegin(0, 80, true);
+  timerAttachInterrupt(timer, &onTimer, true);
+  timerAlarmWrite(timer, 3600000000, true);//1hour
+  timerAlarmEnable(timer);
   wifiSetup();
   setupEmon();
   setupBattery();
@@ -29,7 +36,8 @@ void testLoop()
 void autoLoop() {
  // wait till stable before adjusting anything
 
-
+ 	
+  Serial.println("FreeHeap:"+(String)ESP.getFreeHeap());
   readCharger();
   readGrid();
   readGti();
