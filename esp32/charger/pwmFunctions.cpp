@@ -10,7 +10,7 @@ int upperChargerLimit = 100;  //point to turn charger off
 int lowerChargerLimit = -20;  // point to turn charger on
 float voltageLimit = 57.6;
 int chargerPLimit = 4000; //max watts into charger ( prob 2000 into battery)
-
+bool GTIenabled=true;
 const int freq = 200;
 int SOC = 90;  // TODO neds calculating
 
@@ -80,11 +80,21 @@ void writePowerValuesToPSUs() {
     ledcWrite(pwmChannels[i], psu_resistance_values[i]);
   }
 }
+void turnGTIOn() {
+  if(GTIenabled)
+  { 
+    digitalWrite(gtiPin, HIGH);
+  }
+
+}
+void turnGTIOff() {
+  digitalWrite(gtiPin, LOW);
+}
 
 void turnPowerOff() {
 
   digitalWrite(powerPin, HIGH);
-  digitalWrite(gtiPin, HIGH);
+  turnGTIOn();
   powerOn=false;
   upperChargerLimit = upperChargerLimit-100;  
   lowerChargerLimit = lowerChargerLimit-100;
@@ -92,7 +102,7 @@ void turnPowerOff() {
 }
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
-  digitalWrite(gtiPin, LOW);
+  turnGTIOff();
   powerOn=true;
   upperChargerLimit = upperChargerLimit+100;  
   lowerChargerLimit = lowerChargerLimit+100;

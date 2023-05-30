@@ -2,7 +2,7 @@
 #include "pcemon.h"
 #include "pwmFunctions.h"
 #include "battery.h"
-
+#include "timestuff.h"
   int loopcount=0;
   hw_timer_t * timer = NULL;
 void ARDUINO_ISR_ATTR onTimer(){
@@ -15,6 +15,7 @@ void setup(){
   timerAlarmWrite(timer, 3600000000, true);//1hour
   timerAlarmEnable(timer);
   wifiSetup();
+  timeSetup();
   setupEmon();
   setupBattery();
   pwmSetup();
@@ -43,11 +44,12 @@ void autoLoop() {
   readGti();
   readBattery();
     wifiLoop();
-  if(loopcount>15)
+    timeLoop();
+  if(loopcount>5)
   {
   adjustCharger();
   //Serial.println("VBBatt="+(String)readBattery());
-  loopcount=16;
+  loopcount=6;
   }
   loopcount++;
 

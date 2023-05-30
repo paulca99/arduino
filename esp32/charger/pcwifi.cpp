@@ -21,7 +21,7 @@ extern float chargerPower;
 extern float gtiPower;
 
 // Replace with your network credentials
-const char* ssid = "TP-LINK_73F3";
+const char* ssid = "REPEATER";
 const char* password = "DEADBEEF";
 
 // Set web server port number to 80
@@ -39,6 +39,19 @@ const long interval=5000;
 const long timeoutTime = 2000;
 AsyncWebServer csvserver(8080);
 String csvString="1,2,3,4";
+
+void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info){
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info){
+  Serial.println("Disconnected from WiFi access point");
+  Serial.print("WiFi lost connection. Reason: ");
+  Serial.println(info.wifi_sta_disconnected.reason);
+  Serial.println("Trying to Reconnect");
+  WiFi.begin(ssid, password);
+}
 void wifiSetup() {
   Serial.begin(115200);
   Serial.print(grid.Irms);
@@ -50,6 +63,9 @@ void wifiSetup() {
     delay(500);
     Serial.print(".");
   }
+  WiFi.onEvent(WiFiStationDisconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  WiFi.onEvent(WiFiGotIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
+  
   // Print local IP address and start web server
   Serial.println("");
   Serial.println("WiFi connected.");
@@ -69,13 +85,6 @@ void generateCsvString()
 void wifiLoop() {
   generateCsvString();
   WiFiClient client = server.available();  // Listen for incoming clients
-  if ((WiFi.status() != WL_CONNECTED) && (currentTime - previousTime >=interval)) {
-    Serial.print(millis());
-    Serial.println("Reconnecting to WiFi...");
-    WiFi.disconnect();
-    WiFi.reconnect();
-    previousTime = currentTime;
-  }
   if (client) {  // If a new client connects,
     currentTime = millis();
     previousTime = currentTime;
@@ -162,15 +171,6 @@ void wifiLoop() {
               client.println("<input type='text' id='lower' name='lower' value='"+(String)lowerChargerLimit+"'><br><br>");
               client.println("<input type='submit' value='Submit'>");
             client.println("</form>");
-
-            client.println("<form action='/updateEmonVars'>");
-              client.println("<label for='gridVC'>Grid Voltage Calibration:</label>");
-              client.println("<input type='text' id='gridVC' name='gridVC' value='"+(String)gridVoltageCalibration+"'><br><br>");
-              client.println("<label for='gridCC'>Grid Current Calibration:</label>");
-              client.println("<input type='text' id='gridCC' name='gridCC' value='"+(String)gridCurrentCalibration+"'><br><br>");
-              client.println("<input type='submit' value='Submit'>");
-            client.println("</form>");
-
             client.println("");
             client.println("</body></html>");
             client.println();
