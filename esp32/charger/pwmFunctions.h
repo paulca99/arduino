@@ -9,4 +9,6 @@ void incrementPower();
 int getTotalResistance();
 void turnPowerOff();
 void adjustCharger();
+void turnGTIOff();
+void turnGTIOn();
 #endif

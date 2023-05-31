@@ -6,7 +6,8 @@
   int loopcount=0;
   hw_timer_t * timer = NULL;
 void ARDUINO_ISR_ATTR onTimer(){
-    ESP.restart();
+    //ESP.restart();
+    Serial.println("Timer fired");
 }
 
 void setup(){

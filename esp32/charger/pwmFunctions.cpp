@@ -88,22 +88,22 @@ void turnGTIOn() {
 
 }
 void turnGTIOff() {
-  digitalWrite(gtiPin, LOW);
+    digitalWrite(gtiPin, LOW);
 }
 
 void turnPowerOff() {
 
   digitalWrite(powerPin, HIGH);
-  turnGTIOn();
   powerOn=false;
+  turnGTIOn();
   upperChargerLimit = upperChargerLimit-100;  
   lowerChargerLimit = lowerChargerLimit-100;
 
 }
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
-  turnGTIOff();
   powerOn=true;
+  turnGTIOff();
   upperChargerLimit = upperChargerLimit+100;  
   lowerChargerLimit = lowerChargerLimit+100;
 }

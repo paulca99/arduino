@@ -6,6 +6,8 @@
 #include "pcemon.h"
 #include <ESPAsyncWebServer.h>
 
+extern bool GTIenabled;
+extern struct tm timeinfo;
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
 extern int psu_resistance_values[];
@@ -80,7 +82,7 @@ void wifiSetup() {
 
 void generateCsvString()
 {
-  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(chargerPower)+","+(String)(gtiPower)+",EOT\n";
+  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(chargerPower)+","+(String)(gtiPower)+","+(String)timeinfo.tm_hour+","+(String)GTIenabled+",EOT\n";
 }
 void wifiLoop() {
   generateCsvString();
