@@ -11,9 +11,9 @@ void ARDUINO_ISR_ATTR onTimer(){
 }
 
 void setup(){
-  timer = timerBegin(0, 80, true);
+  timer = timerBegin(0, 320, true);
   timerAttachInterrupt(timer, &onTimer, true);
-  timerAlarmWrite(timer, 3600000000, true);//1hour
+  timerAlarmWrite(timer, 3600000000, true);//4hour
   timerAlarmEnable(timer);
   wifiSetup();
   timeSetup();

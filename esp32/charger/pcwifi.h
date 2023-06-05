@@ -2,4 +2,5 @@
 #define PC_WIFI_H
 void wifiSetup();
 void wifiLoop();
+void connectToWifi();
 #endif

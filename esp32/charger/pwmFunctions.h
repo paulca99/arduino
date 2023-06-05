@@ -11,4 +11,6 @@ void turnPowerOff();
 void adjustCharger();
 void turnGTIOff();
 void turnGTIOn();
+void turnPowerOn();
+void turnPowerOff();
 #endif

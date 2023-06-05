@@ -8,7 +8,7 @@ boolean powerOn=false;
 int gtiPin=23;
 int upperChargerLimit = 100;  //point to turn charger off
 int lowerChargerLimit = -20;  // point to turn charger on
-float voltageLimit = 57.6;
+float voltageLimit = 57.4;
 int chargerPLimit = 4000; //max watts into charger ( prob 2000 into battery)
 bool GTIenabled=true;
 const int freq = 200;
@@ -81,6 +81,7 @@ void writePowerValuesToPSUs() {
   }
 }
 void turnGTIOn() {
+  VOLTAGE_HIGH=false;
   if(GTIenabled)
   { 
     digitalWrite(gtiPin, HIGH);
@@ -89,6 +90,7 @@ void turnGTIOn() {
 }
 void turnGTIOff() {
     digitalWrite(gtiPin, LOW);
+
 }
 
 void turnPowerOff() {
