@@ -14,7 +14,7 @@ int gtiCurrentPin=36;
 float chargerPower=0.0;
 float gtiPower=0.0;
 
-float gridVoltageCalibration=740;
+float gridVoltageCalibration=1120;
 float gridPhaseOffset=0.2;
 float gridCurrentCalibration=56;
 
