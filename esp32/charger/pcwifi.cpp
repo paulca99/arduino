@@ -4,7 +4,7 @@
 #include "battery.h"
 #include "pwmFunctions.h"
 #include "pcemon.h"
-#include <ESPAsyncWebServer.h>
+#include <ESPAsyncWebSrv.h>
 
 extern bool GTIenabled;
 extern struct tm timeinfo;
@@ -23,8 +23,10 @@ extern float chargerPower;
 extern float gtiPower;
 
 // Replace with your network credentials
-const char* ssid = "TP-LINK_73F3";
-const char* password = "DEADBEEF";
+//const char* ssid = "TP-LINK_73F3";
+//const char* password = "DEADBEEF";
+const char* ssid = "mesh";
+const char* password = "deadbeef";
 
 // Set web server port number to 80
 WiFiServer server(80);
@@ -56,17 +58,21 @@ void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info){
 }
 
 void connectToWifi(){
+  int wifiwait=0;
   WiFi.disconnect();
+  delay(2000);
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(200);
+  while (WiFi.status() != WL_CONNECTED && wifiwait < 10 ) {
+    delay(2000);
     Serial.print(".");
+    wifiwait++;
   }
+
 }
 
 void wifiSetup() {
-  Serial.begin(115200);
-  Serial.print(grid.Irms);
+
+
   // Connect to Wi-Fi network with SSID and password
   Serial.print("Connecting to ");
   Serial.println(ssid);

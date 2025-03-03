@@ -50,7 +50,7 @@ float readBattery()
   
   addToHistory(batteryTotalVoltage);
   float batt= getAverageValue();
-  Serial.println("VBatt:"+(String)batt);
+  //Serial.println("VBatt:"+(String)batt);
   return batt;
 }
 
