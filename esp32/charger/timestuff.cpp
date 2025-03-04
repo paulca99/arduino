@@ -23,7 +23,7 @@ void timeLoop() {
     connectToWifi();
     return;
   } else {
-    Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+   // Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
     if ((timeinfo.tm_hour >= GTI_on_time) && (timeinfo.tm_hour < GTI_off_time)) { // Within GTI hours
       if(GTIenabled==false)
       { 
