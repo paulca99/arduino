@@ -188,6 +188,7 @@ void rampDown() {
 
 void increaseChargerPower(float startingChargerPower) {
   //here gridp is lower than the lowerChargerLimit.
+  
  
   float fakeGridp = grid.realPower + 10000;  // cancel out -ve values
   float fakeLowerLimit = lowerChargerLimit + 10000;
@@ -198,7 +199,7 @@ void increaseChargerPower(float startingChargerPower) {
   float target = startingChargerPower + increaseAmount;
 
   if(target > chargerPLimit)
-    target=chargerPLimit;  //  pin it at 2500
+    target=chargerPLimit;  //  pin it at 3000
 
   Serial.println("increase amount = " + (String)increaseAmount);
   float chargerPower = startingChargerPower;
@@ -216,18 +217,20 @@ void reduceChargerPower(float startingChargerPower) {
   decrementPower(true,1); //always reduce by 1 in case vbatt is too high
   float fakeGridp = grid.realPower + 10000;  // cancel out -ve values
   float fakeUpperLimit = upperChargerLimit + 10000;
-  float reductionAmount = fakeGridp - fakeUpperLimit;  // will always be +ve
+  float reductionAmount = fakeGridp - fakeUpperLimit;  // will always be +ve unless voltage too high may be -ve
   reductionAmount = reductionAmount * 0.7;            //don't overshoot
   int stepAmount = (reductionAmount / 50)+1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
-
-  float chargerPower = startingChargerPower;
-  Serial.println("decrease amount = " + (String)reductionAmount);
- // Serial.println("reduce target:" + String(target));
-  while (chargerPower > target && !isAtMinPower()) {
-    chargerPower = readCharger();
-    decrementPower(true,stepAmount);
-    //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
+  if(reductionAmount > 0) // don't bother if its -ve
+  {
+    float chargerPower = startingChargerPower;
+    Serial.println("decrease amount = " + (String)reductionAmount);
+  // Serial.println("reduce target:" + String(target));
+    while (chargerPower > target && !isAtMinPower()) {
+      chargerPower = readCharger();
+      decrementPower(true,stepAmount);
+      //delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
+    }
   }
 }
 
