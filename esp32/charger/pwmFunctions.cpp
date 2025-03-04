@@ -57,9 +57,7 @@ bool isAtMinPower() {
 }
 
 bool voltageLimitReached2(){
-    float presentVoltage = readBattery();
- //Serial.println("VBATT:"+(String)presentVoltage);
-
+  float presentVoltage = readBattery();
   if(VOLTAGE_HIGH && (presentVoltage < (voltageLimit-1)))
   {
     VOLTAGE_HIGH=false;
@@ -98,16 +96,16 @@ void turnPowerOff() {
   digitalWrite(powerPin, HIGH);
   powerOn=false;
   turnGTIOn();
-  upperChargerLimit = upperChargerLimit-100;  
-  lowerChargerLimit = lowerChargerLimit-100;
+  /*upperChargerLimit = upperChargerLimit-100;  
+  lowerChargerLimit = lowerChargerLimit-100;*/
 
 }
 void turnPowerOn() {
   digitalWrite(powerPin, LOW);
   powerOn=true;
   turnGTIOff();
-  upperChargerLimit = upperChargerLimit+100;  
-  lowerChargerLimit = lowerChargerLimit+100;
+  /*upperChargerLimit = upperChargerLimit+100;  
+  lowerChargerLimit = lowerChargerLimit+100;*/
 }
 
 void pwmSetup() {

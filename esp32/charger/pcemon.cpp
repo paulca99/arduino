@@ -71,22 +71,6 @@ float readCharger()
     current=0;
   }
   chargerPower = current * grid.Vrms;
-   //Serial.println("chargerp1:"+(String)power);
-  /*if(power*power < 1000)
-  {
-    float gap = 1000 - power;
-    float mult = gap / 1000; // so 0.7
-    mult=1-mult;
-    power = power*mult;
-  }*/
-
-
-
-
-   // Serial.println("chargerp:"+(String)power);
-  //      Serial.println("current:"+(String)charger.Irms);
-   // Serial.println("pfactor:"+(String)charger.powerFactor);
-  // Serial.println("chargerRealp="+(String)(charger.realPower));
    return chargerPower;
 }
 
