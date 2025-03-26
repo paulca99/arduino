@@ -4,12 +4,7 @@
 #include "battery.h"
 #include "timestuff.h"
 int loopcount = 0;
-hw_timer_t *timer = NULL;
-void ARDUINO_ISR_ATTR onTimer()
-{
-  // ESP.restart();
-  Serial.println("Timer fired");
-}
+int checkTime=0;
 
 void setup()
 {
@@ -20,10 +15,6 @@ void setup()
   }
   delay(2000);
   Serial.println("setupStart");
-  timer = timerBegin(0, 320, true);
-  timerAttachInterrupt(timer, &onTimer, true);
-  timerAlarmWrite(timer, 3600000000, true); // 4hour
-  timerAlarmEnable(timer);
        Serial.println("wifisetupStart");
   wifiSetup();
      Serial.println("timesetupStart");
@@ -55,7 +46,11 @@ void autoLoop()
   readGrid();
   readBattery();
   wifiLoop();
-  timeLoop();
+  if(checkTime == 50)
+  {
+    timeLoop();
+    checkTime=0;
+  }
   if (loopcount > 15)
   {
     readGti();
@@ -64,4 +59,5 @@ void autoLoop()
     loopcount = 16;
   }
   loopcount++;
+  checkTime++;
 }

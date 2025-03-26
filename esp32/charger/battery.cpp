@@ -4,14 +4,15 @@
 
 int batteryPin=39;
 float batteryTotalVoltage=0.0;
-float history[150]; 
+float history[15]; 
+int arraySize=15;
 int historyPointer=0;
 
 void addToHistory(float value)
 {
   history[historyPointer]=value;
   historyPointer++;
-  if (historyPointer==150){
+  if (historyPointer==arraySize){
     historyPointer=0;
   }
 }
@@ -19,14 +20,26 @@ void addToHistory(float value)
 float getAverageValue()
 {
   float retval=0.0;
-  for(int i=0; i<150; i++)
+  for(int i=0; i<arraySize; i++)
   {
      retval+=history[i];
   }
-  retval=retval/150;
+  retval=retval/arraySize;
   return retval;
 }
 
+float getMinValue()
+{
+  float retval=70.0;
+  for(int i=0; i<arraySize; i++)
+  {
+     if(history[i] < retval)
+      {
+        retval=history[i];
+      }  
+  }
+  return retval;
+}
 
 float readBattery()
 {
@@ -49,7 +62,7 @@ float readBattery()
   batteryTotalVoltage= (rV - 39.5)* (61.6-44.5) / (63.5 - 39.5) + 44.5;
   
   addToHistory(batteryTotalVoltage);
-  float batt= getAverageValue();
+  float batt= getMinValue();
   //Serial.println("VBatt:"+(String)batt);
   return batt;
 }
@@ -58,7 +71,7 @@ float readBattery()
 void setupBattery()
 {
   pinMode(batteryPin,INPUT);
-   for(int i=0; i<150; i++)
+   for(int i=0; i<arraySize; i++)
     {
       readBattery();
     }

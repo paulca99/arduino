@@ -2,6 +2,8 @@
 #include "espEmonLib.h"
 #include "pcemon.h"
 #include "battery.h"
+#include "pwmFunctions.h"
+
 
 boolean VOLTAGE_HIGH = false;
 boolean powerOn = false;
@@ -9,12 +11,12 @@ int gtiPin = 23;
 int upperChargerLimit = 20;   // point to turn charger off
 int lowerChargerLimit = -100; // point to turn charger on
 float voltageLimit = 57.0;
-int chargerPLimit = 3000; // max watts into charger ( prob 2000 into battery)
+int chargerPLimit = 4000; // max watts into charger ( prob 2000 into battery)
 bool GTIenabled = true;
 const int freq = 200;
 int SOC = 90; // TODO neds calculating
 
-const float current_limit = 10;
+const float current_limit = 14;
 const int resolution = 8; // 2^8 = 256
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
@@ -29,18 +31,7 @@ int psu_resistance_values[] = {range, range, range, range, range};
 int psu_count = sizeof psu_resistance_values / sizeof psu_resistance_values[0];
 int psu_pointer = 0;
 
-bool isAtMaxPower()
-{
-  for (int i = 0; i < psu_count; i++)
-  {
-    if (psu_resistance_values[i] > 0)
-    {
-      return false;
-    }
-  }
-  Serial.println("MAX POWER");
-  return true;
-}
+
 int getTotalResistance()
 {
   int retval;
@@ -65,6 +56,7 @@ bool isAtMinPower()
 
 bool voltageLimitReached2()
 {
+
   float presentVoltage = readBattery();
   if (VOLTAGE_HIGH && (presentVoltage < (voltageLimit - 1)))
   {
@@ -73,7 +65,7 @@ bool voltageLimitReached2()
 
   if (presentVoltage >= voltageLimit || VOLTAGE_HIGH)
   {
-    Serial.println("VOLTAGE LIMIT TRIPPED"+ String(presentVoltage));
+    Serial.println("VOLTAGE LIMIT TRIPPED" + String(presentVoltage));
     VOLTAGE_HIGH = true;
     return true;
   }
@@ -107,16 +99,16 @@ void turnPowerOff()
   digitalWrite(powerPin, HIGH);
   powerOn = false;
   turnGTIOn();
-  /*upperChargerLimit = upperChargerLimit-100;
-  lowerChargerLimit = lowerChargerLimit-100;*/
+  upperChargerLimit = upperChargerLimit-100;
+  lowerChargerLimit = lowerChargerLimit-100;
 }
 void turnPowerOn()
 {
   digitalWrite(powerPin, LOW);
   powerOn = true;
   turnGTIOff();
-  /*upperChargerLimit = upperChargerLimit+100;
-  lowerChargerLimit = lowerChargerLimit+100;*/
+  upperChargerLimit = upperChargerLimit+100;
+  lowerChargerLimit = lowerChargerLimit+100;
 }
 
 void pwmSetup()
@@ -150,20 +142,24 @@ void incrementPower(boolean write, int stepAmount)
   // 255,255,255,255,255   ->  254,255,255,255,255  ->  254,254,255,255,255
 
   // Serial.println("decrementing values "+(String)psu_pointer);
-  psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] - stepAmount;
-  if (psu_resistance_values[psu_pointer] < 0)
+  float vbatt = readBattery();
+  if (vbatt < voltageLimit)
   {
-    psu_resistance_values[psu_pointer] = 0;
-  }
-  psu_pointer++;
-  if (psu_pointer == psu_count)
-  {
-    psu_pointer = 0;
-  }
+    psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] - stepAmount;
+    if (psu_resistance_values[psu_pointer] < 0)
+    {
+      psu_resistance_values[psu_pointer] = 0;
+    }
+    psu_pointer++;
+    if (psu_pointer == psu_count)
+    {
+      psu_pointer = 0;
+    }
 
-  if (write)
-  {
-    writePowerValuesToPSUs();
+    if (write)
+    {
+      writePowerValuesToPSUs();
+    }
   }
 }
 
@@ -214,12 +210,20 @@ void rampDown()
 void increaseChargerPower(float startingChargerPower)
 {
   // here gridp is lower than the lowerChargerLimit.
-
+  float vbattery = readBattery();
   float fakeGridp = grid.realPower + 10000; // cancel out -ve values
   float fakeLowerLimit = lowerChargerLimit + 10000;
   float increaseAmount = fakeLowerLimit - fakeGridp; // will always be +ve
   Serial.println("startingCpower=" + (String)startingChargerPower + (String)lowerChargerLimit + " - " + (String)grid.realPower + " = " + (String)increaseAmount);
-  increaseAmount = increaseAmount * 0.7;      // don't overshoot
+  increaseAmount = increaseAmount * 0.7; // don't overshoot
+  if (vbattery > 55)
+  {
+    if (increaseAmount > 50)
+    {
+      increaseAmount = 50;
+    }
+  }
+
   int stepAmount = (increaseAmount / 50) + 1; // react faster to large change
   float target = startingChargerPower + increaseAmount;
 
@@ -229,24 +233,31 @@ void increaseChargerPower(float startingChargerPower)
   Serial.println("increase amount = " + (String)increaseAmount);
   float chargerPower = startingChargerPower;
   // float gtiPower = readGti();
-  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached2() && !isAtMaxPower() && chargerPower < chargerPLimit)
+  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached2() && !isAtMaxPower() && chargerPower < chargerPLimit && vbattery < voltageLimit)
   {
     incrementPower(true, stepAmount);
     chargerPower = readCharger();
-    // gtiPower = readGti();
-    // delay(5);  // Damping coefficient, can be reduced if we don't overshoot too badly
+    vbattery = readBattery();
   }
 }
 
 void reduceChargerPower(float startingChargerPower)
 {
+  float vbattery = readBattery();
   // for starters here gridp is higher than the upper limit
   decrementPower(true, 1);                  // always reduce by 1 in case vbatt is too high
   float fakeGridp = grid.realPower + 10000; // cancel out -ve values
   float fakeUpperLimit = upperChargerLimit + 10000;
   float reductionAmount = fakeGridp - fakeUpperLimit; // will always be +ve unless voltage too high may be -ve
   reductionAmount = reductionAmount * 0.7;            // don't overshoot
-  int stepAmount = (reductionAmount / 50) + 1;        // react faster to large change
+  if (vbattery > 55)
+  {
+    if (reductionAmount > 200)
+    {
+      reductionAmount = 200;
+    }
+  }
+  int stepAmount = (reductionAmount / 50) + 1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
   if (reductionAmount > 0) // don't bother if its -ve
   {
@@ -266,13 +277,17 @@ void adjustCharger()
 {
   float vbatt = readBattery();
   bool vLimitHit = voltageLimitReached2();
+  if (vbatt > voltageLimit)
+  {
+    decrementPower(true, 30);
+  }
 
-//new idea
-                        if (vLimitHit)
-                        {
-                          decrementPower(true,30);
-                        }
-
+  //  if (vbatt )
+  //  {
+  //    maintainVoltage();
+  //  }
+  //  else
+  //  {
   float presentChargerPower = readCharger();
   if (presentChargerPower > chargerPLimit)
   {
@@ -290,7 +305,7 @@ void adjustCharger()
       reduceChargerPower(presentChargerPower);
     }
   }
-  else if (SOC < 99 && grid.realPower < lowerChargerLimit && !vLimitHit)
+  else if (SOC < 99 && grid.realPower < lowerChargerLimit)
   {
     if (!powerOn)
     {
@@ -306,4 +321,24 @@ void adjustCharger()
     }
     increaseChargerPower(presentChargerPower);
   }
+}
+
+bool isAtMaxPower()
+{
+  for (int i = 0; i < psu_count; i++)
+  {
+    if (psu_resistance_values[i] > 0)
+    {
+      return false;
+    }
+  }
+  Serial.println("MAX POWER");
+  turnPowerOff();
+  for (int i = 0; i < psu_count; i++)
+  {
+    psu_resistance_values[i]=255;
+  }
+  delay(10000);
+  turnPowerOn();
+  return true;
 }
