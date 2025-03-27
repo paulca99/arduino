@@ -44,7 +44,7 @@ float getMinValue()
 float readBattery()
 {
   int adcValue=0;
-  delay(5);
+  delay(50);
   adcValue += analogRead(batteryPin);
   
 
@@ -62,7 +62,7 @@ float readBattery()
   batteryTotalVoltage= (rV - 39.5)* (61.6-44.5) / (63.5 - 39.5) + 44.5;
   
   addToHistory(batteryTotalVoltage);
-  float batt= getMinValue();
+  float batt= getAverageValue();
   //Serial.println("VBatt:"+(String)batt);
   return batt;
 }

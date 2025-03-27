@@ -13,7 +13,7 @@ const long gmtOffset_sec = 0;
 const int daylightOffset_sec = 3600;
 
 int GTI_on_time = 5;
-int GTI_off_time = 3;
+int GTI_off_time = 23;
 int startChargingTime = 6;
 int stopChargingTime = 18;
 
@@ -46,8 +46,8 @@ void timeLoop()
     else
     { // Out of GTI hours
 
-      GTIenabled = false;
-      turnGTIOff();
+      //GTIenabled = false;
+      //turnGTIOff();
     }
   }
 }
