@@ -4,12 +4,11 @@
 #include "battery.h"
 #include "pwmFunctions.h"
 
-
 boolean VOLTAGE_HIGH = false;
 boolean powerOn = false;
 int gtiPin = 23;
-int upperChargerLimit = 100;   // point to turn charger off
-int lowerChargerLimit = 0; // point to turn charger on
+int upperChargerLimit = 100; // point to turn charger off
+int lowerChargerLimit = 0;   // point to turn charger on
 float voltageLimit = 56.8;
 int chargerPLimit = 4200; // max watts into charger ( prob 2000 into battery)
 bool GTIenabled = true;
@@ -31,7 +30,6 @@ int psu_resistance_values[] = {range, range, range, range, range};
 int psu_count = sizeof psu_resistance_values / sizeof psu_resistance_values[0];
 int psu_pointer = 0;
 
-
 int getTotalResistance()
 {
   int retval;
@@ -50,7 +48,7 @@ bool isAtMinPower()
       return false;
     }
   }
- // Serial.println("IsAtMinPower");
+  // Serial.println("IsAtMinPower");
   return true;
 }
 
@@ -99,16 +97,16 @@ void turnPowerOff()
   digitalWrite(powerPin, HIGH);
   powerOn = false;
   turnGTIOn();
-  upperChargerLimit = upperChargerLimit-100;
-  lowerChargerLimit = lowerChargerLimit-100;
+  upperChargerLimit = upperChargerLimit - 100;
+  lowerChargerLimit = lowerChargerLimit - 100;
 }
 void turnPowerOn()
 {
   digitalWrite(powerPin, LOW);
   powerOn = true;
   turnGTIOff();
-  upperChargerLimit = upperChargerLimit+100;
-  lowerChargerLimit = lowerChargerLimit+100;
+  upperChargerLimit = upperChargerLimit + 100;
+  lowerChargerLimit = lowerChargerLimit + 100;
 }
 
 void pwmSetup()
@@ -145,21 +143,24 @@ void incrementPower(boolean write, int stepAmount)
   float vbatt = readBattery();
   if (vbatt < voltageLimit)
   {
-    psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] - stepAmount;
-    if (psu_resistance_values[psu_pointer] < 0)
-    {
-      psu_resistance_values[psu_pointer] = 0;
-    }
-    psu_pointer++;
-    if (psu_pointer == psu_count)
-    {
-      psu_pointer = 0;
-    }
+   // for (int i = 0; i < stepAmount; i++)
+   // {
+      psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] - stepAmount;
+      if (psu_resistance_values[psu_pointer] < 0)
+      {
+        psu_resistance_values[psu_pointer] = 0;
+      }
+      psu_pointer++; 
+      if (psu_pointer == psu_count)
+      {
+        psu_pointer = 0;
+      }
 
-    if (write)
-    {
-      writePowerValuesToPSUs();
-    }
+      if (write)
+      {
+        writePowerValuesToPSUs();
+      }
+   // }
   }
 }
 
@@ -336,7 +337,7 @@ bool isAtMaxPower()
   turnPowerOff();
   for (int i = 0; i < psu_count; i++)
   {
-    psu_resistance_values[i]=255;
+    psu_resistance_values[i] = 255;
   }
   delay(10000);
   turnPowerOn();
