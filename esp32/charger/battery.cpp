@@ -1,5 +1,7 @@
 #include "Arduino.h"
 #include "espEmonLib.h"
+#include "pwmFunctions.h"
+#include "battery.h"
 
 
 int batteryPin=39;
@@ -7,6 +9,17 @@ float batteryTotalVoltage=0.0;
 float history[15]; 
 int arraySize=15;
 int historyPointer=0;
+
+float checkBattery() //intended to get a more accurate reading by stopping charger and gti then reading battery
+{
+   turnGTIOff();
+   turnPowerOff();
+   delay(8000);
+   float accbatt= readBatteryOnce();
+   Serial.println("Accurate Battery reading =:"+(String)accbatt);
+    delay(1000);
+   return accbatt;
+}
 
 void addToHistory(float value)
 {
@@ -43,6 +56,16 @@ float getMinValue()
 
 float readBattery()
 {
+
+  batteryTotalVoltage= readBatteryOnce(); 
+  addToHistory(batteryTotalVoltage);
+  float batt= getAverageValue();
+  //Serial.println("VBatt:"+(String)batt);
+  return batt;
+}
+
+float readBatteryOnce()
+{
   int adcValue=0;
   delay(50);
   adcValue += analogRead(batteryPin);
@@ -61,13 +84,8 @@ float readBattery()
 
   batteryTotalVoltage= (rV - 39.5)* (61.6-44.5) / (63.5 - 39.5) + 44.5;
   
-  addToHistory(batteryTotalVoltage);
-  float batt= getAverageValue();
-  //Serial.println("VBatt:"+(String)batt);
-  return batt;
+  return batteryTotalVoltage;
 }
-
-
 void setupBattery()
 {
   pinMode(batteryPin,INPUT);

@@ -52,7 +52,7 @@ void readGrid()
   grid.realPower = grid.realPower-90;
  /*Serial.println("gridp:"+(String)grid.realPower);
   Serial.println("grridv:"+(String)grid.Vrms);*/
-  Serial.println("grridPF:"+(String)grid.powerFactor);
+ // Serial.println("grridPF:"+(String)grid.powerFactor);
 }
 
 float readCharger()

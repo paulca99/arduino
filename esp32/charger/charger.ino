@@ -5,6 +5,7 @@
 #include "timestuff.h"
 int loopcount = 0;
 int checkTime=0;
+//int timeToCheckBattery=0;
 
 void setup()
 {
@@ -51,6 +52,11 @@ void autoLoop()
     timeLoop();
     checkTime=0;
   }
+  /*if(timeToCheckBattery == 16)
+  //{
+    checkBattery();
+    timeToCheckBattery=0;
+  }*/
   if (loopcount > 15)
   {
     readGti();
@@ -60,4 +66,5 @@ void autoLoop()
   }
   loopcount++;
   checkTime++;
+  //timeToCheckBattery++;
 }

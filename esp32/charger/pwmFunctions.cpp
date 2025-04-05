@@ -8,10 +8,10 @@
 boolean VOLTAGE_HIGH = false;
 boolean powerOn = false;
 int gtiPin = 23;
-int upperChargerLimit = 20;   // point to turn charger off
-int lowerChargerLimit = -100; // point to turn charger on
-float voltageLimit = 57.0;
-int chargerPLimit = 4000; // max watts into charger ( prob 2000 into battery)
+int upperChargerLimit = 100;   // point to turn charger off
+int lowerChargerLimit = 0; // point to turn charger on
+float voltageLimit = 56.8;
+int chargerPLimit = 4200; // max watts into charger ( prob 2000 into battery)
 bool GTIenabled = true;
 const int freq = 200;
 int SOC = 90; // TODO neds calculating
@@ -50,7 +50,7 @@ bool isAtMinPower()
       return false;
     }
   }
-  Serial.println("IsAtMinPower");
+ // Serial.println("IsAtMinPower");
   return true;
 }
 
