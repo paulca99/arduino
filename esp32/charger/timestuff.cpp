@@ -46,8 +46,8 @@ void timeLoop()
     else
     { // Out of GTI hours
 
-      GTIenabled = false;
-      turnGTIOff();
+     // GTIenabled = false;
+     // turnGTIOff();
     }
   }
 }

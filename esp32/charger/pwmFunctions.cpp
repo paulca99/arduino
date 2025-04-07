@@ -9,7 +9,7 @@ boolean powerOn = false;
 int gtiPin = 23;
 int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
-float voltageLimit = 56.8;
+float voltageLimit = 56.9;
 int chargerPLimit = 4200; // max watts into charger ( prob 2000 into battery)
 bool GTIenabled = true;
 const int freq = 200;
@@ -25,7 +25,7 @@ int psu_voltage_pins[] = {19, 18, 5, 22, 16};
 int pwmChannels[] = {0, 1, 2, 3, 4};
 const int delayIn = 1;
 
-int range = (pow(2, resolution))-1;
+int range = (pow(2, resolution)) - 1;
 int psu_resistance_values[] = {range, range, range, range, range};
 int psu_count = sizeof psu_resistance_values / sizeof psu_resistance_values[0];
 int psu_pointer = 0;
@@ -143,24 +143,23 @@ void incrementPower(boolean write, int stepAmount)
   float vbatt = readBattery();
   if (vbatt < voltageLimit)
   {
-   // for (int i = 0; i < stepAmount; i++)
-   // {
-      psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] - stepAmount;
+    for (int i = 0; i < stepAmount; i++)
+    {
+      psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] - 1;
       if (psu_resistance_values[psu_pointer] < 0)
       {
         psu_resistance_values[psu_pointer] = 0;
       }
-      psu_pointer++; 
+      psu_pointer++;
       if (psu_pointer == psu_count)
       {
         psu_pointer = 0;
       }
-
-      if (write)
-      {
-        writePowerValuesToPSUs();
-      }
-   // }
+    }
+    if (write)
+    {
+      writePowerValuesToPSUs();
+    }
   }
 }
 
@@ -170,20 +169,23 @@ void decrementPower(boolean write, int stepAmount)
   // 00000 , 00001 , 00011 , 00111 , 01111 , 11111 , 11112
   if (!isAtMinPower())
   {
-    psu_pointer--;
-    if (psu_pointer == -1)
+    for (int i = 0; i < stepAmount; i++)
     {
-      psu_pointer = psu_count - 1;
+      psu_pointer--;
+      if (psu_pointer == -1)
+      {
+        psu_pointer = psu_count - 1;
+      }
+      psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] + 1;
+      if (psu_resistance_values[psu_pointer] > range)
+      {
+        psu_resistance_values[psu_pointer] = range;
+      }
     }
-    psu_resistance_values[psu_pointer] = psu_resistance_values[psu_pointer] + stepAmount;
-    if (psu_resistance_values[psu_pointer] > range)
+    if (write)
     {
-      psu_resistance_values[psu_pointer] = range;
+      writePowerValuesToPSUs();
     }
-  }
-  if (write)
-  {
-    writePowerValuesToPSUs();
   }
 }
 
@@ -234,11 +236,13 @@ void increaseChargerPower(float startingChargerPower)
   Serial.println("increase amount = " + (String)increaseAmount);
   float chargerPower = startingChargerPower;
   // float gtiPower = readGti();
-  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached2() && !isAtMaxPower() && chargerPower < chargerPLimit && vbattery < voltageLimit)
+  int attemptCount = 0;
+  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached2() && !isAtMaxPower() && chargerPower < chargerPLimit && vbattery < voltageLimit && attemptCount < 5)
   {
     incrementPower(true, stepAmount);
     chargerPower = readCharger();
     vbattery = readBattery();
+    attemptCount++;
   }
 }
 
