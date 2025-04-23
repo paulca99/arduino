@@ -28,14 +28,15 @@ void setup()
 void loop()
 {
   autoLoop();
-  // testLoop();
+  //testLoop();
 }
 
 void testLoop()
 {
+  Serial.println("testloop");
   rampDown();
-  delay(5000);
-  // rampUp();
+  delay(1000);
+  rampUp();
   // wifiLoop();
 }
 void autoLoop()

@@ -3,14 +3,29 @@
 #include "pcemon.h"
 #include "battery.h"
 #include "pwmFunctions.h"
+/*
+Thinking about having PSU 5 as an afterburner
+This will make the morning startup easier as we'll only be using 4 PSU
+Morning startup gets harder with more batteries in parallel.
+46.6 = emptyvoltage
+48 = afterburner engaged voltage
+to avoid the afterburner flicking on and off we'd need
+AFTERBURNER_ON_VOLTAGE = 48
+AFTERBURNER_OFF_VOLTAGE = 47
+even then, may flicker quite a bit
+consider making battery moving average larger num samples.
+47V appears to be the max voltage we can get from 4 PSU ...which seems low.
 
+Maybe if grid < -300 and afterburner off, engage afterburner.
+
+*/
 boolean VOLTAGE_HIGH = false;
 boolean powerOn = false;
 int gtiPin = 23;
 int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
 float voltageLimit = 56.9;
-int chargerPLimit = 4200; // max watts into charger ( prob 2000 into battery)
+int chargerPLimit = 2900; // max watts into charger ( prob 2000 into battery)
 bool GTIenabled = true;
 const int freq = 200;
 int SOC = 90; // TODO neds calculating
@@ -97,16 +112,16 @@ void turnPowerOff()
   digitalWrite(powerPin, HIGH);
   powerOn = false;
   turnGTIOn();
-  upperChargerLimit = upperChargerLimit - 100;
-  lowerChargerLimit = lowerChargerLimit - 100;
+  upperChargerLimit = 0;
+  lowerChargerLimit = -100;
 }
 void turnPowerOn()
 {
   digitalWrite(powerPin, LOW);
   powerOn = true;
   turnGTIOff();
-  upperChargerLimit = upperChargerLimit + 100;
-  lowerChargerLimit = lowerChargerLimit + 100;
+  upperChargerLimit = 100;
+  lowerChargerLimit = 0;
 }
 
 void pwmSetup()
@@ -206,7 +221,7 @@ void rampDown()
   {
     // changing the LED brightness with PWM
     decrementPower(true, 1);
-    // delay(200);
+    delay(10);
   }
 }
 

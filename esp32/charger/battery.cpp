@@ -6,8 +6,8 @@
 
 int batteryPin=39;
 float batteryTotalVoltage=0.0;
-float history[15]; 
-int arraySize=15;
+float history[60]; 
+int arraySize=60;
 int historyPointer=0;
 
 float checkBattery() //intended to get a more accurate reading by stopping charger and gti then reading battery
@@ -69,7 +69,7 @@ float readBatteryOnce()
   int adcValue=0;
   delay(50);
   adcValue += analogRead(batteryPin);
-  
+  //Serial.println("Batt pin adv val =:"+(String)adcValue);
 
 
   //4096=3.3V
@@ -81,7 +81,7 @@ float readBatteryOnce()
   //
   float voltageOnPin = (adcValue * 3.3) / 4095;
   float rV = voltageOnPin*22.85;
-
+ 
   batteryTotalVoltage= (rV - 39.5)* (61.6-44.5) / (63.5 - 39.5) + 44.5;
   
   return batteryTotalVoltage;

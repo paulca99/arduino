@@ -1,64 +1,22 @@
-Battery is 2.5% too low 
-also use 100 samples.
-when charger on range should be 0 to 100
-when charger off range should be -100 to 0
+TODO
+------
 
-turnPowerOff we can subtract 100 from each limit
-turnPowerOn add 100 to each.
-
--Use pot to adjust voltage for 8V out.
--Use pot to get 14V out.
--F-or each measure voltage, then disconnect pot and measure Ra and Rb 
--w-rite it all down 
-
--change opto boards 100 ohm resistor for larger one
--and the 470 ohm resistor for smaller one based on Ra and Rb above
-
--test on breadboard on bench so we get full range.
--Could use -12V to +5 and some different resistors ???
--Could try -12 and +12 ???
+GTI relay is goosed, switch it to next one along
+    (easy 20 min job)
+    
+num 1 has a dodgy connection jumps from 9 to 12 V pushing in fixes it.
+   (just resolder everything, could be a big job)
 
 
-Get Date from NTP 
-Decide on charger times....e.g.... stab 1
-Could just put the growatt on a timer plug !
-7am ...set range 200 to 300
-11...set range 100 to 200
-3pm ...set range -200 to 0
+Change code to allow setting false limits
+    (easy 20 min job)
 
+Make new controller board for num 2
+    (big job 2 hour)
 
---Rewire CT clamp for GTI as per diagram
---Mount 8 relay to plyboard at far left BUT MAKE SURE IT'S DETACHABLE so we can service the PSU'S
---Find pin to control GTI and write code.
---When powering ON charger, turnOffGti , when powering OFF charger, turnOnGti.
---Test.
----Fit new PSU in middle using bolts for power , DETACHABLE in case it pops again
----Analyse why it takes 10 seconds for charger to react to grid going -ve
+Fit new BMS in 2 growatts
+    (30 mins each)
 
-
--Find a working pin for the power relay on the charger sketch(think its on 39)
--Build new op-amp circuit for GTI CT clamp wired to old relay pin 
--Move GTI into rough initial_position
--Add switch wired up to MAIN input for GTI
--Write code to get GTI power and add it to the CSV output string.
--peel backing off breadboard and secure
--secure wires & tape up joints
-
--Make sides 
--Make front
--Cutout holes for Network 
--Cutout holes for power 
--Cutout holes for vents 
--line up GTI at correct height
--Cutout holes for GTI terminals
--Then drill holes for charger terminals in-line with GTI terminals.
--Screw together loosely , clean all dust, and wrap it.
--Fit bolts 
--Solder connecttors 
--make busbars to connect to GTI
-
-
-
-
-
+Get lead acid mode working on SP3000
+    (unknown)
 
