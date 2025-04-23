@@ -88,14 +88,14 @@ float readGti()
   {
     current = 0;
   }
-  /* TODO remove comment gtiPower = current * grid.Vrms;
+  gtiPower = current * grid.Vrms;
   if (gtiPower > 200)
   {
     lowerChargerLimit = (gtiPower / 2) * -1;
   }
   else
     lowerChargerLimit = -120;
-*/
+
   return gtiPower;
   // need to average over 20 like the battery average
   // then need to set lower limit to half of GTI power to stop the charger
