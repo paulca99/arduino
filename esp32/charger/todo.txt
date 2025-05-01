@@ -1,15 +1,7 @@
 TODO
 ------
+Number 1 gives up first around 3500w
 
-GTI relay is goosed, switch it to next one along
-    (easy 20 min job)
-    
-num 1 has a dodgy connection jumps from 9 to 12 V pushing in fixes it.
-   (just resolder everything, could be a big job)
-
-
-Change code to allow setting false limits
-    (easy 20 min job)
 
 Make new controller board for num 2
     (big job 2 hour)
@@ -19,4 +11,24 @@ Fit new BMS in 2 growatts
 
 Get lead acid mode working on SP3000
     (unknown)
+
+Make top grill 410 x 150 x 20
+Make botton grill 380 x 100 x 3
+Make feet x2 150 x 100 x 60
+
+GTI only doing 2KW .... why
+
+5=11.7 to 8.3V on old shit PSU.    
+12.3 to 8.9 on new PSU ....WITH THE CONTROLLER FROM 3   
+11.5 TO 9 ON NEW PSU WITH CONTROLLER BOARD WITH A 1K RESISTOR INSTEAD OF THE 470 ON THE DIAGRAM...INTERESTING
+
+4=11.8 to 9v
+3=11.8 to 9v
+2= fucked
+1=11.8 to 9
+
+use controller from 3 as basis for new boards ..... 12.3 to 9v is good
+
+
+
 

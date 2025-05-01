@@ -4,21 +4,22 @@
 #include "battery.h"
 #include "timestuff.h"
 int loopcount = 0;
-int checkTime=0;
-//int timeToCheckBattery=0;
+int checkTime = 0;
+// int timeToCheckBattery=0;
 
 void setup()
 {
-    
+
   Serial.begin(115200);
-    while (!Serial) {
-    ;  // wait for serial port to connect. Needed for native USB port only
+  while (!Serial)
+  {
+    ; // wait for serial port to connect. Needed for native USB port only
   }
   delay(2000);
   Serial.println("setupStart");
-       Serial.println("wifisetupStart");
+  Serial.println("wifisetupStart");
   wifiSetup();
-     Serial.println("timesetupStart");
+  Serial.println("timesetupStart");
   timeSetup();
   setupEmon();
   setupBattery();
@@ -33,25 +34,32 @@ void loop()
 
 void testLoop()
 {
-  Serial.println("testloop");
-  rampDown();
-  delay(1000);
-  rampUp();
+  setupTest();
+  while (true)
+  {
+    Serial.println("testloop");
+    goBottom();
+    delay(5000);
+    goMid();
+    delay(5000);
+    goTop();
+    delay(5000);
+  }
   // wifiLoop();
 }
 void autoLoop()
 {
   // wait till stable before adjusting anything
 
-  //Serial.println("FreeHeap:" + (String)ESP.getFreeHeap());
+  // Serial.println("FreeHeap:" + (String)ESP.getFreeHeap());
   readCharger();
   readGrid();
   readBattery();
   wifiLoop();
-  if(checkTime == 50)
+  if (checkTime == 50)
   {
     timeLoop();
-    checkTime=0;
+    checkTime = 0;
   }
   /*if(timeToCheckBattery == 16)
   //{
@@ -67,5 +75,5 @@ void autoLoop()
   }
   loopcount++;
   checkTime++;
-  //timeToCheckBattery++;
+  // timeToCheckBattery++;
 }

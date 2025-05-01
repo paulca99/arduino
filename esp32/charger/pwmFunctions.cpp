@@ -21,11 +21,12 @@ Maybe if grid < -300 and afterburner off, engage afterburner.
 */
 boolean VOLTAGE_HIGH = false;
 boolean powerOn = false;
+boolean afterburnerOn = false;
 int gtiPin = 23;
 int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
-float voltageLimit = 56.9;
-int chargerPLimit = 2900; // max watts into charger ( prob 2000 into battery)
+float voltageLimit = 57.2;
+int chargerPLimit = 3300; // max watts into charger ( prob 2000 into battery)
 bool GTIenabled = true;
 const int freq = 200;
 int SOC = 90; // TODO neds calculating
@@ -36,6 +37,7 @@ extern EnergyMonitor grid;
 extern EnergyMonitor charger;
 extern float chargerPower;
 int powerPin = 21;
+int afterBurnerPin = 27;
 int psu_voltage_pins[] = {19, 18, 5, 22, 16};
 int pwmChannels[] = {0, 1, 2, 3, 4};
 const int delayIn = 1;
@@ -64,6 +66,11 @@ bool isAtMinPower()
     }
   }
   // Serial.println("IsAtMinPower");
+  if (afterburnerOn)
+  {
+    turnAfterburnerOff();
+    return false;
+  }
   return true;
 }
 
@@ -108,7 +115,7 @@ void turnGTIOff()
 
 void turnPowerOff()
 {
-
+  turnAfterburnerOff();
   digitalWrite(powerPin, HIGH);
   powerOn = false;
   turnGTIOn();
@@ -123,11 +130,24 @@ void turnPowerOn()
   upperChargerLimit = 100;
   lowerChargerLimit = 0;
 }
+void turnAfterburnerOff()
+{
 
+  digitalWrite(afterBurnerPin, HIGH);
+  afterburnerOn = false;
+  Serial.println("Afterburner OFF");
+}
+void turnAfterburnerOn()
+{
+  digitalWrite(afterBurnerPin, LOW);
+  afterburnerOn = true;
+    Serial.println("Afterburner ON");
+}
 void pwmSetup()
 {
   // configure LED PWM functionalitites
   pinMode(powerPin, OUTPUT);
+  pinMode(afterBurnerPin, OUTPUT);
   pinMode(gtiPin, OUTPUT);
   turnPowerOff();
   for (int i = 0; i < psu_count; i++)
@@ -204,24 +224,54 @@ void decrementPower(boolean write, int stepAmount)
   }
 }
 
-void rampUp()
+void setupTest()
 {
   turnPowerOn();
+  turnAfterburnerOn();
+}
+void goBottom()
+{
+
+  for (int i = 0; i < psu_count; i++)
+  {
+    psu_resistance_values[i] = 0;
+  }
+  writePowerValuesToPSUs();
+}
+void goMid()
+{
+  for (int i = 0; i < psu_count; i++)
+  {
+    psu_resistance_values[i] = 128;
+  }
+  writePowerValuesToPSUs();
+}
+void goTop()
+{
+  for (int i = 0; i < psu_count; i++)
+  {
+    psu_resistance_values[i] = 255;
+  }
+  writePowerValuesToPSUs();
+}
+void rampUp()
+{
+
   for (int dutyCycle = 0; dutyCycle <= (range * 5); dutyCycle++)
   {
     // changing the LED brightness with PWM
     incrementPower(true, 1);
-    delay(10);
+    delay(1);
   }
 }
 void rampDown()
 {
-  turnPowerOn();
+ 
   for (int dutyCycle = (range * 5); dutyCycle >= 0; dutyCycle--)
   {
     // changing the LED brightness with PWM
     decrementPower(true, 1);
-    delay(10);
+    delay(1);
   }
 }
 
@@ -233,8 +283,9 @@ void increaseChargerPower(float startingChargerPower)
   float fakeLowerLimit = lowerChargerLimit + 10000;
   float increaseAmount = fakeLowerLimit - fakeGridp; // will always be +ve
   Serial.println("startingCpower=" + (String)startingChargerPower + (String)lowerChargerLimit + " - " + (String)grid.realPower + " = " + (String)increaseAmount);
-  increaseAmount = increaseAmount * 0.7; // don't overshoot
-  if (vbattery > 55)
+  if(afterburnerOn)
+    increaseAmount = increaseAmount * 0.7; // don't overshoot
+  if (vbattery > 56)
   {
     if (increaseAmount > 50)
     {
@@ -242,7 +293,7 @@ void increaseChargerPower(float startingChargerPower)
     }
   }
 
-  int stepAmount = (increaseAmount / 50) + 1; // react faster to large change
+  int stepAmount = (increaseAmount / 30) + 1; // react faster to large change
   float target = startingChargerPower + increaseAmount;
 
   if (target > chargerPLimit)
@@ -252,7 +303,7 @@ void increaseChargerPower(float startingChargerPower)
   float chargerPower = startingChargerPower;
   // float gtiPower = readGti();
   int attemptCount = 0;
-  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached2() && !isAtMaxPower() && chargerPower < chargerPLimit && vbattery < voltageLimit && attemptCount < 5)
+  while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached2() && !isAtMaxPower() && chargerPower < chargerPLimit && vbattery < voltageLimit && attemptCount < 50)
   {
     incrementPower(true, stepAmount);
     chargerPower = readCharger();
@@ -277,7 +328,7 @@ void reduceChargerPower(float startingChargerPower)
       reductionAmount = 200;
     }
   }
-  int stepAmount = (reductionAmount / 50) + 1; // react faster to large change
+  int stepAmount = (reductionAmount / 30) + 1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
   if (reductionAmount > 0) // don't bother if its -ve
   {
@@ -311,7 +362,7 @@ void adjustCharger()
   float presentChargerPower = readCharger();
   if (presentChargerPower > chargerPLimit)
   {
-    Serial.println("CHARGE POWER LIMIT REACHED " + (String)presentChargerPower);
+    Serial.println(" " + (String)presentChargerPower);
   }
   if (grid.realPower > upperChargerLimit || vbatt > voltageLimit || presentChargerPower > chargerPLimit)
   {
@@ -353,12 +404,24 @@ bool isAtMaxPower()
     }
   }
   Serial.println("MAX POWER");
-  turnPowerOff();
+
   for (int i = 0; i < psu_count; i++)
   {
-    psu_resistance_values[i] = 255;
+    psu_resistance_values[i] = 254;
   }
-  delay(10000);
-  turnPowerOn();
+  writePowerValuesToPSUs();
+  if (afterburnerOn)
+  {
+    turnPowerOff();
+    delay(5000);
+    turnPowerOn();
+  }
+  else
+  {
+    
+    turnAfterburnerOn();
+    delay(3000);
+    return false;
+  }
   return true;
 }
