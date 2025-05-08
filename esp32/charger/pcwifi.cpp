@@ -7,6 +7,7 @@
 #include <ESPAsyncWebSrv.h>
 
 extern bool GTIenabled;
+extern double psuVoltages[];
 extern struct tm timeinfo;
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
@@ -21,6 +22,8 @@ extern float chargerPhaseOffset;
 extern float chargerCurrentCalibration;
 extern float chargerPower;
 extern float gtiPower;
+extern int chargerPLimit;
+extern int chargerPowerCreep;
 
 // Replace with your network credentials
 //const char* ssid = "TP-LINK_73F3";
@@ -95,7 +98,7 @@ void wifiSetup() {
 
 void generateCsvString()
 {
-  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(chargerPower)+","+(String)(gtiPower)+","+(String)timeinfo.tm_hour+","+(String)GTIenabled+",EOT\n";
+  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(chargerPower)+","+(String)(gtiPower)+","+(String)timeinfo.tm_hour+","+(String)GTIenabled+","+(String)psuVoltages[0]+","+(String)psuVoltages[1]+","+(String)psuVoltages[2]+","+(String)psuVoltages[3]+","+(String)psuVoltages[4]+","+(String)chargerPLimit+",EOT\n";
 }
 void wifiLoop() {
   generateCsvString();
@@ -115,6 +118,10 @@ void wifiLoop() {
           Serial.println(header);
           int upperpos= header.indexOf("?upper=");
           int lowerpos= header.indexOf("&lower=");
+          int chargerPLimitpos= header.indexOf("&chargerPLimit=");
+          int chargerPowerCreeppos= header.indexOf("&chargerPowerCreep=");
+
+ 
           Serial.println((String)upperpos);
           Serial.println((String)lowerpos);
           if(upperpos==22)
@@ -123,8 +130,15 @@ void wifiLoop() {
             upper.trim();
             String lower=header.substring(lowerpos+7,lowerpos+11);
             lower.trim();
+            String chargerPLimitstr=header.substring(chargerPLimitpos+15,chargerPLimitpos+19);
+            chargerPLimitstr.trim();
+            String chargerPowerCreepstr=header.substring(chargerPowerCreeppos+19,chargerPowerCreeppos+20);
+            chargerPowerCreepstr.trim();
+            Serial.println("power web settings=:"+chargerPLimitstr + ":" + chargerPowerCreepstr+":");
             upperChargerLimit=upper.toInt();
             lowerChargerLimit=lower.toInt();
+            chargerPLimit=chargerPLimitstr.toInt();
+            chargerPowerCreep=chargerPowerCreepstr.toInt();
           }
 
           int gridVCpos= header.indexOf("?gridVC=");
@@ -163,6 +177,9 @@ void wifiLoop() {
             client.println("<th>PSU3</th> ");
             client.println("<th>PSU4</th> ");
             client.println("<th>PSU5</th> ");
+            client.println("<th>chargerPLimit</th> ");
+            client.println("<th>chargerPowerCreep</th> ");
+            
             client.println("       </tr><tr>");
 
             client.println("<td>" + (String)grid.realPower + "</td>");
@@ -175,7 +192,8 @@ void wifiLoop() {
             client.println("<td>" + (String)psu_resistance_values[2] + "</td>");
             client.println("<td>" + (String)psu_resistance_values[3] + "</td>");
             client.println("<td>" + (String)psu_resistance_values[4] + "</td>");
-
+            client.println("<td>" + (String)chargerPLimit + "</td>");
+            client.println("<td>" + (String)chargerPowerCreep + "</td>");
 
             client.println("</tr></table>");
 
@@ -184,6 +202,10 @@ void wifiLoop() {
               client.println("<input type='text' id='upper' name='upper' value='"+(String)upperChargerLimit+"'><br><br>");
               client.println("<label for='lower'>Lower Limit(W):</label>");
               client.println("<input type='text' id='lower' name='lower' value='"+(String)lowerChargerLimit+"'><br><br>");
+              client.println("<label for='chargerPLimit'>chargerPLimit:</label>");
+              client.println("<input type='text' id='chargerPLimit' name='chargerPLimit' value='"+(String)chargerPLimit+"'><br><br>");
+              client.println("<label for='chargerPowerCreep'>chargerPowerCreep:</label>");
+              client.println("<input type='text' id='chargerPowerCreep' name='chargerPowerCreep' value='"+(String)chargerPowerCreep+"'><br><br>");
               client.println("<input type='submit' value='Submit'>");
             client.println("</form>");
             client.println("");

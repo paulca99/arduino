@@ -30,5 +30,83 @@ GTI only doing 2KW .... why
 use controller from 3 as basis for new boards ..... 12.3 to 9v is good
 
 
+bench results
+direct from esp32 to VS (no opamp or buffer , just 0 - 3.3 input)
+PR01 = 12.4 to 8.7
+unmodded PD05 = 0.3 volts
+
+Optocoupler 817 tests
+
+130 input R  and 68 output resistor on the 3.3 supply gives 12.4 down to 10.4
+5v = same roughly
+Removing the resistor on the output completely gets it down to 9.6 on 5v
+tried 130 on output ....10.3
+670    10.02
+1.85   = 12.2 to 12.5
+
+output needs no resistor
+input tests
+130 went down to 9.6
+670 went to 10.2
+68 went down to 9.4
+10 ohm on input gives 9 V !!!! hussah   current concerns though
+
+v=ir 
+3.3 = i10
+must be 330 mA   how much can you draw from an esp32
+
+2 and 3 are low 9.7  vs 1 4 and 5 at 10.7
 
 
+--------
+Ordered a few ADS1115 16 bit ADC's as the built in one is shite. 
+AND a couple of ADS1220's 24bit
+To use it I'll need to free up pins 22 and 21.
+21=powerPin
+22=one of the PSU voltage pins
+
+resistor values for each PSU based on each doing 13V -> 3.3v
+
+1: 8000 +2722   power= 13 * 13 / 10722 = 15mW 
+2: 8000 +1162   power= 26 * 26 / 9162  = 73mW
+3: 8000 +739    power= 39 * 39 / 8739  = 174mW
+4: 8000 + 542   power= 52 * 52 / 8542  = 316mW
+5: 8000 + 427   power= 65 * 65 / 8427  = 501mW
+
+These will be constantly on , so power usage will be a thing to consider
+
+so in total about 1W .... but maybe we should make try to keep the power in each the same.
+which would mean increasing resistance as volts increases.
+
+P=V*(V/R)...we know V so lets aim for 200mW in each leg 
+R=Vsq / P
+1: r=13sq / 0.2 = 845
+2: r=26sq / 0.2 = 3380
+3: r=7605
+4: r=13520
+5: r=21124
+
+Note the current in each leg will be the same , so the innacuracy od the ADC should be the saME.
+bugger ..just realised the voltage can be 5 on the ADS1115 ... so prob need to redo all this.
+
+Again for 5v
+
+1: 13V 8k  5k = 1mW 
+2: 26V 21K 5k =1mW
+3: 39V 34k 5k   = 1mW
+4: 52V 47K 5K  = 1mW
+5: 65V 60k 5k = = 1mW
+
+Actual values used on board as measured...
+
+1 5.04   8k
+5.03     21.6k
+5.05      32.6k  // means max voltage over 3 must not exceed 12.53 per PSU
+5.11       47.4k
+4.99       59.5k
+
+moving 22 -> 12
+and 21 -> 13 
+
+frees up SCL and SDA.
+reusing multiplexor selector pins.

@@ -3,6 +3,7 @@
 #include "pcemon.h"
 #include "battery.h"
 #include "pwmFunctions.h"
+#include "pcwifi.h"
 /*
 Thinking about having PSU 5 as an afterburner
 This will make the morning startup easier as we'll only be using 4 PSU
@@ -25,21 +26,22 @@ boolean afterburnerOn = false;
 int gtiPin = 23;
 int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
-float voltageLimit = 57.2;
-int chargerPLimit = 3300; // max watts into charger ( prob 2000 into battery)
+float voltageLimit = 56.8;
+int chargerPLimit = 2900; // max watts into charger ( prob 2000 into battery)
+int chargerPowerCreep =0;
 bool GTIenabled = true;
 const int freq = 200;
 int SOC = 90; // TODO neds calculating
 
-const float current_limit = 14;
-const int resolution = 8; // 2^8 = 256
+const float current_limit = 18;
+const int resolution = 9; // 2^8 = 256
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
 extern float chargerPower;
-int powerPin = 21;
+int powerPin = 13;
 int afterBurnerPin = 27;
-int psu_voltage_pins[] = {19, 18, 5, 22, 16};
-int pwmChannels[] = {0, 1, 2, 3, 4};
+int psu_voltage_pins[] = {19, 18, 5, 12, 16};
+int pwmChannels[] = {0, 1, 2, 4, 3};
 const int delayIn = 1;
 
 int range = (pow(2, resolution)) - 1;
@@ -172,7 +174,7 @@ void setMinPower()
 void incrementPower(boolean write, int stepAmount)
 { // means reducinng resistance
   // Serial.println("IncrementPower");
-  // 255,255,255,255,255   ->  254,255,255,255,255  ->  254,254,255,255,255
+  // 128,128,128,128,128   ->  127,128,128,128,128 ->  127,127,128,128,128
 
   // Serial.println("decrementing values "+(String)psu_pointer);
   float vbatt = readBattery();
@@ -242,7 +244,7 @@ void goMid()
 {
   for (int i = 0; i < psu_count; i++)
   {
-    psu_resistance_values[i] = 128;
+    psu_resistance_values[i] = range/2;
   }
   writePowerValuesToPSUs();
 }
@@ -250,7 +252,7 @@ void goTop()
 {
   for (int i = 0; i < psu_count; i++)
   {
-    psu_resistance_values[i] = 255;
+    psu_resistance_values[i] = range;
   }
   writePowerValuesToPSUs();
 }
@@ -275,6 +277,26 @@ void rampDown()
   }
 }
 
+void rampPSUsOneByOne()
+{
+  for (int i = 0; i < psu_count; i++)
+  {
+    for(int x =0; x<range; x=x+30)
+    {
+      psu_resistance_values[i] = x;
+      writePowerValuesToPSUs();
+      populateVoltages();
+    }
+    for(int x =range; x>0; x=x-30)
+    {
+      psu_resistance_values[i] = x;
+      writePowerValuesToPSUs();
+      populateVoltages();
+    }
+  }
+  delay(5000);
+
+}
 void increaseChargerPower(float startingChargerPower)
 {
   // here gridp is lower than the lowerChargerLimit.
@@ -282,6 +304,11 @@ void increaseChargerPower(float startingChargerPower)
   float fakeGridp = grid.realPower + 10000; // cancel out -ve values
   float fakeLowerLimit = lowerChargerLimit + 10000;
   float increaseAmount = fakeLowerLimit - fakeGridp; // will always be +ve
+  if(increaseAmount > 1000)
+  {
+    increaseAmount=1000;
+  }
+
   Serial.println("startingCpower=" + (String)startingChargerPower + (String)lowerChargerLimit + " - " + (String)grid.realPower + " = " + (String)increaseAmount);
   if(afterburnerOn)
     increaseAmount = increaseAmount * 0.7; // don't overshoot
@@ -293,11 +320,15 @@ void increaseChargerPower(float startingChargerPower)
     }
   }
 
-  int stepAmount = (increaseAmount / 30) + 1; // react faster to large change
+  int stepAmount = (increaseAmount / 70) + 1; // react faster to large change
   float target = startingChargerPower + increaseAmount;
 
-  if (target > chargerPLimit)
-    target = chargerPLimit; //  pin it at 3000
+  if (target > chargerPLimit )
+  {
+    if(chargerPowerCreep == 1)
+      chargerPLimit =chargerPLimit +5;
+    target = chargerPLimit; //  pin it at chargerPLimit
+  }
 
   Serial.println("increase amount = " + (String)increaseAmount);
   float chargerPower = startingChargerPower;
@@ -328,7 +359,7 @@ void reduceChargerPower(float startingChargerPower)
       reductionAmount = 200;
     }
   }
-  int stepAmount = (reductionAmount / 30) + 1; // react faster to large change
+  int stepAmount = (reductionAmount / 50) + 1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
   if (reductionAmount > 0) // don't bother if its -ve
   {
@@ -344,8 +375,23 @@ void reduceChargerPower(float startingChargerPower)
   }
 }
 
+void balancePSUs()
+{
+  int targetPSU = findHighestPSU();
+  int res = psu_resistance_values[targetPSU];
+  if(res < range)
+  {
+    psu_resistance_values[targetPSU] = psu_resistance_values[targetPSU] +1;
+    writePowerValuesToPSUs();
+  }
+}
 void adjustCharger()
 {
+  if(powerOn)
+  {
+    //populateVoltages();
+    //balancePSUs();
+  }
   float vbatt = readBattery();
   bool vLimitHit = voltageLimitReached2();
   if (vbatt > voltageLimit)
@@ -405,13 +451,20 @@ bool isAtMaxPower()
   }
   Serial.println("MAX POWER");
 
+
+
   for (int i = 0; i < psu_count; i++)
   {
-    psu_resistance_values[i] = 254;
+    psu_resistance_values[i] = range-1;
   }
   writePowerValuesToPSUs();
   if (afterburnerOn)
   {
+    //could be a PSU has died , make sure grafana updates voltages.
+
+    populateVoltages();
+    delay(2000);
+    wifiLoop();
     turnPowerOff();
     delay(5000);
     turnPowerOn();

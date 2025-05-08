@@ -4,4 +4,6 @@ float readBattery();
 float readBatteryOnce();
 float checkBattery();
 void setupBattery();
+double populateVoltages();
+int  findHighestPSU();
 #endif

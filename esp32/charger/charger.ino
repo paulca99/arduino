@@ -3,6 +3,7 @@
 #include "pwmFunctions.h"
 #include "battery.h"
 #include "timestuff.h"
+extern int psu_resistance_values[];
 int loopcount = 0;
 int checkTime = 0;
 // int timeToCheckBattery=0;
@@ -37,15 +38,31 @@ void testLoop()
   setupTest();
   while (true)
   {
-    Serial.println("testloop");
+  /*  Serial.println("testloop");
     goBottom();
-    delay(5000);
-    goMid();
-    delay(5000);
-    goTop();
-    delay(5000);
+    for (int x = 0; x < 5; x++)
+    {
+      psu_resistance_values[x] = range;
+      writePowerValuesToPSUs();
+      for (int i = 0; i < 30; i++)
+      {
+        wifiLoop();
+        populateVoltages();
+      }
+    }
+    for (int x = 0; x < 5; x++)
+    {
+      psu_resistance_values[x] = 0;
+      writePowerValuesToPSUs();
+      for (int i = 0; i < 30; i++)
+      {
+        wifiLoop();
+        populateVoltages();
+      }
+    }*/
+    wifiLoop();
   }
-  // wifiLoop();
+
 }
 void autoLoop()
 {
