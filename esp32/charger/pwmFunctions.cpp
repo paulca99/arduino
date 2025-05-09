@@ -192,9 +192,6 @@ void incrementPower(boolean write, int stepAmount)
       {
         psu_pointer = 0;
       }
-    }
-    if (write)
-    {
       writePowerValuesToPSUs();
     }
   }
@@ -218,9 +215,6 @@ void decrementPower(boolean write, int stepAmount)
       {
         psu_resistance_values[psu_pointer] = range;
       }
-    }
-    if (write)
-    {
       writePowerValuesToPSUs();
     }
   }
@@ -304,10 +298,6 @@ void increaseChargerPower(float startingChargerPower)
   float fakeGridp = grid.realPower + 10000; // cancel out -ve values
   float fakeLowerLimit = lowerChargerLimit + 10000;
   float increaseAmount = fakeLowerLimit - fakeGridp; // will always be +ve
-  if(increaseAmount > 1000)
-  {
-    increaseAmount=1000;
-  }
 
   Serial.println("startingCpower=" + (String)startingChargerPower + (String)lowerChargerLimit + " - " + (String)grid.realPower + " = " + (String)increaseAmount);
   if(afterburnerOn)
@@ -320,7 +310,7 @@ void increaseChargerPower(float startingChargerPower)
     }
   }
 
-  int stepAmount = (increaseAmount / 70) + 1; // react faster to large change
+  int stepAmount = (increaseAmount / (12800/range)) + 1; // react faster to large change
   float target = startingChargerPower + increaseAmount;
 
   if (target > chargerPLimit )
@@ -359,7 +349,7 @@ void reduceChargerPower(float startingChargerPower)
       reductionAmount = 200;
     }
   }
-  int stepAmount = (reductionAmount / 50) + 1; // react faster to large change
+  int stepAmount = (reductionAmount / (12800/range)) + 1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
   if (reductionAmount > 0) // don't bother if its -ve
   {
@@ -473,7 +463,7 @@ bool isAtMaxPower()
   {
     
     turnAfterburnerOn();
-    delay(3000);
+    delay(6000);
     return false;
   }
   return true;

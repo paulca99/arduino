@@ -110,3 +110,25 @@ and 21 -> 13
 
 frees up SCL and SDA.
 reusing multiplexor selector pins.
+
+--- Might not be needed ... discovered a bug in the code, in incrementPower, it was running 
+a for loop decrementing the PSU resistance values, then AFTER the loop it was writing the new values 
+to the PSU's . This would cause a sudden sharp change, maybe flipping one PSU out.
+Changed to write continuously within the loop....but unaible to test as there's no bloody sun.
+
+managed to get some sun... was singing along at 3,300 (with plimit set to 3200). 
+Lasted 1m 10 seconds, then it looks like the fence tripped out, causing a sudden 
+drop to make the charger trip out .... OR.... the charger tripped causing the fence to trip.
+
+512 for PWM resolution is good ... might try 1024.... 2^10 
+
+ADAfruit ADS1115 seems the way to go...
+can average about 200 samples in a second in single non blocking mode.
+https://github.com/adafruit/Adafruit_ADS1X15/blob/master/examples/nonblocking/nonblocking.ino
+
+so I could maybe average 30 readings per channel on every read.
+OR have an interrupt that reads all channels continuously and balances.
+
+TODO Saturday.
+(1) solder earths onto optocouplers.
+(2) replace relay board so 2 turns off.
