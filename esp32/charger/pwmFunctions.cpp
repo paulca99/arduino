@@ -162,9 +162,8 @@ void pwmSetup()
   {
 
     pinMode(psu_voltage_pins[i], OUTPUT);
-    ledcSetup(pwmChannels[i], freq, resolution);
-    ledcAttachPin(psu_voltage_pins[i], pwmChannels[i]);
-    ledcWrite(pwmChannels[i], psu_resistance_values[i]);
+    ledcAttachChannel(psu_voltage_pins[i], freq, resolution, pwmChannels[i]);
+    ledcWriteChannel(pwmChannels[i], psu_resistance_values[i]);
   }
   writePowerValuesToPSUs();
 }
