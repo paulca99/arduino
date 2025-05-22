@@ -126,6 +126,12 @@ void turnPowerOff()
 }
 void turnPowerOn()
 {
+  //before power on we must set power to lowest.
+  for (int i = 0; i < psu_count; i++)
+  {
+    psu_resistance_values[i] = range-1;
+  }
+  writePowerValuesToPSUs();
   digitalWrite(powerPin, LOW);
   powerOn = true;
   turnGTIOff();

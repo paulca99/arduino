@@ -29,7 +29,7 @@ void setup()
 
 void loop()
 {
-  autoLoop();
+   autoLoop();
   //testLoop();
 }
 
@@ -38,32 +38,39 @@ void testLoop()
   setupTest();
   while (true)
   {
-  /*  Serial.println("testloop");
+    goTop();
+    delay(3000);
+    goMid();
+    delay(3000);
     goBottom();
-    for (int x = 0; x < 5; x++)
+    delay(3000);
+    Serial.println("testloop");
+    
+    /*
+  goBottom();
+  for (int x = 0; x < 5; x++)
+  {
+    psu_resistance_values[x] = range;
+    writePowerValuesToPSUs();
+    for (int i = 0; i < 30; i++)
     {
-      psu_resistance_values[x] = range;
-      writePowerValuesToPSUs();
-      for (int i = 0; i < 30; i++)
-      {
-        wifiLoop();
-        populateVoltages();
-      }
+      wifiLoop();
+      populateVoltages();
     }
-    for (int x = 0; x < 5; x++)
-    {
-      psu_resistance_values[x] = 0;
-      writePowerValuesToPSUs();
-      for (int i = 0; i < 30; i++)
-      {
-        wifiLoop();
-        populateVoltages();
-      }
-    }*/
-    wifiLoop();
   }
-
+  for (int x = 0; x < 5; x++)
+  {
+    psu_resistance_values[x] = 0;
+    writePowerValuesToPSUs();
+    for (int i = 0; i < 30; i++)
+    {
+      wifiLoop();
+      populateVoltages();
+    }*/
+  }
+  wifiLoop();
 }
+
 void autoLoop()
 {
   // wait till stable before adjusting anything
