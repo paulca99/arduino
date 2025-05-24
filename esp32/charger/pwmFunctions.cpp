@@ -162,8 +162,9 @@ void pwmSetup()
   {
 
     pinMode(psu_voltage_pins[i], OUTPUT);
-    ledcAttachChannel(psu_voltage_pins[i], freq, resolution, pwmChannels[i]);
-    ledcWriteChannel(pwmChannels[i], psu_resistance_values[i]);
+    ledcSetup(pwmChannels[i], freq, resolution);
+    ledcAttachPin(psu_voltage_pins[i], pwmChannels[i]);
+    ledcWrite(pwmChannels[i], psu_resistance_values[i]);
   }
   writePowerValuesToPSUs();
 }
@@ -376,16 +377,22 @@ void balancePSUs()
   int res = psu_resistance_values[targetPSU];
   if(res < range)
   {
-    psu_resistance_values[targetPSU] = psu_resistance_values[targetPSU] +1;
-    writePowerValuesToPSUs();
+    psu_resistance_values[targetPSU] = res +2;
   }
+  targetPSU = findLowestPSU();
+  res = psu_resistance_values[targetPSU];
+  if(res > 1)
+  {
+    psu_resistance_values[targetPSU] = res -2;
+  }
+  writePowerValuesToPSUs();
 }
 void adjustCharger()
 {
   if(powerOn)
   {
-    //populateVoltages();
-    //balancePSUs();
+    populateVoltages();
+    balancePSUs();
   }
   float vbatt = readBattery();
   bool vLimitHit = voltageLimitReached2();

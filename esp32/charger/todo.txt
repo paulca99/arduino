@@ -99,11 +99,11 @@ Again for 5v
 
 Actual values used on board as measured...
 
-1 5.04   8k
-5.03     21.6k
-5.05      32.6k  // means max voltage over 3 must not exceed 12.53 per PSU
-5.11       47.4k
-4.99       59.5k
+1 5.04   8k  multiplier = 2.6002
+5.03     21.6k  multiplier = 5.29334
+5.05      32.6k  multiplier = 7.4534
+5.11       47.4k multiplier = 10.2739726
+4.99       59.5k   multiplier = 12.917115
 
 moving 22 -> 12
 and 21 -> 13 

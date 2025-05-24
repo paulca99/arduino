@@ -6,4 +6,5 @@ float checkBattery();
 void setupBattery();
 double populateVoltages();
 int  findHighestPSU();
+int  findLowestPSU();
 #endif

@@ -2,7 +2,10 @@
 #include "espEmonLib.h"
 #include "pwmFunctions.h"
 #include "battery.h"
-
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+Adafruit_ADS1115 ads1; /* Use this for the 16-bit version */
+Adafruit_ADS1115 ads2;
 /*
 OK , we can read each PSU's output using a relay to connect each to
 a potential divider 8 K  / 470R  uses 0.4W of power
@@ -35,7 +38,17 @@ double psuVoltages[] = {
     12.3,
     12.4,
     12.5};
+int adc_channels[] = {
+    3, 2, 1, 0, 0};
 
+/*1 5.04   8k  multiplier = 2.6002
+5.03     21.6k  multiplier = 5.29334
+5.05      32.6k  multiplier = 7.4534
+5.11       47.4k multiplier = 10.2739726
+4.99       59.5k   multiplier = 12.917115*/
+double voltMultiplier[] = {
+    2.6002, 5.29334, 7.4534, 10.2739726, 12.807115};
+bool adc_enabled = true;
 int batteryPin = 39;
 int voltSamplePin = 35;
 float batteryTotalVoltage = 0.0;
@@ -58,64 +71,70 @@ int findHighestPSU()
   }
   return pos;
 }
-// nicked from github.... makes non linear adc linear.
-// 3.3 = 60, so to scale up....
-// multiply by 18.1818181818
 
-double ReadVoltage(int pin)
+int findLowestPSU()
 {
-  double reading = 0.0;
-  for (int i = 0; i < 5; i++) // average of 5 reads
-  {
-    reading += analogRead(pin); // Reference voltage is 3v3 so maximum reading is 3v3 = 4095 in range 0 to 4095
-  }
-  reading = reading / 5;
+  double lowestVolts = 0;
+  int pos = 0;
 
-  if (reading < 1 || reading > 4095)
-    return 0;
-  return -0.000000000009824 * pow(reading, 3) + 0.000000016557283 * pow(reading, 2) + 0.000854596860691 * reading + 0.065440348345433;
-  //  return -0.000000000000016 * pow(reading, 4) + 0.000000000118171 * pow(reading, 3) - 0.000000301211691 * pow(reading, 2) + 0.001109019271794 * reading + 0.034143524634089;
-} // Added an improved polynomial, use either, comment out as required
-
-void selectPSU(int selection) // pass in 0 to 4
-{
   for (int i = 0; i < 5; i++)
   {
-    //digitalWrite(selectorPins[i], HIGH); // disconnect all
+    if (psuVoltages[i] < lowestVolts)
+    {
+      lowestVolts = psuVoltages[i];
+      pos = i;
+    }
   }
-  //digitalWrite(selectorPins[selection], LOW); // select PSU we want
-  //Serial.println("selecting psu " + (String)selection);
-  //delay(25);
+  return pos;
 }
 
 double readPSUValue(int selection)
 {
-  selectPSU(selection);
-  delay(25);
-  double adcVolts = ReadVoltage(voltSamplePin);
- // digitalWrite(selectorPins[selection], HIGH); // turn it back off
-  delay(50);                                  // DO NOT want to short 2 together
-  double voltage = adcVolts * 18.1818181818;
-
-  // now subtract the other voltages to get the one we have selected
-  Serial.println("Voltage= " + (String)voltage);
-  for (int i = selection; i > 0; i--)
+  int16_t adc;
+  float volts, scaledVolts = 0.0;
+  if (adc_enabled)
   {
-    voltage = voltage - psuVoltages[i - 1];
+    Serial.println("Reading Voltage for PSU " + (String)selection);
+    if (selection == 4)
+    {
+      adc = ads2.readADC_SingleEnded(adc_channels[selection]);
+      volts = ads2.computeVolts(adc);
+    }
+    else
+    {
+      adc = ads1.readADC_SingleEnded(adc_channels[selection]);
+      volts = ads1.computeVolts(adc);
+    }
+
+    scaledVolts = volts * voltMultiplier[selection];
+
+    // now subtract the other voltages to get the one we have selected
+    Serial.println("Voltage= " + (String)scaledVolts);
+    for (int i = selection; i > 0; i--)
+    {
+      scaledVolts = scaledVolts - psuVoltages[i - 1];
+    }
+    // store it in the array
+    psuVoltages[selection] = scaledVolts;
   }
-  // store it in the array
-  psuVoltages[selection] = voltage;
-  return voltage;
+  return scaledVolts;
 }
 
 double populateVoltages() // returns the total
 {
   double retval = 0;
-  for (int i = 0; i < 5; i++)
+  if (adc_enabled)
   {
+    for (int i = 0; i < 5; i++)
+    {
 
-    readPSUValue(i);
-    retval = retval + psuVoltages[i];
+      readPSUValue(i);
+      retval = retval + psuVoltages[i];
+    }
+  }
+  else
+  {
+    Serial.println("ADC disabled, Check wires 21 & 22, disconnect USB, turn AC off and on, ADC needs power from 5V supply" );
   }
   return retval;
 }
@@ -200,7 +219,19 @@ void setupBattery()
 {
   pinMode(batteryPin, INPUT);
   pinMode(voltSamplePin, INPUT);
-
+  adc_enabled = ads1.begin(0x48);
+  if (!adc_enabled)
+  {
+    Serial.println("Failed to initialize ADS1.");
+  }
+  if (adc_enabled)
+  {
+    adc_enabled = ads2.begin(0x49);
+    if (!adc_enabled)
+    {
+      Serial.println("Failed to initialize ADS2.");
+    }
+  }
   for (int i = 0; i < arraySize; i++)
   {
     readBattery();
