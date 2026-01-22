@@ -21,7 +21,7 @@ int psuResistanceValues[5] = {pwmRange, pwmRange, pwmRange, pwmRange, pwmRange};
 static int psuPointer = 0;
 
 // State variables
-static bool powerOn = false;
+bool powerOn = false;
 static bool voltageHighLatch = false;
 
 // Configurable limits (can be updated at runtime)
@@ -144,7 +144,7 @@ static void increaseChargerPower(float startingChargerPower)
          chargerPowerNow < CHARGER_POWER_LIMIT)
   {
     incrementPowerInternal(true, stepAmount);
-    chargerPowerNow = readCharger(powerOn);
+    chargerPowerNow = readCharger();
   }
 }
 
@@ -167,7 +167,7 @@ static void reduceChargerPower(float startingChargerPower)
     
     while (chargerPowerNow > target && !isAtMinPower())
     {
-      chargerPowerNow = readCharger(powerOn);
+      chargerPowerNow = readCharger();
       decrementPower(true, stepAmount);
     }
   }
@@ -292,7 +292,7 @@ void adjustCharger()
     decrementPower(true, 30);
   }
 
-  float presentChargerPower = readCharger(powerOn);
+  float presentChargerPower = readCharger();
   if (presentChargerPower > CHARGER_POWER_LIMIT)
   {
     Serial.println("CHARGE POWER LIMIT REACHED " + String(presentChargerPower));
@@ -327,9 +327,9 @@ void adjustCharger()
       readGrid();
       for (int i = 0; i < 10; i++) // Reading charger a few times stops the power-on spike
       {
-        readCharger(powerOn);
+        readCharger();
       }
-      presentChargerPower = readCharger(powerOn);
+      presentChargerPower = readCharger();
     }
     increaseChargerPower(presentChargerPower);
   }

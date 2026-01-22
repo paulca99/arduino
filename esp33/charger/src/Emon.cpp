@@ -28,6 +28,9 @@ float gtiPhaseOffset = GTI_PHASE_OFFSET;
 float chargerPower = 0.0f;
 float gtiPower = 0.0f;
 
+// Power state (declared in PwmController, accessed here)
+extern bool powerOn;
+
 // Initialize energy monitoring
 void setupEmon()
 {
@@ -49,7 +52,7 @@ void readGrid()
 }
 
 // Read charger current and calculate power
-float readCharger(bool powerOn)
+float readCharger()
 {
   if (!powerOn) {
     chargerPower = 0.0f;
@@ -67,7 +70,7 @@ float readCharger(bool powerOn)
 }
 
 // Read GTI current and calculate power
-float readGti(bool powerOn)
+float readGti()
 {
   if (powerOn) {
     gtiPower = 0.0f;

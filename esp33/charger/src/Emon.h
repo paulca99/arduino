@@ -29,9 +29,12 @@ extern float gtiPhaseOffset;
 extern float chargerPower;
 extern float gtiPower;
 
+// Power state (managed by PwmController)
+extern bool powerOn;
+
 void setupEmon();
 void readGrid();
-float readCharger(bool powerOn);
-float readGti(bool powerOn);
+float readCharger();
+float readGti();
 
 #endif // EMON_H

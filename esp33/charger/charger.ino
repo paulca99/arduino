@@ -78,7 +78,7 @@ void testLoop()
 void autoLoop()
 {
   // Read all sensors
-  readCharger(false); // Pass false initially, will be updated by PwmController
+  readCharger();
   readGrid();
   readBattery();
   wifiLoop();
@@ -87,7 +87,7 @@ void autoLoop()
   // Adjust charger power after stabilization period
   if (loopCount > CHARGER_ADJUST_INTERVAL)
   {
-    readGti(false); // Pass false initially
+    readGti();
     adjustCharger();
     loopCount = CHARGER_ADJUST_INTERVAL + 1; // Prevent overflow
   }
