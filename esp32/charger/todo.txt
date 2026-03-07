@@ -132,3 +132,78 @@ OR have an interrupt that reads all channels continuously and balances.
 TODO Saturday.
 (1) solder earths onto optocouplers.
 (2) replace relay board so 2 turns off.
+
+--------
+Right , cannot get over 3000W , so new plan , seperate 1200W charger to turn on if chargerP goes
+above 1200W...
+ need 4 starter relays , 12V 200 amp
+ and a charger.
+ 2 batteries wired to relays  A 1&2 , 2 onto B 3&4.
+ each relay connects to either my 1. charger +GTI , OR, 2..new charger.
+
+ to control everything automatically will need..
+
+ 1 digital pin to turn new charger on/off.
+ 1 digital pin to control an arduino relay, sending 12V to either relays A1 B2, or A2,B1
+(will mean we can never have all batteries in use....but algorithm can cover that)
+2 pins on ADS1115 to measure each battery voltage
+
+ALGORITHM 
+if chargerP > 1300W
+    turn on charger2
+-----
+if minPower & charger2On
+    turnCharger2 off.
+-----
+
+As for flipping batteries between charger1 and charger2, unsure whether to do this frequently
+i.e.when the voltage discrepancy is over 2 volts , stick the highest onto the GTI , OR ,
+charge one completely then flip. Flipping frequently may make the logic simpler...
+if battA +2 < battB OR battA isFlat()
+    stickBattBonGTI()
+else 
+    stickBattAonGTI()
+
+which should work for charging OR discharging...but...there's a couple of charging scenarios
+(1) solar is 1300W .... battB gets 1200W battA gets 100W
+(2) solar is 1100W .... battB gets 0W    battA gets 1100W
+
+Could just roundRobin every 2 mins... should keep them fairly even.
+
+the flat scenario could be interesting when 1 battery needs 5 chargers and the other needs 4
+Should probably increase resistance on chargers before flipping....incase there's a significant difference.
+ 
+ RELAY FAILURE 
+ if the arduino relay fails it'll be either open or closed... not a problem
+ if a starter relay fails ...
+ 11 10 = battA connected to both chargers, battB connected to GTI. That should make the chargePower 
+ appear to be 4000 based on the little charger experiment, so it should wind down until it turns off.
+
+ Could do with monitoring the relays state somehow. maybe another ADS1115 for the relay output voltages
+if relayA1V == relayA2V we have a problem.
+
+This will put a lot of extra load on the main AC input 
+1200W + 2900W = 5000W @240 volts that is 21A
+
+so may need to switch to bigger AC lead and that caravan plug
+can do that in parallel with kettle lead.
+
+*The starter relay coils may burn out if on constantly so...
+need to measure resistance and work out the minimum 
+voltage we can get away with to turn 2 of them on. AliExpress says
+4.8W is ok for 30 mins, 2.4W is ok for long time ??? whatever that means.
+so ... at 12V I reckon it's 2.4W ... 
+2.4/12 = 200 mA. 
+Which would mean the resistance of the coil is 60 ohms
+so at 15V 15/60 = 250 mA ... 3.75W
+
+SO ... May be best to round robin them every 5 minutes.
+
+
+AMYS HOUSE
+----------------
+
+6 plasterboard + 1 for reveals = 7 2400 x 1200 tapered
+framing 5100 = 7 x 2600 +3 for top/bottom + 6 for noggins = 16 at 5100mm
+rawl plugs
+drywall screws

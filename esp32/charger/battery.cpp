@@ -6,6 +6,7 @@
 #include <Adafruit_ADS1X15.h>
 Adafruit_ADS1115 ads1; /* Use this for the 16-bit version */
 Adafruit_ADS1115 ads2;
+extern boolean afterburnerOn;
 /*
 OK , we can read each PSU's output using a relay to connect each to
 a potential divider 8 K  / 470R  uses 0.4W of power
@@ -58,10 +59,13 @@ int historyPointer = 0;
 
 int findHighestPSU()
 {
+  int max=4;
+  if(afterburnerOn)
+    max=5;
   double highestVolts = 0;
   int pos = 0;
 
-  for (int i = 0; i < 5; i++)
+  for (int i = 0; i < max; i++)
   {
     if (psuVoltages[i] > highestVolts)
     {
@@ -74,10 +78,13 @@ int findHighestPSU()
 
 int findLowestPSU()
 {
-  double lowestVolts = 0;
+  int max=4;
+  if(afterburnerOn)
+    max=5;
+  double lowestVolts = 99;
   int pos = 0;
 
-  for (int i = 0; i < 5; i++)
+  for (int i = 0; i < max; i++)
   {
     if (psuVoltages[i] < lowestVolts)
     {
@@ -88,13 +95,21 @@ int findLowestPSU()
   return pos;
 }
 
+float findVoltageSpan()
+{
+  int lowest=findLowestPSU();
+  int highest=findHighestPSU();
+  return psuVoltages[highest] - psuVoltages[lowest];
+
+}
+
 double readPSUValue(int selection)
 {
   int16_t adc;
   float volts, scaledVolts = 0.0;
   if (adc_enabled)
   {
-    Serial.println("Reading Voltage for PSU " + (String)selection);
+    //Serial.println("Reading Voltage for PSU " + (String)selection);
     if (selection == 4)
     {
       adc = ads2.readADC_SingleEnded(adc_channels[selection]);
@@ -109,7 +124,7 @@ double readPSUValue(int selection)
     scaledVolts = volts * voltMultiplier[selection];
 
     // now subtract the other voltages to get the one we have selected
-    Serial.println("Voltage= " + (String)scaledVolts);
+    //Serial.println("Voltage= " + (String)scaledVolts);
     for (int i = selection; i > 0; i--)
     {
       scaledVolts = scaledVolts - psuVoltages[i - 1];
@@ -128,8 +143,8 @@ double populateVoltages() // returns the total
     for (int i = 0; i < 5; i++)
     {
 
-      readPSUValue(i);
-      retval = retval + psuVoltages[i];
+      //readPSUValue(i);
+      //retval = retval + psuVoltages[i];
     }
   }
   else
@@ -219,7 +234,7 @@ void setupBattery()
 {
   pinMode(batteryPin, INPUT);
   pinMode(voltSamplePin, INPUT);
-  adc_enabled = ads1.begin(0x48);
+ /* adc_enabled = ads1.begin(0x48);
   if (!adc_enabled)
   {
     Serial.println("Failed to initialize ADS1.");
@@ -231,7 +246,7 @@ void setupBattery()
     {
       Serial.println("Failed to initialize ADS2.");
     }
-  }
+  }*/
   for (int i = 0; i < arraySize; i++)
   {
     readBattery();

@@ -1,0 +1,30 @@
+When you return, just paste the text below or say the code saveitall.
+📁 PROJECT MASTER DATA: 5kg Vertical Panel Actuator
+Secret Code: saveitall
+1. Mechanical Geometry (The "Goldilocks" Setup)
+Panel: 880mm length, 5kg weight, Top-Hinged.
+Target Range: 10° (Start/Home) to 70° (End/Open).
+Slider Positions (from Top Hinge): Start at 200mm, End at 526mm.
+Total Stroke: 326mm (approx. 261 motor revolutions).
+Swing Arm: 256mm (Pivot-to-pivot), attached 440mm down the panel.
+Clearance: ~35.7mm available at the 10° start point (safe for 3D prints).
+2. Toolstation Bill of Materials (BOM) & Costing
+Drive Rod: M8 Threaded Bar Zinc Plated 1m (Code: 69124) - £2.30.
+Main Nut: M8 Connector Nut (Code: 86819) - £0.40/ea (Provides 24mm stability).
+Support Nuts: M8 Hexagon Nut Steel (Code: 10063) - £1.95/pk.
+Lubrication: WD-40 Specialist White Lithium Grease (Code: 43407) - £7.48.
+Structure: T-rail (to be sourced/printed) with inverted T-slider.
+3. Engineering Decisions & Constraints
+Motor: NEMA 17 (Bottom-Mounted) to PULL for opening (Tension) and PUSH for closing (Compression + Gravity Assist).
+Coupling: 5mm-to-8mm Rigid or Flexible Beam Coupler (Standard M8 threads).
+3D Printing:
+Slider needs a hexagonal "Nut Trap" for the 24mm Connector Nut.
+Pivot point needs a 40mm offset from the wall to increase start torque.
+Material: PETG recommended for heat resistance near the motor.
+Electronics: Requires 12V/24V PSU + A4988/TMC2209 driver + Arduino/ESP32.
+Next steps for our next session:
+CAD Refinement: Designing the 3D-printed slider with the 40mm offset and Toolstation nut housing.
+Electronics BOM: Finalising the controller and power supply.
+Safety Logic: Selecting the specific limit switches for the 10° and 70° stops.
+Are you ready to lock this in, or is there one last Toolstation part we should add before you close the session?
+AI responses may include mistakes. Learn more

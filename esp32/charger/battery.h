@@ -7,4 +7,5 @@ void setupBattery();
 double populateVoltages();
 int  findHighestPSU();
 int  findLowestPSU();
+float findVoltageSpan();
 #endif

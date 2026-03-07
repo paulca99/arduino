@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Todmorden Solar Tracker Hub</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 15px; }
+        .container { max-width: 600px; margin: auto; }
+        h1 { color: #fbc02d; text-align: center; font-size: 1.5rem; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px; }
+        
+        /* Status Bar */
+        .system-status { background: #1e1e1e; padding: 12px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; font-size: 0.8rem; border: 1px solid #333; }
+        .indicator { height: 10px; width: 10px; background: #4caf50; border-radius: 50%; display: inline-block; margin-right: 5px; box-shadow: 0 0 8px #4caf50; }
+
+        /* Panel Cards */
+        .panel-card { background: #1e1e1e; border-radius: 12px; padding: 18px; margin-bottom: 15px; border-left: 6px solid #fbc02d; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+        .panel-header { display: flex; justify-content: space-between; align-items: center; }
+        .panel-id { font-weight: bold; color: #888; }
+        
+        .angle-val { font-size: 2.5rem; font-weight: 800; color: #fbc02d; margin: 10px 0; }
+        .status-msg { font-size: 0.8rem; color: #4caf50; font-weight: bold; }
+        .moving { color: #ff9800; animation: blink 1.5s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+
+        /* Buttons */
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
+        .btn { padding: 12px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; text-decoration: none; text-align: center; font-size: 0.85rem; transition: 0.2s; }
+        .btn-set { background: #333; color: #eee; border: 1px solid #444; }
+        .btn-cal { background: #444; color: #fbc02d; border: 1px solid #555; }
+        .btn:active { transform: scale(0.95); opacity: 0.8; }
+        
+        .emergency { width: 100%; background: #b71c1c; color: white; padding: 15px; border-radius: 8px; border: none; font-weight: bold; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Solar Fence Hub</h1>
+
+    <button class="emergency">⚠️ Emergency Stow (10°)</button>
+
+    <div class="system-status">
+        <span><span class="indicator"></span> Master: Online</span>
+        <span>WiFi: Strong</span>
+        <span>Time: 14:22:05</span>
+    </div>
+
+    <!-- Example Panel 1: Stationary -->
+    <div class="panel-card">
+        <div class="panel-header">
+            <span class="panel-id">PANEL #1</span>
+            <span class="status-msg">READY</span>
+        </div>
+        <div class="angle-val">34.5°</div>
+        <div class="controls">
+            <a href="/move?id=0&ang=10" class="btn btn-set">Go 10°</a>
+            <a href="/move?id=0&ang=65" class="btn btn-set">Go 65°</a>
+            <a href="/cal?id=0&off=0.5" class="btn btn-cal">Cal +0.5°</a>
+            <a href="/cal?id=0&off=-0.5" class="btn btn-cal">Cal -0.5°</a>
+        </div>
+    </div>
+
+    <!-- Example Panel 2: Moving -->
+    <div class="panel-card" style="border-left-color: #ff9800;">
+        <div class="panel-header">
+            <span class="panel-id">PANEL #2</span>
+            <span class="status-msg moving">MOVING...</span>
+        </div>
+        <div class="angle-val">12.8°</div>
+        <div class="controls">
+            <button class="btn btn-set" disabled>Go 10°</button>
+            <button class="btn btn-set" disabled>Go 65°</button>
+            <button class="btn btn-cal" disabled>Cal +0.5°</button>
+            <button class="btn btn-cal" disabled>Cal -0.5°</button>
+        </div>
+    </div>
+
+</div>
+
+</body>
+</html>

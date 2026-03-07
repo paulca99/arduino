@@ -28,7 +28,7 @@ int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
 float voltageLimit = 56.8;
 int chargerPLimit = 2900; // max watts into charger ( prob 2000 into battery)
-int chargerPowerCreep =0;
+int chargerPowerCreep = 0;
 bool GTIenabled = true;
 const int freq = 200;
 int SOC = 90; // TODO neds calculating
@@ -40,7 +40,7 @@ extern EnergyMonitor charger;
 extern float chargerPower;
 int powerPin = 13;
 int afterBurnerPin = 27;
-int psu_voltage_pins[] = {19, 18, 5, 12, 16};
+int psu_voltage_pins[] = {19, 18, 5, 14, 16};
 int pwmChannels[] = {0, 1, 2, 4, 3};
 const int delayIn = 1;
 
@@ -126,10 +126,10 @@ void turnPowerOff()
 }
 void turnPowerOn()
 {
-  //before power on we must set power to lowest.
+  // before power on we must set power to lowest.
   for (int i = 0; i < psu_count; i++)
   {
-    psu_resistance_values[i] = range-1;
+    psu_resistance_values[i] = range - 1;
   }
   writePowerValuesToPSUs();
   digitalWrite(powerPin, LOW);
@@ -149,7 +149,7 @@ void turnAfterburnerOn()
 {
   digitalWrite(afterBurnerPin, LOW);
   afterburnerOn = true;
-    Serial.println("Afterburner ON");
+  Serial.println("Afterburner ON");
 }
 void pwmSetup()
 {
@@ -198,8 +198,9 @@ void incrementPower(boolean write, int stepAmount)
       {
         psu_pointer = 0;
       }
-      writePowerValuesToPSUs();
+
     }
+    writePowerValuesToPSUs();
   }
 }
 
@@ -221,8 +222,9 @@ void decrementPower(boolean write, int stepAmount)
       {
         psu_resistance_values[psu_pointer] = range;
       }
-      writePowerValuesToPSUs();
+
     }
+    writePowerValuesToPSUs();
   }
 }
 
@@ -244,7 +246,7 @@ void goMid()
 {
   for (int i = 0; i < psu_count; i++)
   {
-    psu_resistance_values[i] = range/2;
+    psu_resistance_values[i] = range / 2;
   }
   writePowerValuesToPSUs();
 }
@@ -268,7 +270,7 @@ void rampUp()
 }
 void rampDown()
 {
- 
+
   for (int dutyCycle = (range * 5); dutyCycle >= 0; dutyCycle--)
   {
     // changing the LED brightness with PWM
@@ -281,13 +283,13 @@ void rampPSUsOneByOne()
 {
   for (int i = 0; i < psu_count; i++)
   {
-    for(int x =0; x<range; x=x+30)
+    for (int x = 0; x < range; x = x + 30)
     {
       psu_resistance_values[i] = x;
       writePowerValuesToPSUs();
       populateVoltages();
     }
-    for(int x =range; x>0; x=x-30)
+    for (int x = range; x > 0; x = x - 30)
     {
       psu_resistance_values[i] = x;
       writePowerValuesToPSUs();
@@ -295,7 +297,6 @@ void rampPSUsOneByOne()
     }
   }
   delay(5000);
-
 }
 void increaseChargerPower(float startingChargerPower)
 {
@@ -306,7 +307,7 @@ void increaseChargerPower(float startingChargerPower)
   float increaseAmount = fakeLowerLimit - fakeGridp; // will always be +ve
 
   Serial.println("startingCpower=" + (String)startingChargerPower + (String)lowerChargerLimit + " - " + (String)grid.realPower + " = " + (String)increaseAmount);
-  if(afterburnerOn)
+  if (afterburnerOn)
     increaseAmount = increaseAmount * 0.7; // don't overshoot
   if (vbattery > 56)
   {
@@ -316,13 +317,13 @@ void increaseChargerPower(float startingChargerPower)
     }
   }
 
-  int stepAmount = (increaseAmount / (12800/range)) + 1; // react faster to large change
+  int stepAmount = (increaseAmount / (12800 / range)) + 1; // react faster to large change
   float target = startingChargerPower + increaseAmount;
 
-  if (target > chargerPLimit )
+  if (target > chargerPLimit)
   {
-    if(chargerPowerCreep == 1)
-      chargerPLimit =chargerPLimit +5;
+    if (chargerPowerCreep == 1)
+      chargerPLimit = chargerPLimit + 5;
     target = chargerPLimit; //  pin it at chargerPLimit
   }
 
@@ -355,7 +356,7 @@ void reduceChargerPower(float startingChargerPower)
       reductionAmount = 200;
     }
   }
-  int stepAmount = (reductionAmount / (12800/range)) + 1; // react faster to large change
+  int stepAmount = (reductionAmount / (12800 / range)) + 1; // react faster to large change
   float target = startingChargerPower - reductionAmount;
   if (reductionAmount > 0) // don't bother if its -ve
   {
@@ -373,27 +374,33 @@ void reduceChargerPower(float startingChargerPower)
 
 void balancePSUs()
 {
-  int targetPSU = findHighestPSU();
-  int res = psu_resistance_values[targetPSU];
-  if(res < range)
+  boolean changed = false;
+  float gap = findVoltageSpan();
+  if (gap > 0.2)
   {
-    psu_resistance_values[targetPSU] = res +2;
+    int targetPSU = findHighestPSU();
+    int res = psu_resistance_values[targetPSU];
+    if (res > 10 && res < (range-10))
+    {
+      Serial.println((String)targetPSU + "    DECREASING VOLTAGE");
+      psu_resistance_values[targetPSU] = res + 1;
+      changed = true;
+    }
+    targetPSU = findLowestPSU();
+    res = psu_resistance_values[targetPSU];
+    if (res < (range - 10) && res > 10)
+    {
+      Serial.println("INCREASING VOLTAGE     " + (String)targetPSU);
+      psu_resistance_values[targetPSU] = res - 1;
+      changed = true;
+    }
+    if (changed)
+      writePowerValuesToPSUs();
   }
-  targetPSU = findLowestPSU();
-  res = psu_resistance_values[targetPSU];
-  if(res > 1)
-  {
-    psu_resistance_values[targetPSU] = res -2;
-  }
-  writePowerValuesToPSUs();
 }
 void adjustCharger()
 {
-  if(powerOn)
-  {
-    populateVoltages();
-    balancePSUs();
-  }
+
   float vbatt = readBattery();
   bool vLimitHit = voltageLimitReached2();
   if (vbatt > voltageLimit)
@@ -431,6 +438,8 @@ void adjustCharger()
       Serial.println("turning on , setting pin LOW");
       turnPowerOn(); // turn on
                      // allow spike
+      if(vbatt > 47.5)
+        turnAfterburnerOn();
       readGrid();
       for (int i = 0; i < 10; i++) // reading the charger a few times stops the power on spike
       {
@@ -439,6 +448,11 @@ void adjustCharger()
       presentChargerPower = readCharger();
     }
     increaseChargerPower(presentChargerPower);
+  }
+  if (powerOn)
+  {
+    populateVoltages();
+    //balancePSUs();
   }
 }
 
@@ -453,27 +467,26 @@ bool isAtMaxPower()
   }
   Serial.println("MAX POWER");
 
-
-
   for (int i = 0; i < psu_count; i++)
   {
-    psu_resistance_values[i] = range-1;
+    psu_resistance_values[i] = range - 1;
   }
   writePowerValuesToPSUs();
   if (afterburnerOn)
   {
-    //could be a PSU has died , make sure grafana updates voltages.
+    // could be a PSU has tripped , make sure grafana updates voltages.
 
     populateVoltages();
-    delay(2000);
+//    delay(2000);
     wifiLoop();
     turnPowerOff();
-    delay(5000);
+    delay(3000);
     turnPowerOn();
+    turnAfterburnerOn();
   }
   else
   {
-    
+
     turnAfterburnerOn();
     delay(6000);
     return false;

@@ -3,7 +3,6 @@
 #include "pwmFunctions.h"
 
 extern int lowerChargerLimit;
-const int freq = 5000;
 const int resolution = 8; // 2^8 = 256
 
 int gridVoltagePin = 34;
@@ -81,9 +80,9 @@ float readGti()
     current = 0;
   }
   gtiPower = current * grid.Vrms;
-  if (gtiPower > 200)
+ if (gtiPower > 120)
   {
-    lowerChargerLimit = (gtiPower / 2) * -1;
+    lowerChargerLimit = (gtiPower ) * -1;
   }
   else
     lowerChargerLimit = -120;
