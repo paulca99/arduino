@@ -1,64 +1,239 @@
-Battery is 2.5% too low 
-also use 100 samples.
-when charger on range should be 0 to 100
-when charger off range should be -100 to 0
-
-turnPowerOff we can subtract 100 from each limit
-turnPowerOn add 100 to each.
-
--Use pot to adjust voltage for 8V out.
--Use pot to get 14V out.
--F-or each measure voltage, then disconnect pot and measure Ra and Rb 
--w-rite it all down 
-
--change opto boards 100 ohm resistor for larger one
--and the 470 ohm resistor for smaller one based on Ra and Rb above
-
--test on breadboard on bench so we get full range.
--Could use -12V to +5 and some different resistors ???
--Could try -12 and +12 ???
+TODO
+------
+Number 1 gives up first around 3500w
 
 
-Get Date from NTP 
-Decide on charger times....e.g.... stab 1
-Could just put the growatt on a timer plug !
-7am ...set range 200 to 300
-11...set range 100 to 200
-3pm ...set range -200 to 0
+Make new controller board for num 2
+    (big job 2 hour)
+
+Fit new BMS in 2 growatts
+    (30 mins each)
+
+Get lead acid mode working on SP3000
+    (unknown)
+
+Make top grill 410 x 150 x 20
+Make botton grill 380 x 100 x 3
+Make feet x2 150 x 100 x 60
+
+GTI only doing 2KW .... why
+
+5=11.7 to 8.3V on old shit PSU.    
+12.3 to 8.9 on new PSU ....WITH THE CONTROLLER FROM 3   
+11.5 TO 9 ON NEW PSU WITH CONTROLLER BOARD WITH A 1K RESISTOR INSTEAD OF THE 470 ON THE DIAGRAM...INTERESTING
+
+4=11.8 to 9v
+3=11.8 to 9v
+2= fucked
+1=11.8 to 9
+
+use controller from 3 as basis for new boards ..... 12.3 to 9v is good
 
 
---Rewire CT clamp for GTI as per diagram
---Mount 8 relay to plyboard at far left BUT MAKE SURE IT'S DETACHABLE so we can service the PSU'S
---Find pin to control GTI and write code.
---When powering ON charger, turnOffGti , when powering OFF charger, turnOnGti.
---Test.
----Fit new PSU in middle using bolts for power , DETACHABLE in case it pops again
----Analyse why it takes 10 seconds for charger to react to grid going -ve
+bench results
+direct from esp32 to VS (no opamp or buffer , just 0 - 3.3 input)
+PR01 = 12.4 to 8.7
+unmodded PD05 = 0.3 volts
+
+Optocoupler 817 tests
+
+130 input R  and 68 output resistor on the 3.3 supply gives 12.4 down to 10.4
+5v = same roughly
+Removing the resistor on the output completely gets it down to 9.6 on 5v
+tried 130 on output ....10.3
+670    10.02
+1.85   = 12.2 to 12.5
+
+output needs no resistor
+input tests
+130 went down to 9.6
+670 went to 10.2
+68 went down to 9.4
+10 ohm on input gives 9 V !!!! hussah   current concerns though
+
+v=ir 
+3.3 = i10
+must be 330 mA   how much can you draw from an esp32
+
+2 and 3 are low 9.7  vs 1 4 and 5 at 10.7
 
 
--Find a working pin for the power relay on the charger sketch(think its on 39)
--Build new op-amp circuit for GTI CT clamp wired to old relay pin 
--Move GTI into rough initial_position
--Add switch wired up to MAIN input for GTI
--Write code to get GTI power and add it to the CSV output string.
--peel backing off breadboard and secure
--secure wires & tape up joints
+--------
+Ordered a few ADS1115 16 bit ADC's as the built in one is shite. 
+AND a couple of ADS1220's 24bit
+To use it I'll need to free up pins 22 and 21.
+21=powerPin
+22=one of the PSU voltage pins
 
--Make sides 
--Make front
--Cutout holes for Network 
--Cutout holes for power 
--Cutout holes for vents 
--line up GTI at correct height
--Cutout holes for GTI terminals
--Then drill holes for charger terminals in-line with GTI terminals.
--Screw together loosely , clean all dust, and wrap it.
--Fit bolts 
--Solder connecttors 
--make busbars to connect to GTI
+resistor values for each PSU based on each doing 13V -> 3.3v
+
+1: 8000 +2722   power= 13 * 13 / 10722 = 15mW 
+2: 8000 +1162   power= 26 * 26 / 9162  = 73mW
+3: 8000 +739    power= 39 * 39 / 8739  = 174mW
+4: 8000 + 542   power= 52 * 52 / 8542  = 316mW
+5: 8000 + 427   power= 65 * 65 / 8427  = 501mW
+
+These will be constantly on , so power usage will be a thing to consider
+
+so in total about 1W .... but maybe we should make try to keep the power in each the same.
+which would mean increasing resistance as volts increases.
+
+P=V*(V/R)...we know V so lets aim for 200mW in each leg 
+R=Vsq / P
+1: r=13sq / 0.2 = 845
+2: r=26sq / 0.2 = 3380
+3: r=7605
+4: r=13520
+5: r=21124
+
+Note the current in each leg will be the same , so the innacuracy od the ADC should be the saME.
+bugger ..just realised the voltage can be 5 on the ADS1115 ... so prob need to redo all this.
+
+Again for 5v
+
+1: 13V 8k  5k = 1mW 
+2: 26V 21K 5k =1mW
+3: 39V 34k 5k   = 1mW
+4: 52V 47K 5K  = 1mW
+5: 65V 60k 5k = = 1mW
+
+Actual values used on board as measured...
+
+1 5.04   8k  multiplier = 2.6002
+5.03     21.6k  multiplier = 5.29334
+5.05      32.6k  multiplier = 7.4534
+5.11       47.4k multiplier = 10.2739726
+4.99       59.5k   multiplier = 12.917115
+
+moving 22 -> 12
+and 21 -> 13 
+
+frees up SCL and SDA.
+reusing multiplexor selector pins.
+
+--- Might not be needed ... discovered a bug in the code, in incrementPower, it was running 
+a for loop decrementing the PSU resistance values, then AFTER the loop it was writing the new values 
+to the PSU's . This would cause a sudden sharp change, maybe flipping one PSU out.
+Changed to write continuously within the loop....but unaible to test as there's no bloody sun.
+
+managed to get some sun... was singing along at 3,300 (with plimit set to 3200). 
+Lasted 1m 10 seconds, then it looks like the fence tripped out, causing a sudden 
+drop to make the charger trip out .... OR.... the charger tripped causing the fence to trip.
+
+512 for PWM resolution is good ... might try 1024.... 2^10 
+
+ADAfruit ADS1115 seems the way to go...
+can average about 200 samples in a second in single non blocking mode.
+https://github.com/adafruit/Adafruit_ADS1X15/blob/master/examples/nonblocking/nonblocking.ino
+
+so I could maybe average 30 readings per channel on every read.
+OR have an interrupt that reads all channels continuously and balances.
+
+TODO Saturday.
+(1) solder earths onto optocouplers.
+(2) replace relay board so 2 turns off.
+
+--------
+Right , cannot get over 3000W , so new plan , seperate 1200W charger to turn on if chargerP goes
+above 1200W...
+ need 4 starter relays , 12V 200 amp
+ and a charger.
+ 2 batteries wired to relays  A 1&2 , 2 onto B 3&4.
+ each relay connects to either my 1. charger +GTI , OR, 2..new charger.
+
+ to control everything automatically will need..
+
+ 1 digital pin to turn new charger on/off.
+ 1 digital pin to control an arduino relay, sending 12V to either relays A1 B2, or A2,B1
+(will mean we can never have all batteries in use....but algorithm can cover that)
+2 pins on ADS1115 to measure each battery voltage
+
+ALGORITHM 
+if chargerP > 1300W
+    turn on charger2
+-----
+if minPower & charger2On
+    turnCharger2 off.
+-----
+
+As for flipping batteries between charger1 and charger2, unsure whether to do this frequently
+i.e.when the voltage discrepancy is over 2 volts , stick the highest onto the GTI , OR ,
+charge one completely then flip. Flipping frequently may make the logic simpler...
+if battA +2 < battB OR battA isFlat()
+    stickBattBonGTI()
+else 
+    stickBattAonGTI()
+
+which should work for charging OR discharging...but...there's a couple of charging scenarios
+(1) solar is 1300W .... battB gets 1200W battA gets 100W
+(2) solar is 1100W .... battB gets 0W    battA gets 1100W
+
+Could just roundRobin every 2 mins... should keep them fairly even.
+
+the flat scenario could be interesting when 1 battery needs 5 chargers and the other needs 4
+Should probably increase resistance on chargers before flipping....incase there's a significant difference.
+ 
+ RELAY FAILURE 
+ if the arduino relay fails it'll be either open or closed... not a problem
+ if a starter relay fails ...
+ 11 10 = battA connected to both chargers, battB connected to GTI. That should make the chargePower 
+ appear to be 4000 based on the little charger experiment, so it should wind down until it turns off.
+
+ Could do with monitoring the relays state somehow. maybe another ADS1115 for the relay output voltages
+if relayA1V == relayA2V we have a problem.
+
+This will put a lot of extra load on the main AC input 
+1200W + 2900W = 5000W @240 volts that is 21A
+
+so may need to switch to bigger AC lead and that caravan plug
+can do that in parallel with kettle lead.
+
+*The starter relay coils may burn out if on constantly so...
+need to measure resistance and work out the minimum 
+voltage we can get away with to turn 2 of them on. AliExpress says
+4.8W is ok for 30 mins, 2.4W is ok for long time ??? whatever that means.
+so ... at 12V I reckon it's 2.4W ... 
+2.4/12 = 200 mA. 
+Which would mean the resistance of the coil is 60 ohms
+so at 15V 15/60 = 250 mA ... 3.75W
+
+SO ... May be best to round robin them every 5 minutes.
 
 
+AMYS HOUSE
+----------------
+
+6 plasterboard + 1 for reveals = 7 2400 x 1200 tapered edge
+16 x framing 25 x 50 x 5100mm  slate lathe 
+
+Happy Birthday MAA, Tried ringing yesterday but you must've been out.
+Been racking my brains on how I can help with the Stu scenario. So I decided to treat it like a work problem
+and break it down into requirements and solutions.
+
+Requirements
+1. Mum needs to get away from the Stu stress, and get well.
+2. Stu needs to be able to cope financially and medically when Mum's gone.
+
+Options
+1. Sell up, buy Stu a house, buy yourself a house closer to us. The simplest option and safest option.
+
+2. Train Stu to run the cottages. I think he keeps getting scammed because he's trying to
+earn an income cos he knows you're not gonna be around forever to look after him. He needs 
+to realise that he's already sitting on a regular income from the cottages... just needs to 
+put his effort into learning how it all works.
+
+HOW to do option 2
+2.1  Change all the emails relating to the cottages to a shared email...kentsfarm@gmail.com
+2.2  Share the password with Stu.
+2.3  Write a list of daily chores...e.g.  1 check emails, check bookings, blah blah.
+
+If we can get him to a point where he's doing some of it, OR simply doing the bits that stop you from 
+going galavanting, you can come up here and stay with us whenever you want for as long as you want.
+
+Also, you can give him an ultimatum, learn how to run the cottages, take your own medicine regularly,
+you've got 3 months then I'm going to Paul's for a month.... if you cock it up, I'm selling the
+place. 
 
 
-
+Apologies all, I was taking the responsibility of leader waaaaaaaay to seriously, I didn't want to make the wrong decision and let you guys down. Got to the point I was getting up in the middle of the night to do stuff for the alliance,laying awake wondering if we're researching the right stuff, sneaking off from work, it's badly affected me for the past 2 weeks, so when someone said lets just join a better alliance I blew a gasket and threw my toys out the pram.  AAAAAnyway .... GOD is nuts ,I thought I was obsessed, theres 3 guys (Emmanuelle being one) who buy at least 10 packs a day, they must be completely loaded, but apart from that it's pretty much the same as ours, the only extra event they have is the swordland showdown, Their beartrap is at 2am,they've unlocked the plains enrichment tech, I'm not playing anymore so we'll see how long it takes them to notice and kick me out, but if you want anymore intel before they do just shout and I'll sneak a peek. 
 

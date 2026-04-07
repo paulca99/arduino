@@ -13,4 +13,12 @@ void turnGTIOff();
 void turnGTIOn();
 void turnPowerOn();
 void turnPowerOff();
+void turnAfterburnerOn();
+void turnAfterburnerOff();
+void setupTest();
+void goBottom();
+void goMid();
+void goTop();
+void rampPSUsOneByOne();
+void writePowerValuesToPSUs();
 #endif

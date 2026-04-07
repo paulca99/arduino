@@ -3,30 +3,24 @@
 #include "pwmFunctions.h"
 #include "battery.h"
 #include "timestuff.h"
+extern int psu_resistance_values[];
 int loopcount = 0;
-hw_timer_t *timer = NULL;
-void ARDUINO_ISR_ATTR onTimer()
-{
-  // ESP.restart();
-  Serial.println("Timer fired");
-}
+int checkTime = 0;
+// int timeToCheckBattery=0;
 
 void setup()
 {
-    
+
   Serial.begin(115200);
-    while (!Serial) {
-    ;  // wait for serial port to connect. Needed for native USB port only
+  while (!Serial)
+  {
+    ; // wait for serial port to connect. Needed for native USB port only
   }
   delay(2000);
   Serial.println("setupStart");
-  timer = timerBegin(0, 320, true);
-  timerAttachInterrupt(timer, &onTimer, true);
-  timerAlarmWrite(timer, 3600000000, true); // 4hour
-  timerAlarmEnable(timer);
-       Serial.println("wifisetupStart");
+  Serial.println("wifisetupStart");
   wifiSetup();
-     Serial.println("timesetupStart");
+  Serial.println("timesetupStart");
   timeSetup();
   setupEmon();
   setupBattery();
@@ -36,26 +30,69 @@ void setup()
 void loop()
 {
   autoLoop();
-  // testLoop();
+  //testLoop();
 }
 
 void testLoop()
 {
-  rampDown();
-  delay(5000);
-  // rampUp();
-  // wifiLoop();
+  setupTest();
+  while (true)
+  {
+    /*goTop();
+    delay(3000);
+    goMid();
+    delay(3000);
+    goBottom();
+    delay(3000);*/
+    Serial.println("testloop");
+
+    goTop();
+    populateVoltages();
+    wifiLoop();
+    /*
+    for (int x = 0; x < 5; x++)
+    {
+      psu_resistance_values[x] = 511;
+      writePowerValuesToPSUs();
+      for (int i = 0; i < 30; i++)
+      {
+        wifiLoop();
+        populateVoltages();
+      }
+    }
+    for (int x = 0; x < 5; x++)
+    {
+      psu_resistance_values[x] = 0;
+      writePowerValuesToPSUs();
+      for (int i = 0; i < 30; i++)
+      {
+        wifiLoop();
+        populateVoltages();
+      }
+    }
+    wifiLoop();*/
+  }
 }
+
 void autoLoop()
 {
   // wait till stable before adjusting anything
 
-  //Serial.println("FreeHeap:" + (String)ESP.getFreeHeap());
+  // Serial.println("FreeHeap:" + (String)ESP.getFreeHeap());
   readCharger();
   readGrid();
   readBattery();
   wifiLoop();
-  timeLoop();
+  if (checkTime == 50)
+  {
+    timeLoop();
+    checkTime = 0;
+  }
+  /*if(timeToCheckBattery == 16)
+  //{
+    checkBattery();
+    timeToCheckBattery=0;
+  }*/
   if (loopcount > 15)
   {
     readGti();
@@ -64,4 +101,6 @@ void autoLoop()
     loopcount = 16;
   }
   loopcount++;
+  checkTime++;
+  // timeToCheckBattery++;
 }
