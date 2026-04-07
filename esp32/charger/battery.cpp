@@ -226,7 +226,7 @@ float readBatteryOnce()
   float voltageOnPin = (adcValue * 3.3) / 4095;
   float rV = voltageOnPin * 22.85;
 
-  batteryTotalVoltage = (rV - 39.5) * (61.6 - 44.5) / (63.5 - 39.5) + 44.5;
+  batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
 
   return batteryTotalVoltage;
 }
