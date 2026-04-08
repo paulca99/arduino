@@ -57,7 +57,7 @@ float history[60];
 int arraySize = 60;
 int historyPointer = 0;
 bool useADSForBattery = false;  // false = use pin 39 (original), true = use ADS1115 ads2 channel 1
-int adsBatteryChannel = 1;      // channel on ads2 wired to battery voltage divider (68kΩ/6.2kΩ)
+int adsBatteryChannel = 1;      // channel on ads2 wired to battery voltage divider (68kΩ/6.8kΩ)
 
 int findHighestPSU()
 {
@@ -215,24 +215,23 @@ float readBatteryOnce()
 {
   float rV;
 
-  if (useADSForBattery)
-  {
-    int16_t adc = ads2.readADC_SingleEnded(adsBatteryChannel);
-    float voltageOnPin = ads2.computeVolts(adc);
-    // 68kΩ + 6.2kΩ divider: multiply by (68000+6200)/6200 = 11.968
-    // Vout_max at 60V battery = 5.013V, within default GAIN_TWOTHIRDS (±6.144V)
-    rV = voltageOnPin * (74200.0 / 6200.0);
-    Serial.println("ADS batt pin V =:" + (String)voltageOnPin + " rV=" + (String)rV);
-  }
-  else
-  {
-    int adcValue = 0;
-    delay(50);
-    adcValue += analogRead(batteryPin);
-    float voltageOnPin = (adcValue * 3.3) / 4095;
-    rV = voltageOnPin * 22.85;
-    Serial.println("PIN39 batt pin V =:" + (String)voltageOnPin + " rV=" + (String)rV);
-  }
+  // Always read and log pin39 ESP value
+  int adcValue = 0;
+  delay(50);
+  adcValue += analogRead(batteryPin);
+  float pin39V = (adcValue * 3.3) / 4095;
+  float pin39rV = pin39V * 22.85;
+  Serial.println("PIN39 batt pin V =:" + (String)pin39V + " rV=" + (String)pin39rV);
+
+  // Always read and log ADS1115 value
+  int16_t adc = ads2.readADC_SingleEnded(adsBatteryChannel);
+  float adsV = ads2.computeVolts(adc);
+  // 68kΩ + 6.8kΩ divider: multiply by (68000+6800)/6800 = 11.0
+  // Vout_max at 60V battery = 5.455V, within default GAIN_TWOTHIRDS (±6.144V)
+  float adsrV = adsV * (74800.0 / 6800.0);
+  Serial.println("ADS batt pin V =:" + (String)adsV + " rV=" + (String)adsrV);
+
+  rV = useADSForBattery ? adsrV : pin39rV;
 
   batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
 
