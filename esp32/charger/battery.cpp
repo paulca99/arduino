@@ -47,7 +47,6 @@ int adc_channels[] = {
 5.05      32.6k  multiplier = 7.4534
 5.11       47.4k multiplier = 10.2739726
 4.99       59.5k   multiplier = 12.917115*/
-// Multipliers for GAIN_TWOTHIRDS (±6.144V) used on all PSU channels
 double voltMultiplier[] = {
     2.6002, 5.29334, 7.4534, 10.2739726, 12.917115};
 bool adc_enabled = true;
@@ -58,7 +57,7 @@ float history[60];
 int arraySize = 60;
 int historyPointer = 0;
 bool useADSForBattery = false;  // false = use pin 39 (original), true = use ADS1115 ads2 channel 1
-int adsBatteryChannel = 1;      // channel on ads2 wired to battery voltage divider (68kΩ/1kΩ)
+int adsBatteryChannel = 1;      // channel on ads2 wired to battery voltage divider (68kΩ/6.2kΩ)
 
 int findHighestPSU()
 {
@@ -218,16 +217,11 @@ float readBatteryOnce()
 
   if (useADSForBattery)
   {
-    // Switch ads2 to GAIN_FOUR (±1.024V) for the battery channel whose divider
-    // outputs a maximum of ~0.87V at 60V (68kΩ/1kΩ), then restore GAIN_TWOTHIRDS
-    // so that PSU 5 (channel 0, ~5V) continues to read correctly.
-    ads2.setGain(GAIN_FOUR);
     int16_t adc = ads2.readADC_SingleEnded(adsBatteryChannel);
     float voltageOnPin = ads2.computeVolts(adc);
-    ads2.setGain(GAIN_TWOTHIRDS);
-    // 68kΩ + 1kΩ divider: multiply by (68000+1000)/1000 = 69.0
-    // Vout_max at 60V = 0.870V, safely within GAIN_FOUR ±1.024V
-    rV = voltageOnPin * (69000.0 / 1000.0);
+    // 68kΩ + 6.2kΩ divider: multiply by (68000+6200)/6200 = 11.968
+    // Vout_max at 60V battery = 5.013V, within default GAIN_TWOTHIRDS (±6.144V)
+    rV = voltageOnPin * (74200.0 / 6200.0);
     Serial.println("ADS batt pin V =:" + (String)voltageOnPin + " rV=" + (String)rV);
   }
   else
@@ -261,15 +255,6 @@ void setupBattery()
     {
       Serial.println("Failed to initialize ADS2.");
     }
-  }
-  if (adc_enabled)
-  {
-    // Both ADCs use GAIN_TWOTHIRDS (±6.144V) as the default gain.
-    // All PSU voltage dividers output ~5V which is safely within this range.
-    // The battery channel on ads2 switches to GAIN_FOUR per-read in readBatteryOnce().
-    ads1.setGain(GAIN_TWOTHIRDS);
-    ads2.setGain(GAIN_TWOTHIRDS);
-    Serial.println("ADS1115 gain set to GAIN_TWOTHIRDS");
   }
 
   for (int i = 0; i < arraySize; i++)
