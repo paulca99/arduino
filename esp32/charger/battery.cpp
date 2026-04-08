@@ -246,9 +246,10 @@ void setupBattery()
   pinMode(batteryPin, INPUT);
   pinMode(voltSamplePin, INPUT);
 
-  Wire.begin();
+  Wire.begin(21,22);
+
   Wire.setClock(100000);
-  delay(100);
+  delay(300);
   adc_enabled = ads1.begin(0x48);
   if (!adc_enabled)
   {
