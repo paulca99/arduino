@@ -50,6 +50,7 @@ int adc_channels[] = {
 double voltMultiplier[] = {
     2.6002, 5.29334, 7.4534, 10.2739726, 12.917115};
 bool adc_enabled = true;
+bool ads2_enabled = false;
 int batteryPin = 39;
 int voltSamplePin = 35;
 float batteryTotalVoltage = 0.0;
@@ -223,15 +224,18 @@ float readBatteryOnce()
   float pin39rV = pin39V * 22.85;
   Serial.println("PIN39 batt pin V =:" + (String)pin39V + " rV=" + (String)pin39rV);
 
-  // Always read and log ADS1115 value
-  int16_t adc = ads2.readADC_SingleEnded(adsBatteryChannel);
-  float adsV = ads2.computeVolts(adc);
-  // 68kΩ + 6.8kΩ divider: multiply by (68000+6800)/6800 = 11.0
-  // Vout_max at 60V battery = 5.455V, within default GAIN_TWOTHIRDS (±6.144V)
-  float adsrV = adsV * (74800.0 / 6800.0);
-  Serial.println("ADS batt pin V =:" + (String)adsV + " rV=" + (String)adsrV);
+  // Read and log ADS1115 value only if ads2 initialized successfully
+  float adsrV = 0.0;
+  if (ads2_enabled) {
+    int16_t adc = ads2.readADC_SingleEnded(adsBatteryChannel);
+    float adsV = ads2.computeVolts(adc);
+    // 68kΩ + 6.8kΩ divider: multiply by (68000+6800)/6800 = 11.0
+    // Vout_max at 60V battery = 5.455V, within default GAIN_TWOTHIRDS (±6.144V)
+    adsrV = adsV * (74800.0 / 6800.0);
+    Serial.println("ADS batt pin V =:" + (String)adsV + " rV=" + (String)adsrV);
+  }
 
-  rV = useADSForBattery ? adsrV : pin39rV;
+  rV = (useADSForBattery && ads2_enabled) ? adsrV : pin39rV;
 
   batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
 
@@ -247,13 +251,10 @@ void setupBattery()
   {
     Serial.println("Failed to initialize ADS1.");
   }
-  if (adc_enabled)
+  ads2_enabled = ads2.begin(0x49);
+  if (!ads2_enabled)
   {
-    adc_enabled = ads2.begin(0x49);
-    if (!adc_enabled)
-    {
-      Serial.println("Failed to initialize ADS2.");
-    }
+    Serial.println("Failed to initialize ADS2.");
   }
 
   for (int i = 0; i < arraySize; i++)
