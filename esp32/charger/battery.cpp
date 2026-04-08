@@ -217,9 +217,13 @@ float readBatteryOnce()
   float rV;
 
   // Always read and log pin39 ESP value
-  int adcValue = 0;
-  delay(50);
-  adcValue += analogRead(batteryPin);
+  // Oversample 32 times to reduce WiFi-induced ADC noise on ESP32
+  long adcSum = 0;
+  for (int i = 0; i < 32; i++) {
+    adcSum += analogRead(batteryPin);
+    delayMicroseconds(500);
+  }
+  int adcValue = (int)(adcSum / 32);
   float pin39V = (adcValue * 3.3) / 4095;
   float pin39rV = pin39V * 22.85;
   Serial.println("PIN39 batt pin V =:" + (String)pin39V + " rV=" + (String)pin39rV);
@@ -247,6 +251,8 @@ void setupBattery()
   pinMode(voltSamplePin, INPUT);
 
   Wire.begin(21,22);
+
+
 
   Wire.setClock(100000);
   delay(300);
