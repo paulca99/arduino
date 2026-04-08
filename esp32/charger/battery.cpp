@@ -47,10 +47,9 @@ int adc_channels[] = {
 5.05      32.6k  multiplier = 7.4534
 5.11       47.4k multiplier = 10.2739726
 4.99       59.5k   multiplier = 12.917115*/
-// Multipliers recalculated for GAIN_FOUR (x6 vs original GAIN_TWOTHIRDS)
-// *** These will need re-verifying against known voltages after hardware bring-up ***
+// Multipliers for GAIN_TWOTHIRDS (±6.144V) used on all PSU channels
 double voltMultiplier[] = {
-    15.6012, 31.7600, 44.7204, 61.6438, 76.8427};
+    2.6002, 5.29334, 7.4534, 10.2739726, 12.917115};
 bool adc_enabled = true;
 int batteryPin = 39;
 int voltSamplePin = 35;
@@ -219,8 +218,13 @@ float readBatteryOnce()
 
   if (useADSForBattery)
   {
+    // Switch ads2 to GAIN_FOUR (±1.024V) for the battery channel whose divider
+    // outputs a maximum of ~0.87V at 60V (68kΩ/1kΩ), then restore GAIN_TWOTHIRDS
+    // so that PSU 5 (channel 0, ~5V) continues to read correctly.
+    ads2.setGain(GAIN_FOUR);
     int16_t adc = ads2.readADC_SingleEnded(adsBatteryChannel);
     float voltageOnPin = ads2.computeVolts(adc);
+    ads2.setGain(GAIN_TWOTHIRDS);
     // 68kΩ + 1kΩ divider: multiply by (68000+1000)/1000 = 69.0
     // Vout_max at 60V = 0.870V, safely within GAIN_FOUR ±1.024V
     rV = voltageOnPin * (69000.0 / 1000.0);
@@ -260,11 +264,12 @@ void setupBattery()
   }
   if (adc_enabled)
   {
-    // Set GAIN_FOUR (±1.024V) on both ADS1115s
-    // This covers all PSU divider outputs and the new battery divider
-    ads1.setGain(GAIN_FOUR);
-    ads2.setGain(GAIN_FOUR);
-    Serial.println("ADS1115 gain set to GAIN_FOUR");
+    // Both ADCs use GAIN_TWOTHIRDS (±6.144V) as the default gain.
+    // All PSU voltage dividers output ~5V which is safely within this range.
+    // The battery channel on ads2 switches to GAIN_FOUR per-read in readBatteryOnce().
+    ads1.setGain(GAIN_TWOTHIRDS);
+    ads2.setGain(GAIN_TWOTHIRDS);
+    Serial.println("ADS1115 gain set to GAIN_TWOTHIRDS");
   }
 
   for (int i = 0; i < arraySize; i++)
