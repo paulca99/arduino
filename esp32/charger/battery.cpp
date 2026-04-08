@@ -57,7 +57,7 @@ float history[60];
 int arraySize = 60;
 int historyPointer = 0;
 bool useADSForBattery = false;  // false = use pin 39 (original), true = use ADS1115 ads2 channel 1
-int adsBatteryChannel = 1;      // channel on ads2 wired to battery voltage divider (68kΩ/6.8kΩ)
+int adsBatteryChannel = 3;      // channel on ads2 wired to battery voltage divider (68kΩ/6.8kΩ)
 
 int findHighestPSU()
 {
