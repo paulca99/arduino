@@ -59,7 +59,7 @@ float history[60];
 int arraySize = 60;
 int historyPointer = 0;
 bool useADSForBattery = false;  // false = use pin 39 (original), true = use ADS1115 ads2 channel 1
-int adsBatteryChannel = 1;      // channel on ads2 wired to battery voltage divider (82kΩ/1.5kΩ)
+int adsBatteryChannel = 1;      // channel on ads2 wired to battery voltage divider (68kΩ/1kΩ)
 
 int findHighestPSU()
 {
@@ -221,8 +221,9 @@ float readBatteryOnce()
   {
     int16_t adc = ads2.readADC_SingleEnded(adsBatteryChannel);
     float voltageOnPin = ads2.computeVolts(adc);
-    // 82kΩ + 1.5kΩ divider: multiply by (82000+1500)/1500
-    rV = voltageOnPin * (83500.0 / 1500.0);
+    // 68kΩ + 1kΩ divider: multiply by (68000+1000)/1000 = 69.0
+    // Vout_max at 60V = 0.870V, safely within GAIN_FOUR ±1.024V
+    rV = voltageOnPin * (69000.0 / 1000.0);
     Serial.println("ADS batt pin V =:" + (String)voltageOnPin + " rV=" + (String)rV);
   }
   else
