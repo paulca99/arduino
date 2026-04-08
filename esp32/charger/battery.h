@@ -8,4 +8,5 @@ double populateVoltages();
 int  findHighestPSU();
 int  findLowestPSU();
 float findVoltageSpan();
+extern bool useADSForBattery;  // toggle: false=pin39, true=ADS1115 ads2 ch1
 #endif

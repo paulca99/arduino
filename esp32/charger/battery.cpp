@@ -47,8 +47,10 @@ int adc_channels[] = {
 5.05      32.6k  multiplier = 7.4534
 5.11       47.4k multiplier = 10.2739726
 4.99       59.5k   multiplier = 12.917115*/
+// Multipliers recalculated for GAIN_FOUR (x6 vs original GAIN_TWOTHIRDS)
+// *** These will need re-verifying against known voltages after hardware bring-up ***
 double voltMultiplier[] = {
-    2.6002, 5.29334, 7.4534, 10.2739726, 12.807115};
+    15.6012, 31.7600, 44.7204, 61.6438, 76.8427};
 bool adc_enabled = true;
 int batteryPin = 39;
 int voltSamplePin = 35;
@@ -56,6 +58,8 @@ float batteryTotalVoltage = 0.0;
 float history[60];
 int arraySize = 60;
 int historyPointer = 0;
+bool useADSForBattery = false;  // false = use pin 39 (original), true = use ADS1115 ads2 channel 1
+int adsBatteryChannel = 1;      // channel on ads2 wired to battery voltage divider (82kΩ/1.5kΩ)
 
 int findHighestPSU()
 {
@@ -211,20 +215,25 @@ float readBattery()
 
 float readBatteryOnce()
 {
-  int adcValue = 0;
-  delay(50);
-  adcValue += analogRead(batteryPin);
-  // Serial.println("Batt pin adv val =:"+(String)adcValue);
+  float rV;
 
-  // 4096=3.3V
-  //  39.5V  is really 44.5
-  //  63.5   is really 61.6
-  /*
-  y = (x - 39.5) * (61.6 - 44.5) / (63.5 - 39.5) + 44.5
-  */
-  //
-  float voltageOnPin = (adcValue * 3.3) / 4095;
-  float rV = voltageOnPin * 22.85;
+  if (useADSForBattery)
+  {
+    int16_t adc = ads2.readADC_SingleEnded(adsBatteryChannel);
+    float voltageOnPin = ads2.computeVolts(adc);
+    // 82kΩ + 1.5kΩ divider: multiply by (82000+1500)/1500
+    rV = voltageOnPin * (83500.0 / 1500.0);
+    Serial.println("ADS batt pin V =:" + (String)voltageOnPin + " rV=" + (String)rV);
+  }
+  else
+  {
+    int adcValue = 0;
+    delay(50);
+    adcValue += analogRead(batteryPin);
+    float voltageOnPin = (adcValue * 3.3) / 4095;
+    rV = voltageOnPin * 22.85;
+    Serial.println("PIN39 batt pin V =:" + (String)voltageOnPin + " rV=" + (String)rV);
+  }
 
   batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
 
@@ -234,7 +243,8 @@ void setupBattery()
 {
   pinMode(batteryPin, INPUT);
   pinMode(voltSamplePin, INPUT);
- /* adc_enabled = ads1.begin(0x48);
+
+  adc_enabled = ads1.begin(0x48);
   if (!adc_enabled)
   {
     Serial.println("Failed to initialize ADS1.");
@@ -246,7 +256,16 @@ void setupBattery()
     {
       Serial.println("Failed to initialize ADS2.");
     }
-  }*/
+  }
+  if (adc_enabled)
+  {
+    // Set GAIN_FOUR (±1.024V) on both ADS1115s
+    // This covers all PSU divider outputs and the new battery divider
+    ads1.setGain(GAIN_FOUR);
+    ads2.setGain(GAIN_FOUR);
+    Serial.println("ADS1115 gain set to GAIN_FOUR");
+  }
+
   for (int i = 0; i < arraySize; i++)
   {
     readBattery();
