@@ -7,7 +7,6 @@
 #include <ESPAsyncWebSrv.h>
 
 extern bool GTIenabled;
-extern double psuVoltages[];
 extern struct tm timeinfo;
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
@@ -98,7 +97,7 @@ void wifiSetup() {
 
 void generateCsvString()
 {
-  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(chargerPower)+","+(String)(gtiPower)+","+(String)timeinfo.tm_hour+","+(String)GTIenabled+","+(String)psuVoltages[0]+","+(String)psuVoltages[1]+","+(String)psuVoltages[2]+","+(String)psuVoltages[3]+","+(String)psuVoltages[4]+","+(String)chargerPLimit+",EOT\n";
+  csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(chargerPower)+","+(String)(gtiPower)+","+(String)timeinfo.tm_hour+","+(String)GTIenabled+","+(String)chargerPLimit+",EOT\n";
 }
 void wifiLoop() {
   generateCsvString();

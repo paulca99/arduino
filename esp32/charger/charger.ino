@@ -45,9 +45,7 @@ void testLoop()
     goBottom();
     delay(3000);*/
     Serial.println("testloop");
-
     goTop();
-    populateVoltages();
     wifiLoop();
     /*
     for (int x = 0; x < 5; x++)
