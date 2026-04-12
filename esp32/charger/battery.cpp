@@ -15,7 +15,7 @@ float history[60];
 int arraySize = 60;
 int historyPointer = 0;
 
-bool useADSForBattery = false;  // false = pin 39 (original), true = ADS1115 ads1 channel 0
+bool useADSForBattery = true;  // true = ADS1115 ads1 channel 0 (primary), false = pin 39 fallback
 int adsBatteryChannel = 0;      // ADS1115 channel wired to battery divider (51k+6.8k / 1k)
 
 void addToHistory(float value)
@@ -62,8 +62,6 @@ float readBattery()
 
 float readBatteryOnce()
 {
-  float rV;
-
   // Always read and print pin 39
   int adcValue = 0;
   delay(50);
@@ -76,22 +74,16 @@ float readBatteryOnce()
   // Always read and print ADS
   int16_t adc = ads1.readADC_SingleEnded(adsBatteryChannel);
   float voltageOnPinADS = ads1.computeVolts(adc);
-  // Multiplier calibrated: real=47.8V, rV=46.78V => 58.8 * (47.8/46.78) = 60.08
-  float rVADS = voltageOnPinADS * (60080.0 / 1000.0);
-  Serial.println("ADS   V=" + (String)voltageOnPinADS + " rV=" + (String)rVADS);
+  // Pure Ohm's law: Vbatt = Vout * (R1+R2)/R2
+  // R1 = 51kΩ + 6.8kΩ = 57800Ω, R2 = 1000Ω => multiplier = 58800/1000 = 58.8
+  float rVADS = voltageOnPinADS * 58.8;
+  Serial.println("ADS   V=" + (String)voltageOnPinADS + " rVADS=" + (String)rVADS);
 
   // Use whichever source is selected by the flag
   if (useADSForBattery)
-    rV = rVADS;
+    batteryTotalVoltage = rVADS;  // ADS1115 is linear — no correction needed
   else
-    rV = rV39;
-
-  // ADS1115 is linear — rV is already accurate, no correction needed
-  // Pin 39 requires correction for ESP32 ADC non-linearity
-  if (useADSForBattery)
-    batteryTotalVoltage = rV;
-  else
-    batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
+    batteryTotalVoltage = (rV39 - 45.8) * 1.3663 + 45.0;  // pin 39 non-linearity correction
 
   return batteryTotalVoltage;
 }
