@@ -50,6 +50,8 @@ int adc_channels[] = {
 double voltMultiplier[] = {
     2.6002, 5.29334, 7.4534, 10.2739726, 12.807115};
 bool adc_enabled = true;
+bool useADSForBattery = false;
+int adsBatteryChannel = 0;
 int batteryPin = 39;
 int voltSamplePin = 35;
 float batteryTotalVoltage = 0.0;
@@ -211,42 +213,40 @@ float readBattery()
 
 float readBatteryOnce()
 {
+  // Always read and print pin 39
   int adcValue = 0;
   delay(50);
   adcValue += analogRead(batteryPin);
-  // Serial.println("Batt pin adv val =:"+(String)adcValue);
+  float voltageOnPin39 = (adcValue * 3.3) / 4095;
+  float rV39 = voltageOnPin39 * 22.85;
+  float batt39 = (rV39 - 45.8) * 1.3663 + 45.0;
+  Serial.println("PIN39 V=" + (String)voltageOnPin39 + " rV=" + (String)rV39 + " batt=" + (String)batt39);
 
-  // 4096=3.3V
-  //  39.5V  is really 44.5
-  //  63.5   is really 61.6
-  /*
-  y = (x - 39.5) * (61.6 - 44.5) / (63.5 - 39.5) + 44.5
-  */
-  //
-  float voltageOnPin = (adcValue * 3.3) / 4095;
-  float rV = voltageOnPin * 22.85;
+  // Always read and print ADS
+  int16_t adc = ads1.readADC_SingleEnded(adsBatteryChannel);
+  float voltageOnPinADS = ads1.computeVolts(adc);
+  float rVADS = voltageOnPinADS * (58800.0 / 1000.0);
+  float battADS = (rVADS - 45.8) * 1.3663 + 45.0;
+  Serial.println("ADS   V=" + (String)voltageOnPinADS + " rV=" + (String)rVADS + " batt=" + (String)battADS);
 
-  batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
-
+  // Use whichever source is selected by the flag
+  batteryTotalVoltage = useADSForBattery ? battADS : batt39;
   return batteryTotalVoltage;
 }
 void setupBattery()
 {
   pinMode(batteryPin, INPUT);
   pinMode(voltSamplePin, INPUT);
- /* adc_enabled = ads1.begin(0x48);
+  adc_enabled = ads1.begin(0x48);
   if (!adc_enabled)
   {
     Serial.println("Failed to initialize ADS1.");
   }
-  if (adc_enabled)
+  else
   {
-    adc_enabled = ads2.begin(0x49);
-    if (!adc_enabled)
-    {
-      Serial.println("Failed to initialize ADS2.");
-    }
-  }*/
+    ads1.setGain(GAIN_FOUR);
+    Serial.println("ADS1 initialized with GAIN_FOUR");
+  }
   for (int i = 0; i < arraySize; i++)
   {
     readBattery();
