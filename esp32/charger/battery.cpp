@@ -64,26 +64,28 @@ float readBatteryOnce()
 {
   float rV;
 
-  if (useADSForBattery)
-  {
-    int16_t adc = ads1.readADC_SingleEnded(adsBatteryChannel);
-    float voltageOnPin = ads1.computeVolts(adc);
-    // R1 = 51kΩ + 6.8kΩ = 57800Ω, R2 = 1000Ω
-    // multiply by (R1+R2)/R2 = 58800/1000
-    rV = voltageOnPin * (58800.0 / 1000.0);
-    Serial.println("ADS batt pin V =:" + (String)voltageOnPin + " rV=" + (String)rV);
-  }
-  else
-  {
-    int adcValue = 0;
-    delay(50);
-    adcValue += analogRead(batteryPin);
-    float voltageOnPin = (adcValue * 3.3) / 4095;
-    rV = voltageOnPin * 22.85;
-    Serial.println("PIN39 batt pin V =:" + (String)voltageOnPin + " rV=" + (String)rV);
-  }
+  // Always read and print pin 39
+  int adcValue = 0;
+  delay(50);
+  adcValue += analogRead(batteryPin);
+  float voltageOnPin39 = (adcValue * 3.3) / 4095;
+  float rV39 = voltageOnPin39 * 22.85;
+  float batt39 = (rV39 - 45.8) * 1.3663 + 45.0;
+  Serial.println("PIN39 V=" + (String)voltageOnPin39 + " rV=" + (String)rV39 + " batt=" + (String)batt39);
 
-  // Calibration: re-verify these constants once switched to ADS path
+  // Always read and print ADS
+  int16_t adc = ads1.readADC_SingleEnded(adsBatteryChannel);
+  float voltageOnPinADS = ads1.computeVolts(adc);
+  float rVADS = voltageOnPinADS * (58800.0 / 1000.0);
+  float battADS = (rVADS - 45.8) * 1.3663 + 45.0;
+  Serial.println("ADS   V=" + (String)voltageOnPinADS + " rV=" + (String)rVADS + " batt=" + (String)battADS);
+
+  // Use whichever source is selected by the flag
+  if (useADSForBattery)
+    rV = rVADS;
+  else
+    rV = rV39;
+
   batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
   return batteryTotalVoltage;
 }
