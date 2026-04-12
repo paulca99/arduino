@@ -60,9 +60,9 @@ float readBatteryOnce()
 {
   int16_t adc = ads1.readADC_SingleEnded(0);
   float voltageOnPinADS = ads1.computeVolts(adc);
-  // Ohm's law: Vbatt = Vout * (R1+R2)/R2, R1=57800, R2=1000
-  // Multiplier trimmed: 58.8 * (48.07/47.1) = 60.01
-  batteryTotalVoltage = voltageOnPinADS * 60.01;
+  // Ohm's law: Vbatt = Vout * (R1+R2)/R2
+  // Measured: R1a=55600, R1b=1797, R2=966 => (55600+1797+966)/966 = 60.42
+  batteryTotalVoltage = voltageOnPinADS * 60.42;
   Serial.println("ADS V=" + (String)voltageOnPinADS + " batt=" + (String)batteryTotalVoltage);
   return batteryTotalVoltage;
 }
