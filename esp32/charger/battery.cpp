@@ -62,7 +62,7 @@ float readBatteryOnce()
   float voltageOnPinADS = ads1.computeVolts(adc);
   // Ohm's law: Vbatt = Vout * multiplier
   // Calibrated by direct measurement: 48.2V total, 0.757V at ADS input => 48.2/0.757 = 63.67
-  batteryTotalVoltage = voltageOnPinADS * 63.67;
+  batteryTotalVoltage = voltageOnPinADS * 60.47;
   Serial.println("ADS V=" + (String)voltageOnPinADS + " batt=" + (String)batteryTotalVoltage);
   return batteryTotalVoltage;
 }
