@@ -19,6 +19,5 @@ void setupTest();
 void goBottom();
 void goMid();
 void goTop();
-void rampPSUsOneByOne();
 void writePowerValuesToPSUs();
 #endif

@@ -279,25 +279,6 @@ void rampDown()
   }
 }
 
-void rampPSUsOneByOne()
-{
-  for (int i = 0; i < psu_count; i++)
-  {
-    for (int x = 0; x < range; x = x + 30)
-    {
-      psu_resistance_values[i] = x;
-      writePowerValuesToPSUs();
-      populateVoltages();
-    }
-    for (int x = range; x > 0; x = x - 30)
-    {
-      psu_resistance_values[i] = x;
-      writePowerValuesToPSUs();
-      populateVoltages();
-    }
-  }
-  delay(5000);
-}
 void increaseChargerPower(float startingChargerPower)
 {
   // here gridp is lower than the lowerChargerLimit.
@@ -372,32 +353,6 @@ void reduceChargerPower(float startingChargerPower)
   }
 }
 
-void balancePSUs()
-{
-  boolean changed = false;
-  float gap = findVoltageSpan();
-  if (gap > 0.2)
-  {
-    int targetPSU = findHighestPSU();
-    int res = psu_resistance_values[targetPSU];
-    if (res > 10 && res < (range-10))
-    {
-      Serial.println((String)targetPSU + "    DECREASING VOLTAGE");
-      psu_resistance_values[targetPSU] = res + 1;
-      changed = true;
-    }
-    targetPSU = findLowestPSU();
-    res = psu_resistance_values[targetPSU];
-    if (res < (range - 10) && res > 10)
-    {
-      Serial.println("INCREASING VOLTAGE     " + (String)targetPSU);
-      psu_resistance_values[targetPSU] = res - 1;
-      changed = true;
-    }
-    if (changed)
-      writePowerValuesToPSUs();
-  }
-}
 void adjustCharger()
 {
 
@@ -451,7 +406,6 @@ void adjustCharger()
   }
   if (powerOn)
   {
-    populateVoltages();
     //balancePSUs();
   }
 }
@@ -474,10 +428,6 @@ bool isAtMaxPower()
   writePowerValuesToPSUs();
   if (afterburnerOn)
   {
-    // could be a PSU has tripped , make sure grafana updates voltages.
-
-    populateVoltages();
-//    delay(2000);
     wifiLoop();
     turnPowerOff();
     delay(3000);

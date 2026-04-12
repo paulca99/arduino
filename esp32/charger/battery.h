@@ -4,8 +4,5 @@ float readBattery();
 float readBatteryOnce();
 float checkBattery();
 void setupBattery();
-double populateVoltages();
-int  findHighestPSU();
-int  findLowestPSU();
-float findVoltageSpan();
+extern bool useADSForBattery;  // toggle: false=pin39, true=ADS1115 ads1 ch0
 #endif
