@@ -9,14 +9,10 @@ Adafruit_ADS1115 ads1;  // Single ADS1115 at 0x48, 3.3V VDD
 
 extern boolean afterburnerOn;
 
-int batteryPin = 39;
 float batteryTotalVoltage = 0.0;
 float history[60];
 int arraySize = 60;
 int historyPointer = 0;
-
-bool useADSForBattery = true;  // true = ADS1115 ads1 channel 0 (primary), false = pin 39 fallback
-int adsBatteryChannel = 0;      // ADS1115 channel wired to battery divider (51k+6.8k / 1k)
 
 void addToHistory(float value)
 {
@@ -62,29 +58,12 @@ float readBattery()
 
 float readBatteryOnce()
 {
-  // Always read and print pin 39
-  int adcValue = 0;
-  delay(50);
-  adcValue += analogRead(batteryPin);
-  float voltageOnPin39 = (adcValue * 3.3) / 4095;
-  float rV39 = voltageOnPin39 * 22.85;
-  float batt39 = (rV39 - 45.8) * 1.3663 + 45.0;
-  Serial.println("PIN39 V=" + (String)voltageOnPin39 + " rV=" + (String)rV39 + " batt=" + (String)batt39);
-
-  // Always read and print ADS
-  int16_t adc = ads1.readADC_SingleEnded(adsBatteryChannel);
+  int16_t adc = ads1.readADC_SingleEnded(0);
   float voltageOnPinADS = ads1.computeVolts(adc);
-  // Pure Ohm's law: Vbatt = Vout * (R1+R2)/R2
-  // R1 = 51kΩ + 6.8kΩ = 57800Ω, R2 = 1000Ω => multiplier = 58800/1000 = 58.8
-  float rVADS = voltageOnPinADS * 58.8;
-  Serial.println("ADS   V=" + (String)voltageOnPinADS + " rVADS=" + (String)rVADS);
-
-  // Use whichever source is selected by the flag
-  if (useADSForBattery)
-    batteryTotalVoltage = rVADS;  // ADS1115 is linear — no correction needed
-  else
-    batteryTotalVoltage = (rV39 - 45.8) * 1.3663 + 45.0;  // pin 39 non-linearity correction
-
+  // Ohm's law: Vbatt = Vout * (R1+R2)/R2, R1=57800, R2=1000
+  // Multiplier trimmed: 58.8 * (48.07/47.1) = 60.01
+  batteryTotalVoltage = voltageOnPinADS * 60.01;
+  Serial.println("ADS V=" + (String)voltageOnPinADS + " batt=" + (String)batteryTotalVoltage);
   return batteryTotalVoltage;
 }
 
@@ -101,13 +80,10 @@ float checkBattery()  // accurate reading by stopping charger and GTI first
 
 void setupBattery()
 {
-  pinMode(batteryPin, INPUT);
-
   bool ads1_ok = ads1.begin(0x48);
   if (!ads1_ok)
   {
-    Serial.println("Failed to initialize ADS1. Falling back to pin 39.");
-    useADSForBattery = false;
+    Serial.println("Failed to initialize ADS1.");
   }
   else
   {
