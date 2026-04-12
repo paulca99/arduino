@@ -29,8 +29,8 @@ void setup()
 
 void loop()
 {
-  //autoLoop();
-  testLoop();
+  autoLoop();
+  //testLoop();
 }
 
 void testLoop()
