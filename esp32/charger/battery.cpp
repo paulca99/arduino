@@ -8,6 +8,9 @@
 Adafruit_ADS1115 ads1;  // Single ADS1115 at 0x48, 3.3V VDD
 
 extern boolean afterburnerOn;
+extern EnergyMonitor charger;
+
+const float WIRING_RESISTANCE_OHMS = 0.10;  // measured: voltage divider taps before ~0.10Ω of cable/fuse resistance
 
 float batteryTotalVoltage = 0.0;
 float history[60];
@@ -62,8 +65,12 @@ float readBatteryOnce()
   float voltageOnPinADS = ads1.computeVolts(adc);
   // Ohm's law: Vbatt = Vout * multiplier
   // Calibrated by direct measurement: 48.2V total, 0.757V at ADS input => 48.2/0.757 = 63.67
-  batteryTotalVoltage = voltageOnPinADS * 60.47;
-  Serial.println("ADS V=" + (String)voltageOnPinADS + " batt=" + (String)batteryTotalVoltage);
+  float measuredVoltage = voltageOnPinADS * 60.47;
+  // Correct for series resistance between divider tap and battery terminals
+  // true_voltage = measured_voltage - (I * R), R = 0.10Ω measured
+  float correctedVoltage = measuredVoltage - (charger.Irms * WIRING_RESISTANCE_OHMS);
+  batteryTotalVoltage = correctedVoltage;
+  Serial.println("ADS V=" + (String)voltageOnPinADS + " measured=" + (String)measuredVoltage + " Irms=" + (String)charger.Irms + " corrected=" + (String)correctedVoltage);
   return batteryTotalVoltage;
 }
 
