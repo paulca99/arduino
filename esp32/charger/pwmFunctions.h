@@ -1,7 +1,7 @@
 #ifndef PWM_FUNCTION_H
 #define PWM_FUNCTION_H
 void pwmSetup();
-void rampUp();
+bool rampUp();
 void rampDown();
 bool isAtMinPower();
 bool isAtMaxPower();
