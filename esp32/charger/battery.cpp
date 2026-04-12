@@ -76,9 +76,9 @@ float readBatteryOnce()
   // Always read and print ADS
   int16_t adc = ads1.readADC_SingleEnded(adsBatteryChannel);
   float voltageOnPinADS = ads1.computeVolts(adc);
-  float rVADS = voltageOnPinADS * (58800.0 / 1000.0);
-  float battADS = (rVADS - 45.8) * 1.3663 + 45.0;
-  Serial.println("ADS   V=" + (String)voltageOnPinADS + " rV=" + (String)rVADS + " batt=" + (String)battADS);
+  // Multiplier calibrated: real=47.8V, rV=46.78V => 58.8 * (47.8/46.78) = 60.08
+  float rVADS = voltageOnPinADS * (60080.0 / 1000.0);
+  Serial.println("ADS   V=" + (String)voltageOnPinADS + " rV=" + (String)rVADS);
 
   // Use whichever source is selected by the flag
   if (useADSForBattery)
@@ -86,7 +86,13 @@ float readBatteryOnce()
   else
     rV = rV39;
 
-  batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
+  // ADS1115 is linear — rV is already accurate, no correction needed
+  // Pin 39 requires correction for ESP32 ADC non-linearity
+  if (useADSForBattery)
+    batteryTotalVoltage = rV;
+  else
+    batteryTotalVoltage = (rV - 45.8) * 1.3663 + 45.0;
+
   return batteryTotalVoltage;
 }
 
