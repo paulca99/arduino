@@ -258,25 +258,44 @@ void goTop()
   }
   writePowerValuesToPSUs();
 }
-void rampUp()
+// Returns true if chargerPLimit was hit, false if max power reached naturally
+bool rampUp()
 {
-
-  for (int dutyCycle = 0; dutyCycle <= (range * 5); dutyCycle++)
+  for (int step = 0; step < (range * psu_count); step++)
   {
-    // changing the LED brightness with PWM
     incrementPower(true, 1);
-    delay(1);
+    wifiLoop();
+    readBattery();
+    float cp = readCharger();
+    Serial.println("RAMP UP step=" + (String)step + " chargerP=" + (String)cp + " batt=" + (String)batteryTotalVoltage);
+
+    if (cp >= chargerPLimit)
+    {
+      Serial.println("CHARGER PLIMIT HIT at step=" + (String)step + " chargerP=" + (String)cp);
+      return true;
+    }
+    if (voltageLimitReached2())
+    {
+      Serial.println("VOLTAGE LIMIT HIT during ramp up");
+      return true;
+    }
+    delay(6);
   }
+  return false;
 }
+
 void rampDown()
 {
-
-  for (int dutyCycle = (range * 5); dutyCycle >= 0; dutyCycle--)
+  while (!isAtMinPower())
   {
-    // changing the LED brightness with PWM
     decrementPower(true, 1);
-    delay(1);
+    wifiLoop();
+    readBattery();
+    float cp = readCharger();
+    Serial.println("RAMP DOWN chargerP=" + (String)cp + " batt=" + (String)batteryTotalVoltage);
+    delay(6);
   }
+  Serial.println("RAMP DOWN complete - at min power");
 }
 
 void increaseChargerPower(float startingChargerPower)
