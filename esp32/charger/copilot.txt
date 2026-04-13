@@ -1,0 +1,93 @@
+# Copilot Context - Battery Charger Project
+# Created: 2026-04-13
+
+## Hardware Summary
+- ESP32 with ADS1115 at 0x48, GAIN_FOUR (±1.024V)
+- 3x LiFePO4 batteries in parallel, ~48-55V nominal
+- 5x PSUs controlled via PWM
+- Charger output: up to ~17A per battery = ~50A total on main cables
+- GTI (afterburner) for discharge
+- Voltage divider on charger output (NOT battery terminals) feeds ADS channel 0
+
+## Current Problem - Battery Voltage Reading
+The ADS reads the charger output side of the wiring, not the battery terminals directly.
+The two main 8 AWG cables (~1m) from charger to connector block carry ~50A total and
+have significant resistance, causing ADS to read higher than actual battery voltage under load.
+
+### Measured calibration data (batt-V -> ADS-V @ current):
+- 45.0V -> 44.5V  @ 0.5A  [error -0.5V]
+- 45.2V -> 44.7V  @ 0A    [error -0.5V, not charging]
+- 47V   -> 47V    @ 2A    [error 0V]
+- 48V   -> 48.5V  @ 4A    [error +0.5V]
+- 48.5V -> 49.2V  @ 4.5A  [error +0.7V]
+- 48.2V -> 49.5V  @ 0A    [error +1.3V, not charging]
+- 49.2V -> 50.4V  @ 5.5A  [error +1.2V]
+- 49.7V -> 51.5V  @ 8.8A  [error +1.8V]
+- 50.0V -> 52.3V  @ 10.5A [error +2.3V]
+- 49.7V -> 51.0V  @ 0A    [error +1.3V, not charging]
+- 50.6V -> 53.4V  @ 13A   [error +2.8V]
+- 51.3V -> 54.1V  @ 12.4A [error +2.8V]
+- 52.0V -> 55.0V  @ 15A   [error +3.0V]
+- 53.1V -> 55.8V  @ 17A   [error +2.7V]
+- 53.8V -> 56.5V  @ 16A   [error +2.7V]
+- 54.5V -> 57.2V  @ 13.6A [error +2.7V]
+- 54.2V -> 54.2V  @ 3A    [error 0V]
+- 52.0V -> 50.7V  @ -10A  [error -1.3V, discharging]
+
+### Analysis:
+- Error grows with current (~0.21 V/A) up to ~12A then plateaus at ~2.7-3.0V
+- Plateau is due to wiring resistance increasing with temperature (cables get hot at 15A+)
+- The 2 x 8 AWG main cables carry ~50A total (3 batteries in parallel)
+- 8 AWG is at/over its rating for 50A continuous - cables should be upgraded to 4-6 AWG
+- Current used in battery.cpp correction is charger.Irms (per-battery AC measurement) - WRONG
+  - Should be total DC output current (~50A), with correct sign (+ charging, - discharging)
+- The connector block is also a suspect for contact resistance at high current
+- NOTE: per-battery current from BMS bluetooth on one battery only - others may not share equally
+
+## Planned Fix - WCS1700 Current Sensor
+Hardware available: WCS1700 (+-70A, bidirectional hall effect sensor module)
+- Has both Dout (digital overcurrent) and Aout (analog proportional) outputs
+- Solid toroid ring - main cable must be disconnected to thread through
+
+### Wiring:
+- WCS1700 VCC  -> 3.3V
+- WCS1700 GND  -> GND
+- WCS1700 Aout -> ADS1115 channel 1 (A1)
+- WCS1700 Dout -> leave unconnected (or ESP32 GPIO for overcurrent alert later)
+- Thread POSITIVE main cable from charger output through the toroid (single pass)
+- Note cable direction - determines sign of output, verify at test time
+
+### WCS1700 on 3.3V supply:
+- 0A midpoint: 1.65V (Vcc/2)
+- Sensitivity: ~23mV/A (scaled from 35mV/A at 5V)
+- Use ADS GAIN_ONE (+-4.096V) for channel 1 when reading current
+- Switch back to GAIN_FOUR for channel 0 (battery voltage) after each current reading
+
+## Planned Code Changes (3 files)
+
+### 1. battery.cpp
+- Add readChargerCurrentDC() function using WCS1700 on ADS channel 1
+- Replace charger.Irms with WCS1700 signed current in the voltage correction
+- Piecewise correction:
+  - Charging (positive current): correction = current * 0.21 up to 12A, then 2.7V + small residual
+  - Discharging (negative current): correction = current * 0.13 (different path through GTI wiring)
+- Multiplier (currently 60.47) may also need slight adjustment - recheck at 0A once other fixes applied
+
+### 2. pcemon.cpp
+- Replace readCharger() - currently measures AC input current on mains side (pin 33)
+  and multiplies by grid Vrms - does NOT account for charger efficiency
+- New readCharger() = WCS1700_current * batteryVoltage (true DC output power)
+- Replace readGti() similarly - GTI discharge current is negative on WCS1700
+- The charger EnergyMonitor object (AC measurement) may be retirable entirely
+
+### 3. pwmFunctions.cpp
+- Line 334: replace charger.Irms current limit check with WCS1700 DC current
+- current_limit = 18 (per battery) needs reconsidering - now measuring total output (~50A)
+  so limit should be ~54A (18 * 3) or set empirically
+
+## Current Status (as of 2026-04-13)
+- WCS1700 sensor available, not yet wired in
+- Main cables need to be disconnected to thread sensor toroid
+- Code changes planned for the weekend
+- Existing bodge in battery.cpp (WIRING_RESISTANCE_OHMS = 0.10, using charger.Irms)
+  is insufficient - wrong current value and wrong resistance
