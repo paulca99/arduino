@@ -1,0 +1,38 @@
+49.4 -> 51.4 whilst charging at 7A
+49.8 -> 54  whilst charging at 13A
+48.7 -> 48.7 whilst charging at 0.5A
+
+DAY 2
+
+2 sets of measurements 0A is with the charger disabled. 
+Any positive value is with the charger enabled.
+
+batt-V  ->  ADS-V
+45.2V  ->  44.7V at 0A - not charging
+47V   ->  47v    at 2A
+48V   ->  48.5V  at 4A
+48.5V ->  49.2V  at 4.5A
+48.2    ->  49.5 at 0A - not charging
+49.2    ->  50.4 at 5.5A
+49.7    ->  51.5 at 8.8A
+50.0    ->  52.3 at 10.5A
+49.7    ->  51.0v at 0A- not charging
+50.6    ->  53.4  at 13A
+51.3    ->  54.1  at 12.4A
+52      ->  55 V  at 15A  
+53.1    -> 55.8 at 17A
+53.8    ->  56.5 at 16A
+54.5    ->  57.2 at 13.6A
+54.2    ->  54.2 at 3A
+
+
+
+
+
+
+
+
+
+
+
+

@@ -412,7 +412,7 @@ void adjustCharger()
       Serial.println("turning on , setting pin LOW");
       turnPowerOn(); // turn on
                      // allow spike
-      if(vbatt > 47.5)
+      if(vbatt > 54)
         turnAfterburnerOn();
       readGrid();
       for (int i = 0; i < 10; i++) // reading the charger a few times stops the power on spike
