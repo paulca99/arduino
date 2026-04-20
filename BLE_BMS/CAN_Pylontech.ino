@@ -18,8 +18,9 @@
 //         Solis RJ45 pin4=CAN-H, pin5=CAN-L
 // -----------------------------------------------------------------------
 
-// Battery limits — adjust to match your pack
-#define MAX_CHARGE_VOLTAGE      584   // 58.4V  (x10)
+// Battery limits — Boston Power Swing 5300 NMC, 14S 18P
+// Cell max: 4.20V, Cell min: 2.75V, Pack: 58.8V / 38.5V, Capacity: ~95Ah
+#define MAX_CHARGE_VOLTAGE      588   // 58.8V — 14 x 4.20V NMC (x10)
 #define MAX_CHARGE_CURRENT      500   // 50.0A  (x10)
 #define MAX_DISCHARGE_CURRENT   500   // 50.0A  (x10)
 
@@ -133,8 +134,8 @@ static void can_send_alarms(OverkillSolarBms2& bms) {
     }
 
     uint8_t protection = 0;
-    if (maxV > 3.65f)  bitSet(protection, 1);  // cell overvoltage
-    if (minV < 2.80f)  bitSet(protection, 2);  // cell undervoltage
+    if (maxV > 4.20f)  bitSet(protection, 1);  // cell overvoltage  — NMC max 4.20V
+    if (minV < 2.75f)  bitSet(protection, 2);  // cell undervoltage — NMC cutoff 2.75V
     if (bms.get_ntc_temperature(0) > 55.0f) bitSet(protection, 3);  // high temp
     if (bms.get_ntc_temperature(0) <  0.0f) bitSet(protection, 4);  // low temp
 
