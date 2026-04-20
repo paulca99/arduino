@@ -21,8 +21,8 @@
 // Battery limits — Boston Power Swing 5300 NMC, 14S 18P
 // Cell max: 4.20V, Cell min: 2.75V, Pack: 58.8V / 38.5V, Capacity: ~95Ah
 #define MAX_CHARGE_VOLTAGE      588   // 58.8V — 14 x 4.20V NMC (x10)
-#define MAX_CHARGE_CURRENT      500   // 50.0A  (x10)
-#define MAX_DISCHARGE_CURRENT   500   // 50.0A  (x10)
+#define MAX_CHARGE_CURRENT      400   // 40.0A  (x10)
+#define MAX_DISCHARGE_CURRENT   400   // 40.0A  (x10)
 
 static uint32_t aliveCounter = 0;
 
