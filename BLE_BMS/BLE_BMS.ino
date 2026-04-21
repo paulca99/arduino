@@ -15,6 +15,7 @@
 
 #define CAN_INTERVAL_MS   100    // Send CAN frames every 100ms
 #define LOG_INTERVAL_MS   5000   // Log to serial every 5s
+#define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)   // 3 minutes
 
 // -----------------------------------------------------------------------
 // BLE globals
@@ -201,6 +202,7 @@ void setup() {
 // -----------------------------------------------------------------------
 static unsigned long lastCAN = 0;
 static unsigned long lastLog = 0;
+static unsigned long lastBLEDataMs = 0;
 
 void loop() {
     // --- BLE connect / reconnect ---
@@ -220,6 +222,7 @@ void loop() {
     // --- BMS state machine ---
     if (connected) {
         bms.main_task(true);
+        lastBLEDataMs = millis();   // reset 3-minute timeout
     } else if (!doConnect) {
         delay(1000);
         Serial.print(".");
@@ -231,7 +234,10 @@ void loop() {
     // --- Send CAN frames every 100ms ---
     if (now - lastCAN >= CAN_INTERVAL_MS) {
         lastCAN = now;
-        if (connected) sendCANFrames(bms);
+        // Send CAN frames if connected, OR if within 3-minute grace period after disconnect
+        if (connected || (millis() - lastBLEDataMs < BLE_TIMEOUT_MS)) {
+            sendCANFrames(bms);
+        }
     }
 
     // --- Log to serial every 5 seconds ---
