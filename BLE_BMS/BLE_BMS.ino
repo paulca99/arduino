@@ -1,6 +1,9 @@
 #include <NimBLEDevice.h>
 #include <bms2.h>
 #include "driver/twai.h"
+#include <WiFi.h>
+#include <WebServer.h>
+#include <float.h>
 
 // -----------------------------------------------------------------------
 // Config
@@ -17,6 +20,21 @@
 #define LOG_INTERVAL_MS   5000   // Log to serial every 5s
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)   // 3 minutes
 
+#define WIFI_SSID           "TP-LINK_73F3"
+#define WIFI_PASSWORD_UPPER "DEADBEEF"
+#define WIFI_PASSWORD_LOWER "deadbeef"
+
+#define WIFI_CONNECT_TIMEOUT_MS  10000   // 10 s WiFi connection timeout
+
+// Cell voltage colour thresholds
+#define CELL_V_GREEN_LO   3.4f
+#define CELL_V_GREEN_HI   4.15f
+#define CELL_V_AMBER_LO   3.0f
+
+// Cell delta thresholds (mV)
+#define CELL_DELTA_AMBER_MV   50.0f
+#define CELL_DELTA_RED_MV    100.0f
+
 // -----------------------------------------------------------------------
 // BLE globals
 // -----------------------------------------------------------------------
@@ -27,6 +45,8 @@ static NimBLEAddress               bmsMacAddress(BMS_MAC, BLE_ADDR_PUBLIC);
 
 static bool doConnect = false;
 static bool connected = false;
+static bool wifiReady = false;
+static unsigned long lastBLEDataMs = 0;
 
 // -----------------------------------------------------------------------
 // Ring buffer
@@ -82,6 +102,126 @@ public:
 } bmsStream;
 
 OverkillSolarBms2 bms;
+
+WebServer server(80);
+
+// -----------------------------------------------------------------------
+// Web server — root page
+// -----------------------------------------------------------------------
+void handleRoot() {
+    unsigned long now = millis();
+    uint8_t numCells  = bms.get_num_cells();
+    float   voltage   = bms.get_voltage();
+    float   current   = bms.get_current();
+    uint8_t soc       = bms.get_state_of_charge();
+    float   temp      = bms.get_ntc_temperature(0);
+    bool    chgMos    = bms.get_charge_mosfet_status();
+    bool    dsgMos    = bms.get_discharge_mosfet_status();
+    unsigned long ageSec = (now - lastBLEDataMs) / 1000UL;
+
+    // Cell stats
+    float minV = FLT_MAX, maxV = 0, sumV = 0;
+    for (uint8_t c = 0; c < numCells; c++) {
+        float v = bms.get_cell_voltage(c);
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+        sumV += v;
+    }
+    float avgV   = numCells ? sumV / numCells : 0;
+    float deltaV = maxV - minV;
+
+    String html = F("<!DOCTYPE html><html><head>"
+        "<meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<meta http-equiv='refresh' content='5'>"
+        "<title>BMS Monitor</title>"
+        "<style>"
+        "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
+        "h1{color:#e0c97f;margin-bottom:4px}"
+        "h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px}"
+        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}"
+        ".card{background:#16213e;border-radius:8px;padding:12px;text-align:center}"
+        ".card .label{font-size:0.75em;color:#8899aa;margin-bottom:4px}"
+        ".card .value{font-size:1.4em;font-weight:bold}"
+        "table{width:100%;border-collapse:collapse}"
+        "th,td{padding:8px 10px;text-align:center;border-bottom:1px solid #2a2a4a}"
+        "th{background:#16213e;color:#a0b4cc}"
+        ".green{color:#4caf50}.amber{color:#ff9800}.red{color:#f44336}"
+        ".footer{margin-top:16px;font-size:0.8em;color:#556}"
+        "</style></head><body>"
+        "<h1>🔋 BMS Live Monitor</h1>");
+
+    // Summary cards
+    html += F("<div class='grid'>");
+
+    html += "<div class='card'><div class='label'>Pack Voltage</div>"
+            "<div class='value'>" + String(voltage, 2) + " V</div></div>";
+
+    html += "<div class='card'><div class='label'>Current</div>"
+            "<div class='value'>" + String(current, 2) + " A</div></div>";
+
+    html += "<div class='card'><div class='label'>SoC</div>"
+            "<div class='value'>" + String(soc) + " %</div></div>";
+
+    html += "<div class='card'><div class='label'>Temperature</div>"
+            "<div class='value'>" + String(temp, 1) + " °C</div></div>";
+
+    html += "<div class='card'><div class='label'>Charge MOSFET</div>"
+            "<div class='value " + String(chgMos ? "green" : "red") + "'>"
+            + String(chgMos ? "ON" : "OFF") + "</div></div>";
+
+    html += "<div class='card'><div class='label'>Discharge MOSFET</div>"
+            "<div class='value " + String(dsgMos ? "green" : "red") + "'>"
+            + String(dsgMos ? "ON" : "OFF") + "</div></div>";
+
+    html += "<div class='card'><div class='label'>BLE</div>"
+            "<div class='value " + String(connected ? "green" : "red") + "'>"
+            + String(connected ? "Connected" : "Disconnected") + "</div></div>";
+
+    html += "<div class='card'><div class='label'>Last BMS Data</div>"
+            "<div class='value'>" + String(ageSec) + " s ago</div></div>";
+
+    html += F("</div>");
+
+    // Cell table
+    html += F("<h2>Cell Voltages</h2>"
+              "<table><tr><th>#</th><th>Voltage (V)</th><th>Status</th></tr>");
+
+    for (uint8_t c = 0; c < numCells; c++) {
+        float v = bms.get_cell_voltage(c);
+        bool  bal = bms.get_balance_status(c);
+        const char* cls;
+        if (v >= CELL_V_GREEN_LO && v <= CELL_V_GREEN_HI)  cls = "green";
+        else if (v >= CELL_V_AMBER_LO && v < CELL_V_GREEN_LO) cls = "amber";
+        else                                                 cls = "red";
+
+        html += "<tr><td>" + String(c + 1) + "</td>"
+                "<td class='" + cls + "'>" + String(v, 3) + "</td>"
+                "<td>" + String(bal ? "⚖ bal" : "—") + "</td></tr>";
+    }
+    html += F("</table>");
+
+    // Cell summary
+    float deltaMv = deltaV * 1000.0f;
+    const char* deltaCls = deltaMv > CELL_DELTA_RED_MV ? "red"
+                         : (deltaMv >= CELL_DELTA_AMBER_MV ? "amber" : "green");
+
+    html += F("<h2>Cell Summary</h2><div class='grid'>");
+    html += "<div class='card'><div class='label'>Min</div>"
+            "<div class='value'>" + String(minV, 3) + " V</div></div>";
+    html += "<div class='card'><div class='label'>Max</div>"
+            "<div class='value'>" + String(maxV, 3) + " V</div></div>";
+    html += "<div class='card'><div class='label'>Average</div>"
+            "<div class='value'>" + String(avgV, 3) + " V</div></div>";
+    html += "<div class='card'><div class='label'>Delta</div>"
+            "<div class='value " + deltaCls + "'>" + String(deltaMv, 0) + " mV</div></div>";
+    html += F("</div>");
+
+    html += F("<div class='footer'>Auto-refreshes every 5 s</div>"
+              "</body></html>");
+
+    server.send(200, "text/html", html);
+}
 
 // -----------------------------------------------------------------------
 // Notify callback
@@ -183,6 +323,18 @@ void logBMSData() {
 // -----------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------
+static bool tryConnectWiFi(const char* ssid, const char* password) {
+    Serial.printf("📶 Trying WiFi: %s / %s\n", ssid, password);
+    WiFi.begin(ssid, password);
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+        delay(250);
+        Serial.print(".");
+    }
+    Serial.println();
+    return WiFi.status() == WL_CONNECTED;
+}
+
 void setup() {
     Serial.begin(115200);
     delay(500);
@@ -190,6 +342,24 @@ void setup() {
 
     // Start CAN (defined in CAN_Pylontech.ino)
     setupCAN();
+
+    // Start WiFi — try DEADBEEF then deadbeef
+    WiFi.mode(WIFI_STA);
+    bool wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
+    if (!wifiOk) {
+        WiFi.disconnect(true);
+        delay(500);
+        wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
+    }
+    if (wifiOk) {
+        Serial.printf("✅ WiFi connected — http://%s\n", WiFi.localIP().toString().c_str());
+        server.on("/", handleRoot);
+        server.begin();
+        Serial.println("✅ Web server started on port 80");
+        wifiReady = true;
+    } else {
+        Serial.println("⚠️  WiFi failed — continuing without web server");
+    }
 
     // Start BLE
     NimBLEDevice::init("");
@@ -202,7 +372,6 @@ void setup() {
 // -----------------------------------------------------------------------
 static unsigned long lastCAN = 0;
 static unsigned long lastLog = 0;
-static unsigned long lastBLEDataMs = 0;
 
 void loop() {
     // --- BLE connect / reconnect ---
@@ -245,4 +414,7 @@ void loop() {
         lastLog = now;
         if (connected) logBMSData();
     }
+
+    // --- Web server (non-blocking) ---
+    if (wifiReady) server.handleClient();
 }
