@@ -103,7 +103,7 @@ static void can_send_soc(OverkillSolarBms2& bms) {
 // 0x356 — Voltage, current, temperature
 // -----------------------------------------------------------------------
 static void can_send_measurements(OverkillSolarBms2& bms) {
-    int16_t voltage = (int16_t)(bms.get_voltage() * 10.0f);  // e.g. 54.9V → 549
+    int16_t voltage = (int16_t)(bms.get_voltage() * 100.0f);  // e.g. 54.9V → 5490
     int16_t current = (int16_t)(bms.get_current() * 10.0f);  // e.g. 12.3A → 123 (signed)
     int16_t temp    = (int16_t)(bms.get_ntc_temperature(0) * 10.0f);
 
