@@ -154,32 +154,32 @@ void handleRoot() {
     // Summary cards
     html += F("<div class='grid'>");
 
-    html += "<div class='card'><div class='label'>Pack Voltage</div>"
-            "<div class='value'>" + String(voltage, 2) + " V</div></div>";
+    html += String("<div class='card'><div class='label'>Pack Voltage</div>")
+            + "<div class='value'>" + String(voltage, 2) + " V</div></div>";
 
-    html += "<div class='card'><div class='label'>Current</div>"
-            "<div class='value'>" + String(current, 2) + " A</div></div>";
+    html += String("<div class='card'><div class='label'>Current</div>")
+            + "<div class='value'>" + String(current, 2) + " A</div></div>";
 
-    html += "<div class='card'><div class='label'>SoC</div>"
-            "<div class='value'>" + String(soc) + " %</div></div>";
+    html += String("<div class='card'><div class='label'>SoC</div>")
+            + "<div class='value'>" + String(soc) + " %</div></div>";
 
-    html += "<div class='card'><div class='label'>Temperature</div>"
-            "<div class='value'>" + String(temp, 1) + " °C</div></div>";
+    html += String("<div class='card'><div class='label'>Temperature</div>")
+            + "<div class='value'>" + String(temp, 1) + " \xc2\xb0C</div></div>";
 
-    html += "<div class='card'><div class='label'>Charge MOSFET</div>"
-            "<div class='value " + String(chgMos ? "green" : "red") + "'>"
+    html += String("<div class='card'><div class='label'>Charge MOSFET</div>")
+            + "<div class='value " + String(chgMos ? "green" : "red") + "'>"
             + String(chgMos ? "ON" : "OFF") + "</div></div>";
 
-    html += "<div class='card'><div class='label'>Discharge MOSFET</div>"
-            "<div class='value " + String(dsgMos ? "green" : "red") + "'>"
+    html += String("<div class='card'><div class='label'>Discharge MOSFET</div>")
+            + "<div class='value " + String(dsgMos ? "green" : "red") + "'>"
             + String(dsgMos ? "ON" : "OFF") + "</div></div>";
 
-    html += "<div class='card'><div class='label'>BLE</div>"
-            "<div class='value " + String(connected ? "green" : "red") + "'>"
+    html += String("<div class='card'><div class='label'>BLE</div>")
+            + "<div class='value " + String(connected ? "green" : "red") + "'>"
             + String(connected ? "Connected" : "Disconnected") + "</div></div>";
 
-    html += "<div class='card'><div class='label'>Last BMS Data</div>"
-            "<div class='value'>" + String(ageSec) + " s ago</div></div>";
+    html += String("<div class='card'><div class='label'>Last BMS Data</div>")
+            + "<div class='value'>" + String(ageSec) + " s ago</div></div>";
 
     html += F("</div>");
 
@@ -190,31 +190,31 @@ void handleRoot() {
     for (uint8_t c = 0; c < numCells; c++) {
         float v = bms.get_cell_voltage(c);
         bool  bal = bms.get_balance_status(c);
-        const char* cls;
-        if (v >= CELL_V_GREEN_LO && v <= CELL_V_GREEN_HI)  cls = "green";
-        else if (v >= CELL_V_AMBER_LO && v < CELL_V_GREEN_LO) cls = "amber";
-        else                                                 cls = "red";
+        String cls;
+        if (v >= CELL_V_GREEN_LO && v <= CELL_V_GREEN_HI)       cls = "green";
+        else if (v >= CELL_V_AMBER_LO && v < CELL_V_GREEN_LO)   cls = "amber";
+        else                                                      cls = "red";
 
-        html += "<tr><td>" + String(c + 1) + "</td>"
-                "<td class='" + cls + "'>" + String(v, 3) + "</td>"
-                "<td>" + String(bal ? "⚖ bal" : "—") + "</td></tr>";
+        html += String("<tr><td>") + String(c + 1) + "</td>"
+                + "<td class='" + cls + "'>" + String(v, 3) + "</td>"
+                + "<td>" + String(bal ? "\xe2\x9a\x96 bal" : "\xe2\x80\x94") + "</td></tr>";
     }
     html += F("</table>");
 
     // Cell summary
     float deltaMv = deltaV * 1000.0f;
-    const char* deltaCls = deltaMv > CELL_DELTA_RED_MV ? "red"
-                         : (deltaMv >= CELL_DELTA_AMBER_MV ? "amber" : "green");
+    String deltaCls = deltaMv > CELL_DELTA_RED_MV ? "red"
+                    : (deltaMv >= CELL_DELTA_AMBER_MV ? "amber" : "green");
 
     html += F("<h2>Cell Summary</h2><div class='grid'>");
-    html += "<div class='card'><div class='label'>Min</div>"
-            "<div class='value'>" + String(minV, 3) + " V</div></div>";
-    html += "<div class='card'><div class='label'>Max</div>"
-            "<div class='value'>" + String(maxV, 3) + " V</div></div>";
-    html += "<div class='card'><div class='label'>Average</div>"
-            "<div class='value'>" + String(avgV, 3) + " V</div></div>";
-    html += "<div class='card'><div class='label'>Delta</div>"
-            "<div class='value " + deltaCls + "'>" + String(deltaMv, 0) + " mV</div></div>";
+    html += String("<div class='card'><div class='label'>Min</div>")
+            + "<div class='value'>" + String(minV, 3) + " V</div></div>";
+    html += String("<div class='card'><div class='label'>Max</div>")
+            + "<div class='value'>" + String(maxV, 3) + " V</div></div>";
+    html += String("<div class='card'><div class='label'>Average</div>")
+            + "<div class='value'>" + String(avgV, 3) + " V</div></div>";
+    html += String("<div class='card'><div class='label'>Delta</div>")
+            + "<div class='value " + deltaCls + "'>" + String(deltaMv, 0) + " mV</div></div>";
     html += F("</div>");
 
     html += F("<div class='footer'>Auto-refreshes every 5 s</div>"
