@@ -71,7 +71,7 @@ int rxAvailable() {
 }
 
 // -----------------------------------------------------------------------
-// Stream wrapper — buffers until full JBD packet (0x77) then sends at once
+// Stream wrapper
 // -----------------------------------------------------------------------
 class BmsStream : public Stream {
 private:
@@ -106,6 +106,16 @@ OverkillSolarBms2 bms;
 WebServer server(80);
 
 // -----------------------------------------------------------------------
+// Helper: build one summary card
+// -----------------------------------------------------------------------
+static String card(const String& label, const String& value, const String& cls = "") {
+    String c = "<div class='card'><div class='label'>" + label + "</div><div class='value";
+    if (cls.length()) c += " " + cls;
+    c += "'>" + value + "</div></div>";
+    return c;
+}
+
+// -----------------------------------------------------------------------
 // Web server — root page
 // -----------------------------------------------------------------------
 void handleRoot() {
@@ -119,7 +129,6 @@ void handleRoot() {
     bool    dsgMos    = bms.get_discharge_mosfet_status();
     unsigned long ageSec = (now - lastBLEDataMs) / 1000UL;
 
-    // Cell stats
     float minV = FLT_MAX, maxV = 0, sumV = 0;
     for (uint8_t c = 0; c < numCells; c++) {
         float v = bms.get_cell_voltage(c);
@@ -128,7 +137,7 @@ void handleRoot() {
         sumV += v;
     }
     float avgV   = numCells ? sumV / numCells : 0;
-    float deltaV = maxV - minV;
+    float deltaMv = (maxV - minV) * 1000.0f;
 
     String html = F("<!DOCTYPE html><html><head>"
         "<meta charset='UTF-8'>"
@@ -149,76 +158,49 @@ void handleRoot() {
         ".green{color:#4caf50}.amber{color:#ff9800}.red{color:#f44336}"
         ".footer{margin-top:16px;font-size:0.8em;color:#556}"
         "</style></head><body>"
-        "<h1>🔋 BMS Live Monitor</h1>");
+        "<h1>Battery BMS</h1>");
 
-    // Summary cards
     html += F("<div class='grid'>");
-
-    html += "<div class='card'><div class='label'>Pack Voltage</div>"
-            "<div class='value'>" + String(voltage, 2) + " V</div></div>";
-
-    html += "<div class='card'><div class='label'>Current</div>"
-            "<div class='value'>" + String(current, 2) + " A</div></div>";
-
-    html += "<div class='card'><div class='label'>SoC</div>"
-            "<div class='value'>" + String(soc) + " %</div></div>";
-
-    html += "<div class='card'><div class='label'>Temperature</div>"
-            "<div class='value'>" + String(temp, 1) + " °C</div></div>";
-
-    html += "<div class='card'><div class='label'>Charge MOSFET</div>"
-            "<div class='value " + String(chgMos ? "green" : "red") + "'>"
-            + String(chgMos ? "ON" : "OFF") + "</div></div>";
-
-    html += "<div class='card'><div class='label'>Discharge MOSFET</div>"
-            "<div class='value " + String(dsgMos ? "green" : "red") + "'>"
-            + String(dsgMos ? "ON" : "OFF") + "</div></div>";
-
-    html += "<div class='card'><div class='label'>BLE</div>"
-            "<div class='value " + String(connected ? "green" : "red") + "'>"
-            + String(connected ? "Connected" : "Disconnected") + "</div></div>";
-
-    html += "<div class='card'><div class='label'>Last BMS Data</div>"
-            "<div class='value'>" + String(ageSec) + " s ago</div></div>";
-
+    html += card("Pack Voltage",   String(voltage, 2) + " V");
+    html += card("Current",        String(current, 2) + " A");
+    html += card("SoC",            String(soc) + " %");
+    html += card("Temperature",    String(temp, 1) + " C");
+    html += card("Charge MOSFET",  String(chgMos  ? "ON" : "OFF"), String(chgMos  ? "green" : "red"));
+    html += card("Discharge MOSFET", String(dsgMos ? "ON" : "OFF"), String(dsgMos ? "green" : "red"));
+    html += card("BLE",            String(connected ? "Connected" : "Disconnected"), String(connected ? "green" : "red"));
+    html += card("Last BMS Data",  String(ageSec) + " s ago");
     html += F("</div>");
 
-    // Cell table
     html += F("<h2>Cell Voltages</h2>"
               "<table><tr><th>#</th><th>Voltage (V)</th><th>Status</th></tr>");
 
     for (uint8_t c = 0; c < numCells; c++) {
         float v = bms.get_cell_voltage(c);
         bool  bal = bms.get_balance_status(c);
-        const char* cls;
-        if (v >= CELL_V_GREEN_LO && v <= CELL_V_GREEN_HI)  cls = "green";
-        else if (v >= CELL_V_AMBER_LO && v < CELL_V_GREEN_LO) cls = "amber";
-        else                                                 cls = "red";
+        String cls;
+        if      (v >= CELL_V_GREEN_LO && v <= CELL_V_GREEN_HI)      cls = "green";
+        else if (v >= CELL_V_AMBER_LO && v <  CELL_V_GREEN_LO)      cls = "amber";
+        else                                                          cls = "red";
 
-        html += "<tr><td>" + String(c + 1) + "</td>"
-                "<td class='" + cls + "'>" + String(v, 3) + "</td>"
-                "<td>" + String(bal ? "⚖ bal" : "—") + "</td></tr>";
+        html += String("<tr><td>") + String(c + 1) + "</td>"
+              + "<td class='" + cls + "'>" + String(v, 3) + "</td>"
+              + "<td>" + (bal ? "bal" : "-") + "</td></tr>";
     }
     html += F("</table>");
 
-    // Cell summary
-    float deltaMv = deltaV * 1000.0f;
-    const char* deltaCls = deltaMv > CELL_DELTA_RED_MV ? "red"
-                         : (deltaMv >= CELL_DELTA_AMBER_MV ? "amber" : "green");
+    String deltaCls;
+    if      (deltaMv > CELL_DELTA_RED_MV)   deltaCls = "red";
+    else if (deltaMv >= CELL_DELTA_AMBER_MV) deltaCls = "amber";
+    else                                     deltaCls = "green";
 
     html += F("<h2>Cell Summary</h2><div class='grid'>");
-    html += "<div class='card'><div class='label'>Min</div>"
-            "<div class='value'>" + String(minV, 3) + " V</div></div>";
-    html += "<div class='card'><div class='label'>Max</div>"
-            "<div class='value'>" + String(maxV, 3) + " V</div></div>";
-    html += "<div class='card'><div class='label'>Average</div>"
-            "<div class='value'>" + String(avgV, 3) + " V</div></div>";
-    html += "<div class='card'><div class='label'>Delta</div>"
-            "<div class='value " + deltaCls + "'>" + String(deltaMv, 0) + " mV</div></div>";
+    html += card("Min",   String(minV, 3) + " V");
+    html += card("Max",   String(maxV, 3) + " V");
+    html += card("Avg",   String(avgV, 3) + " V");
+    html += card("Delta", String(deltaMv, 0) + " mV", deltaCls);
     html += F("</div>");
 
-    html += F("<div class='footer'>Auto-refreshes every 5 s</div>"
-              "</body></html>");
+    html += F("<div class='footer'>Auto-refreshes every 5 s</div></body></html>");
 
     server.send(200, "text/html", html);
 }
@@ -235,11 +217,11 @@ void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t le
 // -----------------------------------------------------------------------
 class ClientCallbacks : public NimBLEClientCallbacks {
     void onConnect(NimBLEClient* pC) override {
-        Serial.println("✅ BLE Connected!");
+        Serial.println("BLE Connected!");
         connected = true;
     }
     void onDisconnect(NimBLEClient* pC, int reason) override {
-        Serial.printf("⚠️  BLE Disconnected (reason: %d) — retrying\n", reason);
+        Serial.printf("BLE Disconnected (reason: %d) - retrying\n", reason);
         connected = false;
         doConnect = true;
     }
@@ -249,7 +231,7 @@ class ClientCallbacks : public NimBLEClientCallbacks {
 // BLE connect
 // -----------------------------------------------------------------------
 bool connectToBMS() {
-    Serial.printf("🔌 Connecting to BMS %s...\n", BMS_MAC);
+    Serial.printf("Connecting to BMS %s...\n", BMS_MAC);
 
     pClient = NimBLEDevice::createClient();
     pClient->setClientCallbacks(new ClientCallbacks(), false);
@@ -257,39 +239,38 @@ bool connectToBMS() {
     pClient->setConnectTimeout(30);
 
     if (!pClient->connect(bmsMacAddress)) {
-        Serial.println("❌ BLE connect() failed");
+        Serial.println("BLE connect() failed");
         NimBLEDevice::deleteClient(pClient);
         pClient = nullptr;
         return false;
     }
 
     NimBLERemoteService* pSvc = pClient->getService(SERVICE_UUID);
-    if (!pSvc) { Serial.println("❌ Service FF00 not found"); pClient->disconnect(); return false; }
+    if (!pSvc) { Serial.println("Service FF00 not found"); pClient->disconnect(); return false; }
 
     pRxChar = pSvc->getCharacteristic(RX_UUID);
-    if (!pRxChar) { Serial.println("❌ RX char FF01 not found"); pClient->disconnect(); return false; }
+    if (!pRxChar) { Serial.println("RX char FF01 not found"); pClient->disconnect(); return false; }
     if (pRxChar->canNotify()) pRxChar->subscribe(true, notifyCallback);
 
     pTxChar = pSvc->getCharacteristic(TX_UUID);
-    if (!pTxChar) { Serial.println("❌ TX char FF02 not found"); pClient->disconnect(); return false; }
+    if (!pTxChar) { Serial.println("TX char FF02 not found"); pClient->disconnect(); return false; }
 
-    Serial.println("✅ BLE fully connected!");
+    Serial.println("BLE fully connected!");
     return true;
 }
 
 // -----------------------------------------------------------------------
-// Serial log — every 5 seconds
+// Serial log
 // -----------------------------------------------------------------------
 void logBMSData() {
     uint8_t numCells = bms.get_num_cells();
     float   voltage  = bms.get_voltage();
 
     if (numCells == 0 || voltage == 0.0f) {
-        Serial.println("⏳ Waiting for valid BMS data...");
+        Serial.println("Waiting for valid BMS data...");
         return;
     }
 
-    // Calculate cell stats
     float minV = 9999, maxV = 0, sum = 0;
     for (uint8_t c = 0; c < numCells; c++) {
         float v = bms.get_cell_voltage(c);
@@ -321,10 +302,10 @@ void logBMSData() {
 }
 
 // -----------------------------------------------------------------------
-// Setup
+// WiFi helper
 // -----------------------------------------------------------------------
 static bool tryConnectWiFi(const char* ssid, const char* password) {
-    Serial.printf("📶 Trying WiFi: %s / %s\n", ssid, password);
+    Serial.printf("Trying WiFi: %s\n", ssid);
     WiFi.begin(ssid, password);
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
@@ -335,15 +316,16 @@ static bool tryConnectWiFi(const char* ssid, const char* password) {
     return WiFi.status() == WL_CONNECTED;
 }
 
+// -----------------------------------------------------------------------
+// Setup
+// -----------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.println("=== JBD BMS → Solis CAN Bridge ===");
+    Serial.println("=== JBD BMS -> Solis CAN Bridge ===");
 
-    // Start CAN (defined in CAN_Pylontech.ino)
     setupCAN();
 
-    // Start WiFi — try DEADBEEF then deadbeef
     WiFi.mode(WIFI_STA);
     bool wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
     if (!wifiOk) {
@@ -352,16 +334,15 @@ void setup() {
         wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
     }
     if (wifiOk) {
-        Serial.printf("✅ WiFi connected — http://%s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
         server.begin();
-        Serial.println("✅ Web server started on port 80");
+        Serial.println("Web server started on port 80");
         wifiReady = true;
     } else {
-        Serial.println("⚠️  WiFi failed — continuing without web server");
+        Serial.println("WiFi failed - continuing without web server");
     }
 
-    // Start BLE
     NimBLEDevice::init("");
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
     doConnect = true;
@@ -374,7 +355,6 @@ static unsigned long lastCAN = 0;
 static unsigned long lastLog = 0;
 
 void loop() {
-    // --- BLE connect / reconnect ---
     if (doConnect) {
         doConnect = false;
         rxHead = 0; rxTail = 0;
@@ -388,10 +368,9 @@ void loop() {
         }
     }
 
-    // --- BMS state machine ---
     if (connected) {
         bms.main_task(true);
-        lastBLEDataMs = millis();   // reset 3-minute timeout
+        lastBLEDataMs = millis();
     } else if (!doConnect) {
         delay(1000);
         Serial.print(".");
@@ -400,21 +379,17 @@ void loop() {
 
     unsigned long now = millis();
 
-    // --- Send CAN frames every 100ms ---
     if (now - lastCAN >= CAN_INTERVAL_MS) {
         lastCAN = now;
-        // Send CAN frames if connected, OR if within 3-minute grace period after disconnect
         if (connected || (millis() - lastBLEDataMs < BLE_TIMEOUT_MS)) {
             sendCANFrames(bms);
         }
     }
 
-    // --- Log to serial every 5 seconds ---
     if (now - lastLog >= LOG_INTERVAL_MS) {
         lastLog = now;
         if (connected) logBMSData();
     }
 
-    // --- Web server (non-blocking) ---
     if (wifiReady) server.handleClient();
 }
