@@ -26,23 +26,39 @@
 
 static uint32_t aliveCounter = 0;
 
-static uint8_t  lastValidSoc     = 10;    // last known good SoC — default 10% safe fallback
-static float    lastValidVoltage = 48.0f; // last known good voltage
-static float    lastValidCurrent = 0.0f;  // last known good current
-static float    lastValidTemp    = 25.0f; // last known good temperature
+// -----------------------------------------------------------------------
+// voltageToSoc — NMC 14S discharge curve lookup + linear interpolation
+// Input: pack voltage (V). Output: SoC 0–100%.
+// Based on Boston Power Swing 5300 NMC cell characterisation.
+// -----------------------------------------------------------------------
+static uint8_t voltageToSoc(float packV) {
+    // {pack voltage, SoC%} — must be in descending voltage order
+    static const float curve[][2] = {
+        {58.8f, 100},
+        {56.0f,  80},
+        {53.9f,  70},
+        {52.5f,  60},
+        {51.1f,  50},
+        {49.7f,  40},
+        {48.3f,  30},
+        {46.2f,  20},
+        {44.1f,  10},
+        {38.5f,   0},
+    };
+    const uint8_t points = sizeof(curve) / sizeof(curve[0]);
 
-// -----------------------------------------------------------------------
-// Update cached values — only when BMS is reporting valid data
-// -----------------------------------------------------------------------
-static void updateCache(OverkillSolarBms2& bms) {
-    uint8_t soc  = bms.get_state_of_charge();
-    float   volt = bms.get_voltage();
-    if (soc > 0 && volt > 10.0f) {
-        lastValidSoc     = soc;
-        lastValidVoltage = volt;
-        lastValidCurrent = bms.get_current();
-        lastValidTemp    = bms.get_ntc_temperature(0);
+    if (packV >= curve[0][0])             return 100;
+    if (packV <= curve[points - 1][0])    return 0;
+
+    for (uint8_t i = 0; i < points - 1; i++) {
+        float vHigh = curve[i][0],   socHigh = curve[i][1];
+        float vLow  = curve[i+1][0], socLow  = curve[i+1][1];
+        if (packV <= vHigh && packV > vLow) {
+            float t = (packV - vLow) / (vHigh - vLow);
+            return (uint8_t)(socLow + t * (socHigh - socLow) + 0.5f);
+        }
     }
+    return 0;
 }
 
 // -----------------------------------------------------------------------
@@ -104,7 +120,16 @@ static void can_send_limits() {
 // 0x355 — SoC and SoH
 // -----------------------------------------------------------------------
 static void can_send_soc(OverkillSolarBms2& bms) {
-    uint8_t soc = lastValidSoc;
+    // Use voltage-based SoC — immune to BMS coulomb counter resets on alarm.
+    uint8_t soc = voltageToSoc(bms.get_voltage());
+
+    // TEMPORARY: shift SoC -5% below 45% so Solis sees 40% when pack is
+    // at 45% real SoC. This prevents Solis triggering emergency grid charge
+    // when Cell 9 alarms early. Remove this block once pack 9 is rebuilt.
+    if (soc < 45) {
+        soc = (soc >= 5) ? soc - 5 : 0;
+    }
+
     uint8_t soh = 100; // JBD BMS doesn't report SoH — assume 100%
 
     twai_message_t msg;
@@ -122,9 +147,9 @@ static void can_send_soc(OverkillSolarBms2& bms) {
 // 0x356 — Voltage, current, temperature
 // -----------------------------------------------------------------------
 static void can_send_measurements(OverkillSolarBms2& bms) {
-    int16_t voltage = (int16_t)(lastValidVoltage * 100.0f);  // e.g. 54.9V → 5490
-    int16_t current = (int16_t)(lastValidCurrent * 10.0f);  // e.g. 12.3A → 123 (signed)
-    int16_t temp    = (int16_t)(lastValidTemp    * 10.0f);
+    int16_t voltage = (int16_t)(bms.get_voltage() * 100.0f);  // e.g. 54.9V → 5490
+    int16_t current = (int16_t)(bms.get_current() * 10.0f);  // e.g. 12.3A → 123 (signed)
+    int16_t temp    = (int16_t)(bms.get_ntc_temperature(0) * 10.0f);
 
     twai_message_t msg;
     msg.identifier       = 0x356;
@@ -232,7 +257,6 @@ static void can_send_alive() {
 // Send all Pylontech frames — call every 100ms from main loop
 // -----------------------------------------------------------------------
 void sendCANFrames(OverkillSolarBms2& bms) {
-    updateCache(bms);
     can_send_limits();
     can_send_soc(bms);
     can_send_measurements(bms);
