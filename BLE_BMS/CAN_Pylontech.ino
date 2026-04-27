@@ -26,6 +26,25 @@
 
 static uint32_t aliveCounter = 0;
 
+static uint8_t  lastValidSoc     = 10;    // last known good SoC — default 10% safe fallback
+static float    lastValidVoltage = 48.0f; // last known good voltage
+static float    lastValidCurrent = 0.0f;  // last known good current
+static float    lastValidTemp    = 25.0f; // last known good temperature
+
+// -----------------------------------------------------------------------
+// Update cached values — only when BMS is reporting valid data
+// -----------------------------------------------------------------------
+static void updateCache(OverkillSolarBms2& bms) {
+    uint8_t soc  = bms.get_state_of_charge();
+    float   volt = bms.get_voltage();
+    if (soc > 0 && volt > 10.0f) {
+        lastValidSoc     = soc;
+        lastValidVoltage = volt;
+        lastValidCurrent = bms.get_current();
+        lastValidTemp    = bms.get_ntc_temperature(0);
+    }
+}
+
 // -----------------------------------------------------------------------
 // Helper — transmit one CAN frame, print warning if it fails
 // -----------------------------------------------------------------------
@@ -85,7 +104,7 @@ static void can_send_limits() {
 // 0x355 — SoC and SoH
 // -----------------------------------------------------------------------
 static void can_send_soc(OverkillSolarBms2& bms) {
-    uint8_t soc = bms.get_state_of_charge();
+    uint8_t soc = lastValidSoc;
     uint8_t soh = 100; // JBD BMS doesn't report SoH — assume 100%
 
     twai_message_t msg;
@@ -103,9 +122,9 @@ static void can_send_soc(OverkillSolarBms2& bms) {
 // 0x356 — Voltage, current, temperature
 // -----------------------------------------------------------------------
 static void can_send_measurements(OverkillSolarBms2& bms) {
-    int16_t voltage = (int16_t)(bms.get_voltage() * 100.0f);  // e.g. 54.9V → 5490
-    int16_t current = (int16_t)(bms.get_current() * 10.0f);  // e.g. 12.3A → 123 (signed)
-    int16_t temp    = (int16_t)(bms.get_ntc_temperature(0) * 10.0f);
+    int16_t voltage = (int16_t)(lastValidVoltage * 100.0f);  // e.g. 54.9V → 5490
+    int16_t current = (int16_t)(lastValidCurrent * 10.0f);  // e.g. 12.3A → 123 (signed)
+    int16_t temp    = (int16_t)(lastValidTemp    * 10.0f);
 
     twai_message_t msg;
     msg.identifier       = 0x356;
@@ -213,6 +232,7 @@ static void can_send_alive() {
 // Send all Pylontech frames — call every 100ms from main loop
 // -----------------------------------------------------------------------
 void sendCANFrames(OverkillSolarBms2& bms) {
+    updateCache(bms);
     can_send_limits();
     can_send_soc(bms);
     can_send_measurements(bms);
