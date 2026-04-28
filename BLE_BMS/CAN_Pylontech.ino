@@ -18,21 +18,39 @@
 //         Solis RJ45 pin4=CAN-H, pin5=CAN-L
 // -----------------------------------------------------------------------
 
-// Battery limits — Boston Power Swing 5300 NMC, 14S 18P
+// -----------------------------------------------------------------------
+// Pack series cell count — change to 13 for a 13S pack, leave at 14 for 14S.
+// All pack-voltage parameters are derived from this single constant.
+// -----------------------------------------------------------------------
+#ifndef PACK_SERIES_CELLS
+#define PACK_SERIES_CELLS       14      // default: 14S; set to 13 for 13S
+#endif
+
+// SoC curve reference: authored for 14S. Voltages scale automatically.
+#define SOC_REF_SERIES          14.0f
+#define SOC_SCALE               ((float)(PACK_SERIES_CELLS) / SOC_REF_SERIES)
+
+// Pack max charge voltage in decivolts: PACK_SERIES_CELLS × 4.20 V × 10
+// e.g. 14S → 588, 13S → 546
+#define PACK_MAX_V10            ((uint16_t)((PACK_SERIES_CELLS) * 4.20f * 10.0f + 0.5f))
+
+// Battery limits — Boston Power Swing 5300 NMC, 14S 18P (by default)
 // Cell max: 4.20V, Cell min: 2.75V, Pack: 58.8V / 38.5V, Capacity: ~95Ah
-#define MAX_CHARGE_VOLTAGE      588   // 58.8V — 14 x 4.20V NMC (x10)
+#define MAX_CHARGE_VOLTAGE      PACK_MAX_V10   // PACK_SERIES_CELLS x 4.20V NMC (x10)
 #define MAX_CHARGE_CURRENT      400   // 40.0A  (x10)
 #define MAX_DISCHARGE_CURRENT   400   // 40.0A  (x10)
 
 static uint32_t aliveCounter = 0;
 
 // -----------------------------------------------------------------------
-// voltageToSoc — NMC 14S discharge curve lookup + linear interpolation
+// voltageToSoc — NMC discharge curve lookup + linear interpolation
 // Input: pack voltage (V). Output: SoC 0–100%.
+// Curve is authored for a 14S reference pack; voltages are scaled by
+// SOC_SCALE (= PACK_SERIES_CELLS / 14) so 13S packs work automatically.
 // Based on Boston Power Swing 5300 NMC cell characterisation.
 // -----------------------------------------------------------------------
 static uint8_t voltageToSoc(float packV) {
-    // {pack voltage, SoC%} — must be in descending voltage order
+    // {14S reference pack voltage, SoC%} — must be in descending voltage order
     static const float curve[][2] = {
         {58.8f, 100},
         {56.0f,  80},
@@ -47,12 +65,12 @@ static uint8_t voltageToSoc(float packV) {
     };
     const uint8_t points = sizeof(curve) / sizeof(curve[0]);
 
-    if (packV >= curve[0][0])             return 100;
-    if (packV <= curve[points - 1][0])    return 0;
+    if (packV >= curve[0][0] * SOC_SCALE)             return 100;
+    if (packV <= curve[points - 1][0] * SOC_SCALE)    return 0;
 
     for (uint8_t i = 0; i < points - 1; i++) {
-        float vHigh = curve[i][0],   socHigh = curve[i][1];
-        float vLow  = curve[i+1][0], socLow  = curve[i+1][1];
+        float vHigh = curve[i][0]   * SOC_SCALE, socHigh = curve[i][1];
+        float vLow  = curve[i+1][0] * SOC_SCALE, socLow  = curve[i+1][1];
         if (packV <= vHigh && packV > vLow) {
             float t = (packV - vLow) / (vHigh - vLow);
             return (uint8_t)(socLow + t * (socHigh - socLow) + 0.5f);
