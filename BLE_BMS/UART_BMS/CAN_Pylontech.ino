@@ -5,7 +5,19 @@
 // Pylontech CAN protocol for Solis S5-EH1P3.6K-L
 // -----------------------------------------------------------------------
 
-#define MAX_CHARGE_VOLTAGE      584   // 58.4V  (x10)
+// -----------------------------------------------------------------------
+// Pack series cell count — change to 13 for a 13S pack, leave at 14 for 14S.
+// All pack-voltage parameters are derived from this single constant.
+// -----------------------------------------------------------------------
+#ifndef PACK_SERIES_CELLS
+#define PACK_SERIES_CELLS       14      // default: 14S; set to 13 for 13S
+#endif
+
+// Pack max charge voltage in decivolts: PACK_SERIES_CELLS × 4.20 V × 10
+// e.g. 14S → 588, 13S → 546
+#define PACK_MAX_V10            ((uint16_t)((PACK_SERIES_CELLS) * 4.20f * 10.0f + 0.5f))
+
+#define MAX_CHARGE_VOLTAGE      PACK_MAX_V10   // PACK_SERIES_CELLS x 4.20V NMC (x10)
 #define MAX_CHARGE_CURRENT      500   // 50.0A  (x10)
 #define MAX_DISCHARGE_CURRENT   500   // 50.0A  (x10)
 
