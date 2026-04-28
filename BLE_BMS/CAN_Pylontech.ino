@@ -18,48 +18,28 @@
 //         Solis RJ45 pin4=CAN-H, pin5=CAN-L
 // -----------------------------------------------------------------------
 
-// Battery limits — Boston Power Swing 5300 NMC, 14S 18P
-// Cell max: 4.20V, Cell min: 2.75V, Pack: 58.8V / 38.5V, Capacity: ~95Ah
-#define MAX_CHARGE_VOLTAGE      588   // 58.8V — 14 x 4.20V NMC (x10)
+// -----------------------------------------------------------------------
+// Pack config
+//
+// Default: 13S (current pack). Change to 14 for 14S.
+// You can override this at compile time by defining PACK_SERIES_CELLS
+// before including/compiling this file.
+// -----------------------------------------------------------------------
+#ifndef PACK_SERIES_CELLS
+#define PACK_SERIES_CELLS       13
+#endif
+
+// Pack max charge voltage in decivolts: PACK_SERIES_CELLS × 4.20 V × 10
+// e.g. 13S → 546, 14S → 588
+#define PACK_MAX_V10            ((uint16_t)((PACK_SERIES_CELLS) * 4.20f * 10.0f + 0.5f))
+
+// Battery limits — Boston Power Swing 5300 NMC (by default)
+// Cell max: 4.20V, Cell min: 2.75V
+#define MAX_CHARGE_VOLTAGE      PACK_MAX_V10   // PACK_SERIES_CELLS x 4.20V NMC (x10)
 #define MAX_CHARGE_CURRENT      400   // 40.0A  (x10)
 #define MAX_DISCHARGE_CURRENT   400   // 40.0A  (x10)
 
 static uint32_t aliveCounter = 0;
-
-// -----------------------------------------------------------------------
-// voltageToSoc — NMC 14S discharge curve lookup + linear interpolation
-// Input: pack voltage (V). Output: SoC 0–100%.
-// Based on Boston Power Swing 5300 NMC cell characterisation.
-// -----------------------------------------------------------------------
-static uint8_t voltageToSoc(float packV) {
-    // {pack voltage, SoC%} — must be in descending voltage order
-    static const float curve[][2] = {
-        {58.8f, 100},
-        {56.0f,  80},
-        {53.9f,  70},
-        {52.5f,  60},
-        {51.1f,  50},
-        {49.7f,  40},
-        {48.3f,  30},
-        {46.2f,  20},
-        {44.1f,  10},
-        {38.5f,   0},
-    };
-    const uint8_t points = sizeof(curve) / sizeof(curve[0]);
-
-    if (packV >= curve[0][0])             return 100;
-    if (packV <= curve[points - 1][0])    return 0;
-
-    for (uint8_t i = 0; i < points - 1; i++) {
-        float vHigh = curve[i][0],   socHigh = curve[i][1];
-        float vLow  = curve[i+1][0], socLow  = curve[i+1][1];
-        if (packV <= vHigh && packV > vLow) {
-            float t = (packV - vLow) / (vHigh - vLow);
-            return (uint8_t)(socLow + t * (socHigh - socLow) + 0.5f);
-        }
-    }
-    return 0;
-}
 
 // -----------------------------------------------------------------------
 // Helper — transmit one CAN frame, print warning if it fails
@@ -120,15 +100,8 @@ static void can_send_limits() {
 // 0x355 — SoC and SoH
 // -----------------------------------------------------------------------
 static void can_send_soc(OverkillSolarBms2& bms) {
-    // Use voltage-based SoC — immune to BMS coulomb counter resets on alarm.
-    uint8_t soc = voltageToSoc(bms.get_voltage());
-
-    // TEMPORARY: shift SoC -5% below 45% so Solis sees 40% when pack is
-    // at 45% real SoC. This prevents Solis triggering emergency grid charge
-    // when Cell 9 alarms early. Remove this block once pack 9 is rebuilt.
-    if (soc < 45) {
-        soc = (soc >= 5) ? soc - 5 : 0;
-    }
+    // Use BMS-reported SoC.
+    uint8_t soc = bms.get_state_of_charge();
 
     uint8_t soh = 100; // JBD BMS doesn't report SoH — assume 100%
 
