@@ -17,11 +17,53 @@
 // e.g. 13S → 546, 14S → 588
 #define PACK_MAX_V10            ((uint16_t)((PACK_SERIES_CELLS) * 4.20f * 10.0f + 0.5f))
 
+// SoC curve reference: authored for 14S pack voltages. Scale voltages by
+// PACK_SERIES_CELLS / 14 so 13S packs work automatically.
+#define SOC_REF_SERIES          14.0f
+#define SOC_SCALE               ((float)(PACK_SERIES_CELLS) / SOC_REF_SERIES)
+
 #define MAX_CHARGE_VOLTAGE      PACK_MAX_V10   // PACK_SERIES_CELLS x 4.20V NMC (x10)
 #define MAX_CHARGE_CURRENT      500   // 50.0A  (x10)
 #define MAX_DISCHARGE_CURRENT   500   // 50.0A  (x10)
 
 static uint32_t aliveCounter = 0;
+
+// -----------------------------------------------------------------------
+// voltageToSoc — NMC discharge curve lookup + linear interpolation
+// Input: pack voltage (V). Output: SoC 0–100%.
+// Curve is authored for a 14S reference pack; voltages are scaled by
+// SOC_SCALE (= PACK_SERIES_CELLS / 14) so 13S packs work automatically.
+// Based on Boston Power Swing 5300 NMC cell characterisation.
+// -----------------------------------------------------------------------
+static uint8_t voltageToSoc(float packV) {
+    // {14S reference pack voltage, SoC%} — must be in descending voltage order
+    static const float curve[][2] = {
+        {58.8f, 100},
+        {56.0f,  80},
+        {53.9f,  70},
+        {52.5f,  60},
+        {51.1f,  50},
+        {49.7f,  40},
+        {48.3f,  30},
+        {46.2f,  20},
+        {44.1f,  10},
+        {38.5f,   0},
+    };
+    const uint8_t points = sizeof(curve) / sizeof(curve[0]);
+
+    if (packV >= curve[0][0] * SOC_SCALE)             return 100;
+    if (packV <= curve[points - 1][0] * SOC_SCALE)    return 0;
+
+    for (uint8_t i = 0; i < points - 1; i++) {
+        float vHigh = curve[i][0]   * SOC_SCALE, socHigh = curve[i][1];
+        float vLow  = curve[i+1][0] * SOC_SCALE, socLow  = curve[i+1][1];
+        if (packV <= vHigh && packV > vLow) {
+            float t = (packV - vLow) / (vHigh - vLow);
+            return (uint8_t)(socLow + t * (socHigh - socLow) + 0.5f);
+        }
+    }
+    return 0;
+}
 
 static void canSend(twai_message_t& msg) {
     if (twai_transmit(&msg, pdMS_TO_TICKS(10)) != ESP_OK) {
@@ -74,7 +116,9 @@ static void can_send_soc(OverkillSolarBms2& bms) {
     msg.identifier       = 0x355;
     msg.flags            = TWAI_MSG_FLAG_NONE;
     msg.data_length_code = 4;
-    msg.data[0] = bms.get_state_of_charge();
+
+    // Use voltage-based SoC — immune to BMS coulomb counter misreports/resets.
+    msg.data[0] = voltageToSoc(bms.get_voltage());
     msg.data[1] = 0x00;
     msg.data[2] = 100;   // SoH — JBD doesn't report it
     msg.data[3] = 0x00;
