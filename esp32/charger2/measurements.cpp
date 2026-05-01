@@ -102,7 +102,7 @@ void readGrid() {
   SolisData s  = getSolisSnapshot();
   unsigned long age = solisDataAgeMs();
 
-  if (s.valid && age > 0 && age < SOLIS_STALE_MS) {
+  if (s.valid && age < SOLIS_STALE_MS) {
     // ── Solis path ──
     emonGrid.Vrms        = s.gridVoltage;
     emonGrid.Irms        = s.gridCurrent;
