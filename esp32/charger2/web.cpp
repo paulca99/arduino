@@ -215,8 +215,8 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
         // Data age
         const ageEl = document.getElementById('age');
-        const ageS  = s.ageMs ? (s.ageMs / 1000).toFixed(1) : '?';
-        ageEl.textContent = 'Last Solis update: ' + ageS + ' s ago';
+        const ageS  = (s.ageMs != null && s.valid) ? (s.ageMs / 1000).toFixed(1) + ' s ago' : '?';
+        ageEl.textContent = 'Last Solis update: ' + ageS;
         ageEl.className   = (s.ageMs > 5000) ? 'stale' : '';
 
       } catch(e) {

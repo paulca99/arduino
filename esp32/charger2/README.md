@@ -5,7 +5,9 @@ clean, modular firmware that performs **all the same tasks as `charger/`** while
 adding async Solis RS485 polling, a richer web UI, and a JSON API.
 
 > ⚠️ The original `charger/` firmware is **unchanged** and continues to work
-> independently. This firmware is a clean-room continuation of development.
+> independently. This directory is a complete rewrite of the `charger2usingrs485.ino`
+> prototype, expanding it into a full modular firmware.  The original prototype
+> is preserved as `charger2usingrs485.ino.bak` for reference.
 
 ---
 

@@ -1,5 +1,5 @@
 /*
- * solis_modbus.h — Solis S5‑EH1P RS485/Modbus poller
+ * solis_modbus.h - Solis S5-EH1P RS485/Modbus poller
  *
  * Runs as a FreeRTOS task on Core 1.
  * Shared data is protected by solisMutex.

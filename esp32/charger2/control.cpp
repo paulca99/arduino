@@ -33,7 +33,9 @@ bool afterburnerOn = false;
 bool GTIenabled    = true;
 
 static bool VOLTAGE_HIGH = false;
-static int  SOC          = 90;  // TODO: derive from Solis data
+static int  SOC = 90;  // Placeholder. The Solis S5-EH1P does not expose an
+                        // explicit SOC register via standard Modbus; estimate
+                        // from batteryVoltage in a future update.
 
 static const int RANGE = (1 << PWM_RESOLUTION) - 1;  // 511
 int psu_resistance_values[5] = {RANGE, RANGE, RANGE, RANGE, RANGE};
