@@ -1,11 +1,24 @@
 /*
  * measurements.cpp — EmonLib AC measurements + ADS1115 battery voltage
+ *
+ * Grid measurement strategy:
+ *   Primary  — Solis Modbus values (gridVoltage/gridCurrent/gridPower/powerFactor)
+ *              when valid and fresher than SOLIS_STALE_MS milliseconds.
+ *   Fallback — Local CT + voltage transformer via EmonLib (with -90 W offset).
  */
 #include "measurements.h"
 #include "control.h"
+#include "solis_modbus.h"
 
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
+
+// ── Solis freshness threshold ──────────────────────────────────────
+// Use Solis data only if it arrived within this many milliseconds.
+static const unsigned long SOLIS_STALE_MS = 5000UL;
+
+// Track last-used grid source to avoid spamming the serial log.
+static enum { SOURCE_UNKNOWN, SOURCE_SOLIS, SOURCE_CT } gridSource = SOURCE_UNKNOWN;
 
 // ── Pin assignments ────────────────────────────────────────────────
 static const int GRID_VOLTAGE_PIN    = 34;
@@ -78,9 +91,38 @@ void measurementsSetup() {
   }
 }
 
-void readGrid() {
+// ── Grid reading helpers ───────────────────────────────────────────
+
+static void readGridFromCT() {
   emonGrid.calcVI(40, 1000);
-  emonGrid.realPower -= 90;  // known offset calibration
+  emonGrid.realPower -= 90;  // known CT/VT offset calibration
+}
+
+void readGrid() {
+  SolisData s  = getSolisSnapshot();
+  unsigned long age = solisDataAgeMs();
+
+  if (s.valid && age > 0 && age < SOLIS_STALE_MS) {
+    // ── Solis path ──
+    emonGrid.Vrms        = s.gridVoltage;
+    emonGrid.Irms        = s.gridCurrent;
+    emonGrid.realPower   = s.gridPower;
+    emonGrid.powerFactor = s.powerFactor;
+    // NOTE: CT offset (-90 W) is intentionally NOT applied here.
+
+    if (gridSource != SOURCE_SOLIS) {
+      Serial.println("[Meas] Grid source: Solis Modbus");
+      gridSource = SOURCE_SOLIS;
+    }
+  } else {
+    // ── CT fallback ──
+    readGridFromCT();
+
+    if (gridSource != SOURCE_CT) {
+      Serial.println("[Meas] Grid source: CT clamp (Solis stale/unavailable)");
+      gridSource = SOURCE_CT;
+    }
+  }
 }
 
 float readCharger() {

@@ -200,7 +200,21 @@ for backwards compatibility with existing dashboards.
 
 Same as `charger/` — see `charger/README.md` for the state-machine diagram.
 
-Key parameters:
+**Grid measurement source** — `readGrid()` uses a two-tier strategy:
+
+1. **Primary (Solis Modbus)** — when the RS485 poller has valid data that is
+   less than 5 000 ms old, `emonGrid.Vrms/Irms/realPower/powerFactor` are
+   populated directly from the Solis inverter's grid registers
+   (`gridVoltage / gridCurrent / gridPower / powerFactor`).
+   The CT-specific −90 W offset is **not** applied in this mode.
+
+2. **Fallback (CT clamp)** — if Solis data is stale or has never arrived,
+   `readGrid()` falls back to the local CT + voltage-transformer measurement
+   via EmonLib, including the −90 W calibration offset.
+
+A Serial log message is printed once whenever the active source changes.
+
+Key control parameters:
 
 | Parameter | Default | Description |
 |---|---|---|

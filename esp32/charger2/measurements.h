@@ -32,7 +32,12 @@ extern EnergyMonitor emonCharger;
 /** Initialise EmonLib and ADS1115.  Call once in setup(). */
 void measurementsSetup();
 
-/** Read grid power/voltage — blocks ~20 ms (2 AC half-cycles). */
+/** Read grid power/voltage.
+ *  Uses Solis Modbus values when available and fresh (< 5 s old).
+ *  Falls back to the local CT + voltage transformer (EmonLib) if Solis
+ *  data is stale or has not yet been received.
+ *  Populates emonGrid.Vrms, .Irms, .realPower, .powerFactor.
+ */
 void readGrid();
 
 /**
