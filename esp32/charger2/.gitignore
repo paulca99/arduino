@@ -1,0 +1,2 @@
+# WiFi credentials — copy secrets_template.h → secrets.h and fill in
+secrets.h
