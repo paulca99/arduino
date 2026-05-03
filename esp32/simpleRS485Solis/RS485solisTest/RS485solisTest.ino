@@ -9,12 +9,13 @@
    DEBUG NOTES (added):
    - Validates Modbus reply: slave id, function, byte count, CRC
    - Hex-dumps first bytes of frames periodically
-   - Flushes UART RX before each request (to prevent misaligned frames)
    - Logs JSON response periodically + heap
 
    IMPORTANT:
-   - At 9600 baud, an 85-byte Modbus response takes ~90ms on the wire.
-     The original 40ms read window will frequently timeout.
+   - You're tapped onto an existing RS485 bus (Eastron meter <-> Solis).
+     That means you'll see other traffic. A naive "read N bytes" approach
+     will desync. This sketch includes a Modbus RTU sync state machine to
+     lock onto frames addressed to SOLIS_SLAVE_ID.
 ************************************************************/
 
 #include <WiFi.h>
@@ -48,15 +49,20 @@ struct SolisData {
 SolisData solis;                 // Shared instance
 SemaphoreHandle_t solisMutex;    // Protects 'solis'
 
+/********************  BUS / MODBUS CONFIG  ********************/
+// You are on a shared bus and don't know which slave is which.
+// Start with 1 (common default), then adjust based on the debug logs.
+static const uint8_t SOLIS_SLAVE_ID = 1;
+
 /********************  DEBUG CONFIG  ********************/
 static const bool  DEBUG_MODBUS = true;
 static const bool  DEBUG_JSON   = true;
 static const uint32_t DEBUG_FRAME_DUMP_MS = 2000;
 static const uint32_t DEBUG_JSON_DUMP_MS  = 2000;
+static const uint32_t DEBUG_STATS_MS      = 5000;
 
 /********************  MODBUS TIMING  ********************/
-// 85 bytes at 9600 baud is ~90ms on the wire, plus device processing time.
-static const uint32_t MODBUS_REPLY_TIMEOUT_MS = 250;
+static const uint32_t MODBUS_REPLY_TIMEOUT_MS = 350; // bus traffic + device response latency
 
 /********************  CRC  ********************/
 uint16_t modbusCRC(uint8_t *buf, int len) {
@@ -70,18 +76,22 @@ uint16_t modbusCRC(uint8_t *buf, int len) {
 }
 
 /********************  DEBUG HELPERS  ********************/
+static void dumpBytes(const uint8_t* b, int len, int maxBytes = 16) {
+  int n = len < maxBytes ? len : maxBytes;
+  for (int i = 0; i < n; i++) {
+    if (b[i] < 16) Serial.print('0');
+    Serial.print(b[i], HEX);
+    Serial.print(' ');
+  }
+}
+
 static void dumpFrameHead(const char* tag, const uint8_t* b, int len) {
   Serial.print("[");
   Serial.print(tag);
   Serial.print("] len=");
   Serial.print(len);
   Serial.print(" head=");
-  int n = len < 16 ? len : 16;
-  for (int i = 0; i < n; i++) {
-    if (b[i] < 16) Serial.print('0');
-    Serial.print(b[i], HEX);
-    Serial.print(' ');
-  }
+  dumpBytes(b, len, 16);
   Serial.println();
 }
 
@@ -98,22 +108,10 @@ static bool validateModbusReply(const uint8_t* b, int len, uint8_t expectedId, u
   return rxCrc == calc;
 }
 
-static void flushRS485Rx() {
-  int flushed = 0;
-  while (RS485.available()) {
-    RS485.read();
-    flushed++;
-  }
-  if (DEBUG_MODBUS && flushed) {
-    Serial.print("[RS485] flushed bytes: ");
-    Serial.println(flushed);
-  }
-}
-
 /********************  MODBUS TX  ********************/
-void sendRequest(uint16_t startReg, uint16_t count) {
+void sendRequest(uint8_t slaveId, uint16_t startReg, uint16_t count) {
   uint8_t frame[8];
-  frame[0] = 1; // Solis inverter ID
+  frame[0] = slaveId;
   frame[1] = 3; // Read Holding Registers
   frame[2] = startReg >> 8;
   frame[3] = startReg & 0xFF;
@@ -127,41 +125,80 @@ void sendRequest(uint16_t startReg, uint16_t count) {
   RS485.write(frame, 8);
 }
 
-/********************  MODBUS RX (NON-BLOCKING)  ********************/
-// Reads a Modbus RTU reply.
-// - If expectedLen > 0, reads exactly that many bytes.
-// - If expectedLen == 0, dynamically determines length after reading first 3 bytes:
-//     total = 3 + byteCount + 2
-// Returns number of bytes read (0 on timeout).
-int readReply(uint8_t *buf, int bufSize, int expectedLen) {
+/********************  MODBUS RX (SYNC STATE MACHINE)  ********************/
+// Because you're attached to an existing RS485 bus, there will be other frames.
+// This reader scans until it finds a plausible header (id, func) for our slave,
+// then reads the rest of the frame based on byteCount.
+//
+// Returns:
+//  - >0 : number of bytes in buf
+//  - 0  : timeout / no complete frame
+int readReplySynced(uint8_t* buf, int bufSize, uint8_t slaveId, uint8_t func, uint8_t expectedByteCount) {
+  enum { S_SYNC_ID, S_SYNC_FUNC, S_READ_BYTECOUNT, S_READ_REST } state = S_SYNC_ID;
   int len = 0;
-  int targetLen = expectedLen;
-  unsigned long start = millis();
+  int targetLen = 0;
+  uint32_t start = millis();
 
   while (millis() - start < MODBUS_REPLY_TIMEOUT_MS) {
     while (RS485.available()) {
-      int c = RS485.read();
-      if (len < bufSize) {
-        buf[len++] = (uint8_t)c;
-      }
+      uint8_t c = (uint8_t)RS485.read();
 
-      if (expectedLen == 0 && len >= 3) {
-        uint8_t byteCount = buf[2];
-        targetLen = 3 + byteCount + 2;
-        if (targetLen > bufSize) {
-          if (DEBUG_MODBUS) {
-            Serial.print("[RS485] reply too big for buffer, byteCount=");
-            Serial.println(byteCount);
+      switch (state) {
+        case S_SYNC_ID:
+          if (c == slaveId) {
+            buf[0] = c;
+            len = 1;
+            state = S_SYNC_FUNC;
           }
-          return 0;
-        }
-      }
+          break;
 
-      if (targetLen > 0 && len >= targetLen) {
-        return len;
+        case S_SYNC_FUNC:
+          // Accept normal reply func or exception (func|0x80)
+          if (c == func || c == (uint8_t)(func | 0x80)) {
+            buf[1] = c;
+            len = 2;
+            state = S_READ_BYTECOUNT;
+          } else {
+            state = S_SYNC_ID;
+          }
+          break;
+
+        case S_READ_BYTECOUNT:
+          buf[2] = c;
+          len = 3;
+
+          // Exception reply: [id][func|0x80][exception_code][CRClo][CRChi] => 5 bytes
+          if (buf[1] == (uint8_t)(func | 0x80)) {
+            targetLen = 5;
+            state = S_READ_REST;
+            break;
+          }
+
+          // Normal reply: enforce expected byteCount for THIS request; otherwise treat as other traffic/desync.
+          if (c != expectedByteCount) {
+            state = S_SYNC_ID;
+            break;
+          }
+
+          targetLen = 3 + c + 2;
+          if (targetLen > bufSize) {
+            state = S_SYNC_ID;
+            break;
+          }
+          state = S_READ_REST;
+          break;
+
+        case S_READ_REST:
+          if (len < bufSize) {
+            buf[len++] = c;
+          }
+          if (targetLen > 0 && len >= targetLen) {
+            return len;
+          }
+          break;
       }
     }
-    vTaskDelay(1);  // yield to other tasks
+    vTaskDelay(1);
   }
 
   return 0;
@@ -200,73 +237,102 @@ void decodeBlock2(uint8_t *b) {
 void solisTask(void *pv) {
   uint8_t buf[128];
   uint32_t lastDump = 0;
+  uint32_t lastStats = 0;
+
+  // Stats
+  uint32_t okFrames = 0;
+  uint32_t crcFails = 0;
+  uint32_t timeouts = 0;
+  uint32_t exceptions = 0;
 
   for (;;) {
-    // Block 1: 0x3100 (40 registers => expect byteCount=80 => 85-byte frame)
-    flushRS485Rx();
-    sendRequest(0x3100, 40);
-    int n1 = readReply(buf, sizeof(buf), 0);
-    if (n1 > 0) {
-      bool ok = (n1 == 85) && validateModbusReply(buf, n1, 1, 3, 80);
+    // Modbus RTU requires some idle time between frames; also helps on shared bus.
+    vTaskDelay(pdMS_TO_TICKS(20));
 
+    // Block 1: 0x3100 (40 registers => expect byteCount=80 => 85-byte frame)
+    sendRequest(SOLIS_SLAVE_ID, 0x3100, 40);
+    int n1 = readReplySynced(buf, sizeof(buf), SOLIS_SLAVE_ID, 3, 80);
+    if (n1 > 0) {
       uint32_t now = millis();
       if (DEBUG_MODBUS && (now - lastDump) > DEBUG_FRAME_DUMP_MS) {
         lastDump = now;
         dumpFrameHead("3100", buf, n1);
-        if (!ok) {
-          uint16_t rxCrc = (n1 >= 2) ? ((uint16_t)buf[n1 - 2] | ((uint16_t)buf[n1 - 1] << 8)) : 0;
-          uint16_t calc  = (n1 >= 2) ? modbusCRC(buf, n1 - 2) : 0;
-          Serial.print("[3100] INVALID frame n="); Serial.print(n1);
-          Serial.print(" id="); Serial.print(buf[0]);
-          Serial.print(" func="); Serial.print(buf[1]);
-          Serial.print(" bytes="); Serial.print(buf[2]);
+      }
+
+      if (n1 == 5 && buf[1] == (uint8_t)(3 | 0x80)) {
+        exceptions++;
+        if (DEBUG_MODBUS) {
+          Serial.print("[3100] Modbus exception code: ");
+          Serial.println(buf[2]);
+        }
+      } else if (validateModbusReply(buf, n1, SOLIS_SLAVE_ID, 3, 80)) {
+        okFrames++;
+        xSemaphoreTake(solisMutex, portMAX_DELAY);
+        decodeBlock1(buf);
+        xSemaphoreGive(solisMutex);
+      } else {
+        crcFails++;
+        if (DEBUG_MODBUS) {
+          uint16_t rxCrc = (uint16_t)buf[n1 - 2] | ((uint16_t)buf[n1 - 1] << 8);
+          uint16_t calc  = modbusCRC(buf, n1 - 2);
+          Serial.print("[3100] CRC/header fail n="); Serial.print(n1);
           Serial.print(" crcRx=0x"); Serial.print(rxCrc, HEX);
           Serial.print(" crcCalc=0x"); Serial.println(calc, HEX);
         }
       }
-
-      if (ok) {
-        xSemaphoreTake(solisMutex, portMAX_DELAY);
-        decodeBlock1(buf);
-        xSemaphoreGive(solisMutex);
-      }
-    } else if (DEBUG_MODBUS) {
-      Serial.println("[3100] timeout/no full frame");
+    } else {
+      timeouts++;
+      if (DEBUG_MODBUS) Serial.println("[3100] timeout/no frame for this slave");
     }
 
-    // Block 2: 0x3200
-    flushRS485Rx();
-    sendRequest(0x3200, 40);
-    int n2 = readReply(buf, sizeof(buf), 0);
-    if (n2 > 0) {
-      bool ok = (n2 == 85) && validateModbusReply(buf, n2, 1, 3, 80);
+    vTaskDelay(pdMS_TO_TICKS(20));
 
+    // Block 2: 0x3200
+    sendRequest(SOLIS_SLAVE_ID, 0x3200, 40);
+    int n2 = readReplySynced(buf, sizeof(buf), SOLIS_SLAVE_ID, 3, 80);
+    if (n2 > 0) {
       uint32_t now = millis();
       if (DEBUG_MODBUS && (now - lastDump) > DEBUG_FRAME_DUMP_MS) {
         lastDump = now;
         dumpFrameHead("3200", buf, n2);
-        if (!ok) {
-          uint16_t rxCrc = (n2 >= 2) ? ((uint16_t)buf[n2 - 2] | ((uint16_t)buf[n2 - 1] << 8)) : 0;
-          uint16_t calc  = (n2 >= 2) ? modbusCRC(buf, n2 - 2) : 0;
-          Serial.print("[3200] INVALID frame n="); Serial.print(n2);
-          Serial.print(" id="); Serial.print(buf[0]);
-          Serial.print(" func="); Serial.print(buf[1]);
-          Serial.print(" bytes="); Serial.print(buf[2]);
+      }
+
+      if (n2 == 5 && buf[1] == (uint8_t)(3 | 0x80)) {
+        exceptions++;
+        if (DEBUG_MODBUS) {
+          Serial.print("[3200] Modbus exception code: ");
+          Serial.println(buf[2]);
+        }
+      } else if (validateModbusReply(buf, n2, SOLIS_SLAVE_ID, 3, 80)) {
+        okFrames++;
+        xSemaphoreTake(solisMutex, portMAX_DELAY);
+        decodeBlock2(buf);
+        xSemaphoreGive(solisMutex);
+      } else {
+        crcFails++;
+        if (DEBUG_MODBUS) {
+          uint16_t rxCrc = (uint16_t)buf[n2 - 2] | ((uint16_t)buf[n2 - 1] << 8);
+          uint16_t calc  = modbusCRC(buf, n2 - 2);
+          Serial.print("[3200] CRC/header fail n="); Serial.print(n2);
           Serial.print(" crcRx=0x"); Serial.print(rxCrc, HEX);
           Serial.print(" crcCalc=0x"); Serial.println(calc, HEX);
         }
       }
-
-      if (ok) {
-        xSemaphoreTake(solisMutex, portMAX_DELAY);
-        decodeBlock2(buf);
-        xSemaphoreGive(solisMutex);
-      }
-    } else if (DEBUG_MODBUS) {
-      Serial.println("[3200] timeout/no full frame");
+    } else {
+      timeouts++;
+      if (DEBUG_MODBUS) Serial.println("[3200] timeout/no frame for this slave");
     }
 
-    vTaskDelay(pdMS_TO_TICKS(300)); // 300ms between polls
+    uint32_t now = millis();
+    if (DEBUG_MODBUS && (now - lastStats) > DEBUG_STATS_MS) {
+      lastStats = now;
+      Serial.print("[STATS] ok="); Serial.print(okFrames);
+      Serial.print(" crcFail="); Serial.print(crcFails);
+      Serial.print(" exc="); Serial.print(exceptions);
+      Serial.print(" timeout="); Serial.println(timeouts);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(400));
   }
 }
 
@@ -475,7 +541,5 @@ void setup() {
 
 /********************  LOOP (CORE 0)  ********************/
 void loop() {
-  // You can add charger logic here if you like.
-  // Web servers and WiFi run in background on core 0.
   delay(500);
 }
