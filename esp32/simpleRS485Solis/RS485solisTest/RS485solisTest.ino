@@ -5,12 +5,19 @@
    - Core 0: WiFi + AsyncWebServer on 80 (HTML UI)
              AsyncWebServer on 8080 (/api/solis JSON)
    - Shared SolisData protected by a mutex
+
+   DEBUG NOTES (added):
+   - Validates Modbus reply: slave id, function, byte count, CRC
+   - Hex-dumps first bytes of frames periodically
+   - Flushes UART RX before each request (to prevent misaligned frames)
+   - Logs JSON response periodically + heap
 ************************************************************/
 
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <HardwareSerial.h>
+#include <math.h>
 
 HardwareSerial RS485(2);   // UART2
 
@@ -37,6 +44,12 @@ struct SolisData {
 SolisData solis;                 // Shared instance
 SemaphoreHandle_t solisMutex;    // Protects 'solis'
 
+/********************  DEBUG CONFIG  ********************/
+static const bool  DEBUG_MODBUS = true;
+static const bool  DEBUG_JSON   = true;
+static const uint32_t DEBUG_FRAME_DUMP_MS = 2000;
+static const uint32_t DEBUG_JSON_DUMP_MS  = 2000;
+
 /********************  CRC  ********************/
 uint16_t modbusCRC(uint8_t *buf, int len) {
   uint16_t crc = 0xFFFF;
@@ -46,6 +59,47 @@ uint16_t modbusCRC(uint8_t *buf, int len) {
       crc = (crc & 1) ? (crc >> 1) ^ 0xA001 : crc >> 1;
   }
   return crc;
+}
+
+/********************  DEBUG HELPERS  ********************/
+static void dumpFrameHead(const char* tag, const uint8_t* b, int len) {
+  Serial.print("[");
+  Serial.print(tag);
+  Serial.print("] len=");
+  Serial.print(len);
+  Serial.print(" head=");
+  int n = len < 16 ? len : 16;
+  for (int i = 0; i < n; i++) {
+    if (b[i] < 16) Serial.print('0');
+    Serial.print(b[i], HEX);
+    Serial.print(' ');
+  }
+  Serial.println();
+}
+
+static bool validateModbusReply(const uint8_t* b, int len, uint8_t expectedId, uint8_t expectedFunc, uint8_t expectedByteCount) {
+  if (len < 5) return false;
+
+  if (b[0] != expectedId) return false;
+  if (b[1] != expectedFunc) return false;
+  if (b[2] != expectedByteCount) return false;
+
+  // CRC is last 2 bytes, little-endian
+  uint16_t rxCrc = (uint16_t)b[len - 2] | ((uint16_t)b[len - 1] << 8);
+  uint16_t calc  = modbusCRC((uint8_t*)b, len - 2);
+  return rxCrc == calc;
+}
+
+static void flushRS485Rx() {
+  int flushed = 0;
+  while (RS485.available()) {
+    RS485.read();
+    flushed++;
+  }
+  if (DEBUG_MODBUS && flushed) {
+    Serial.print("[RS485] flushed bytes: ");
+    Serial.println(flushed);
+  }
 }
 
 /********************  MODBUS TX  ********************/
@@ -72,8 +126,13 @@ bool readReply(uint8_t *buf, int expected) {
 
   while (millis() - start < 40) {
     while (RS485.available()) {
-      buf[len++] = RS485.read();
-      if (len >= expected) return true;
+      if (len < expected) {
+        buf[len++] = RS485.read();
+        if (len >= expected) return true;
+      } else {
+        // Defensive: if something goes wrong, drain extra bytes.
+        RS485.read();
+      }
     }
     vTaskDelay(1);  // yield to other tasks
   }
@@ -112,22 +171,67 @@ void decodeBlock2(uint8_t *b) {
 /********************  SOLIS POLLING TASK (CORE 1)  ********************/
 void solisTask(void *pv) {
   uint8_t buf[100];
+  uint32_t lastDump = 0;
 
   for (;;) {
-    // Block 1: 0x3100
+    // Block 1: 0x3100 (40 registers => 80 data bytes => 85-byte frame)
+    flushRS485Rx();
     sendRequest(0x3100, 40);
     if (readReply(buf, 85)) {
-      xSemaphoreTake(solisMutex, portMAX_DELAY);
-      decodeBlock1(buf);
-      xSemaphoreGive(solisMutex);
+      bool ok = validateModbusReply(buf, 85, 1, 3, 80);
+
+      uint32_t now = millis();
+      if (DEBUG_MODBUS && (now - lastDump) > DEBUG_FRAME_DUMP_MS) {
+        lastDump = now;
+        dumpFrameHead("3100", buf, 85);
+        if (!ok) {
+          uint16_t rxCrc = (uint16_t)buf[83] | ((uint16_t)buf[84] << 8);
+          uint16_t calc  = modbusCRC(buf, 83);
+          Serial.print("[3100] INVALID frame id="); Serial.print(buf[0]);
+          Serial.print(" func="); Serial.print(buf[1]);
+          Serial.print(" bytes="); Serial.print(buf[2]);
+          Serial.print(" crcRx=0x"); Serial.print(rxCrc, HEX);
+          Serial.print(" crcCalc=0x"); Serial.println(calc, HEX);
+        }
+      }
+
+      if (ok) {
+        xSemaphoreTake(solisMutex, portMAX_DELAY);
+        decodeBlock1(buf);
+        xSemaphoreGive(solisMutex);
+      }
+    } else if (DEBUG_MODBUS) {
+      Serial.println("[3100] timeout/no full frame");
     }
 
     // Block 2: 0x3200
+    flushRS485Rx();
     sendRequest(0x3200, 40);
     if (readReply(buf, 85)) {
-      xSemaphoreTake(solisMutex, portMAX_DELAY);
-      decodeBlock2(buf);
-      xSemaphoreGive(solisMutex);
+      bool ok = validateModbusReply(buf, 85, 1, 3, 80);
+
+      uint32_t now = millis();
+      if (DEBUG_MODBUS && (now - lastDump) > DEBUG_FRAME_DUMP_MS) {
+        lastDump = now;
+        dumpFrameHead("3200", buf, 85);
+        if (!ok) {
+          uint16_t rxCrc = (uint16_t)buf[83] | ((uint16_t)buf[84] << 8);
+          uint16_t calc  = modbusCRC(buf, 83);
+          Serial.print("[3200] INVALID frame id="); Serial.print(buf[0]);
+          Serial.print(" func="); Serial.print(buf[1]);
+          Serial.print(" bytes="); Serial.print(buf[2]);
+          Serial.print(" crcRx=0x"); Serial.print(rxCrc, HEX);
+          Serial.print(" crcCalc=0x"); Serial.println(calc, HEX);
+        }
+      }
+
+      if (ok) {
+        xSemaphoreTake(solisMutex, portMAX_DELAY);
+        decodeBlock2(buf);
+        xSemaphoreGive(solisMutex);
+      }
+    } else if (DEBUG_MODBUS) {
+      Serial.println("[3200] timeout/no full frame");
     }
 
     vTaskDelay(pdMS_TO_TICKS(300)); // 300ms between polls
@@ -243,6 +347,13 @@ String buildJson() {
   local = solis;
   xSemaphoreGive(solisMutex);
 
+  if (DEBUG_JSON) {
+    // Non-finite values will mess up formatting / indicate decode issues
+    if (!isfinite(local.batteryCurrent) || !isfinite(local.gridVoltage) || !isfinite(local.frequency)) {
+      Serial.println("[API] Non-finite value detected in SolisData snapshot");
+    }
+  }
+
   // Build JSON manually to avoid extra libs
   String json = "{";
   json += "\"pv1Voltage\":"    + String(local.pv1Voltage, 1) + ",";
@@ -276,6 +387,20 @@ void setupWeb() {
   // JSON API on port 8080
   serverAPI.on("/api/solis", HTTP_GET, [](AsyncWebServerRequest *request){
     String json = buildJson();
+
+    if (DEBUG_JSON) {
+      static uint32_t last = 0;
+      uint32_t now = millis();
+      if (now - last > DEBUG_JSON_DUMP_MS) {
+        last = now;
+        Serial.print("[API] freeHeap=");
+        Serial.print(ESP.getFreeHeap());
+        Serial.print(" jsonLen=");
+        Serial.println(json.length());
+        Serial.println(json);
+      }
+    }
+
     request->send(200, "application/json", json);
   });
   serverAPI.begin();
