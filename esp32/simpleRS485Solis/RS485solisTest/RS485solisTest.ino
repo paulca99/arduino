@@ -6,16 +6,19 @@
              AsyncWebServer on 8080 (/api/solis JSON)
    - Shared SolisData protected by a mutex
 
-   DEBUG NOTES (added):
+   DEBUG NOTES:
    - Validates Modbus reply: slave id, function, byte count, CRC
    - Hex-dumps first bytes of frames periodically
    - Logs JSON response periodically + heap
 
-   IMPORTANT:
+   IMPORTANT (shared bus):
    - You're tapped onto an existing RS485 bus (Eastron meter <-> Solis).
-     That means you'll see other traffic. A naive "read N bytes" approach
-     will desync. This sketch includes a Modbus RTU sync state machine to
-     lock onto frames addressed to SOLIS_SLAVE_ID.
+     There will be other traffic.
+
+   SNIFFER MODE:
+   - Set SNIFFER_MODE=true to disable transmitting and just passively sniff.
+   - It will print observed Modbus request/response frames (id, func, addr, count)
+     and keep a small "seen slave IDs" bitset.
 ************************************************************/
 
 #include <WiFi.h>
@@ -49,9 +52,12 @@ struct SolisData {
 SolisData solis;                 // Shared instance
 SemaphoreHandle_t solisMutex;    // Protects 'solis'
 
+/********************  MODE  ********************/
+// Passive sniffer mode: do NOT transmit. Just observe existing bus traffic.
+static const bool SNIFFER_MODE = true;
+
 /********************  BUS / MODBUS CONFIG  ********************/
-// You are on a shared bus and don't know which slave is which.
-// Start with 1 (common default), then adjust based on the debug logs.
+// Only used when SNIFFER_MODE=false.
 static const uint8_t SOLIS_SLAVE_ID = 1;
 
 /********************  DEBUG CONFIG  ********************/
@@ -62,7 +68,8 @@ static const uint32_t DEBUG_JSON_DUMP_MS  = 2000;
 static const uint32_t DEBUG_STATS_MS      = 5000;
 
 /********************  MODBUS TIMING  ********************/
-static const uint32_t MODBUS_REPLY_TIMEOUT_MS = 350; // bus traffic + device response latency
+static const uint32_t MODBUS_REPLY_TIMEOUT_MS = 350; // shared bus + device response latency
+static const uint32_t MODBUS_SNIFF_TIMEOUT_MS = 200; // window for assembling a frame while sniffing
 
 /********************  CRC  ********************/
 uint16_t modbusCRC(uint8_t *buf, int len) {
@@ -95,6 +102,13 @@ static void dumpFrameHead(const char* tag, const uint8_t* b, int len) {
   Serial.println();
 }
 
+static bool validateModbusCrc(const uint8_t* b, int len) {
+  if (len < 4) return false;
+  uint16_t rxCrc = (uint16_t)b[len - 2] | ((uint16_t)b[len - 1] << 8);
+  uint16_t calc  = modbusCRC((uint8_t*)b, len - 2);
+  return rxCrc == calc;
+}
+
 static bool validateModbusReply(const uint8_t* b, int len, uint8_t expectedId, uint8_t expectedFunc, uint8_t expectedByteCount) {
   if (len < 5) return false;
 
@@ -102,10 +116,7 @@ static bool validateModbusReply(const uint8_t* b, int len, uint8_t expectedId, u
   if (b[1] != expectedFunc) return false;
   if (b[2] != expectedByteCount) return false;
 
-  // CRC is last 2 bytes, little-endian
-  uint16_t rxCrc = (uint16_t)b[len - 2] | ((uint16_t)b[len - 1] << 8);
-  uint16_t calc  = modbusCRC((uint8_t*)b, len - 2);
-  return rxCrc == calc;
+  return validateModbusCrc(b, len);
 }
 
 /********************  MODBUS TX  ********************/
@@ -126,13 +137,6 @@ void sendRequest(uint8_t slaveId, uint16_t startReg, uint16_t count) {
 }
 
 /********************  MODBUS RX (SYNC STATE MACHINE)  ********************/
-// Because you're attached to an existing RS485 bus, there will be other frames.
-// This reader scans until it finds a plausible header (id, func) for our slave,
-// then reads the rest of the frame based on byteCount.
-//
-// Returns:
-//  - >0 : number of bytes in buf
-//  - 0  : timeout / no complete frame
 int readReplySynced(uint8_t* buf, int bufSize, uint8_t slaveId, uint8_t func, uint8_t expectedByteCount) {
   enum { S_SYNC_ID, S_SYNC_FUNC, S_READ_BYTECOUNT, S_READ_REST } state = S_SYNC_ID;
   int len = 0;
@@ -153,7 +157,6 @@ int readReplySynced(uint8_t* buf, int bufSize, uint8_t slaveId, uint8_t func, ui
           break;
 
         case S_SYNC_FUNC:
-          // Accept normal reply func or exception (func|0x80)
           if (c == func || c == (uint8_t)(func | 0x80)) {
             buf[1] = c;
             len = 2;
@@ -167,14 +170,14 @@ int readReplySynced(uint8_t* buf, int bufSize, uint8_t slaveId, uint8_t func, ui
           buf[2] = c;
           len = 3;
 
-          // Exception reply: [id][func|0x80][exception_code][CRClo][CRChi] => 5 bytes
+          // Exception reply is always 5 bytes total.
           if (buf[1] == (uint8_t)(func | 0x80)) {
             targetLen = 5;
             state = S_READ_REST;
             break;
           }
 
-          // Normal reply: enforce expected byteCount for THIS request; otherwise treat as other traffic/desync.
+          // Enforce expected byteCount for THIS request; otherwise treat as other traffic/desync.
           if (c != expectedByteCount) {
             state = S_SYNC_ID;
             break;
@@ -202,6 +205,129 @@ int readReplySynced(uint8_t* buf, int bufSize, uint8_t slaveId, uint8_t func, ui
   }
 
   return 0;
+}
+
+/********************  MODBUS RX (SNIFFER)  ********************/
+// Attempts to assemble a Modbus RTU frame by scanning for plausible headers.
+// Supports:
+//  - Requests: 8 bytes: [id][func][addrHi][addrLo][cntHi][cntLo][crcLo][crcHi]
+//  - Responses: [id][func][byteCount][...data...][crcLo][crcHi]
+//  - Exceptions: 5 bytes: [id][func|0x80][excCode][crcLo][crcHi]
+//
+// Returns bytes in buf (0 if no complete frame in timeout window).
+int sniffFrame(uint8_t* buf, int bufSize) {
+  enum { S_SYNC_ID, S_SYNC_FUNC, S_GUESS_LEN, S_READ_REST } state = S_SYNC_ID;
+  int len = 0;
+  int targetLen = 0;
+  uint32_t start = millis();
+
+  while (millis() - start < MODBUS_SNIFF_TIMEOUT_MS) {
+    while (RS485.available()) {
+      uint8_t c = (uint8_t)RS485.read();
+
+      switch (state) {
+        case S_SYNC_ID:
+          // Accept any non-zero slave id
+          if (c != 0) {
+            buf[0] = c;
+            len = 1;
+            state = S_SYNC_FUNC;
+          }
+          break;
+
+        case S_SYNC_FUNC:
+          // Accept common Modbus funcs 1..6, 15, 16 and exception variants.
+          // We keep it permissive to learn the bus.
+          buf[1] = c;
+          len = 2;
+          state = S_GUESS_LEN;
+          break;
+
+        case S_GUESS_LEN:
+          buf[2] = c;
+          len = 3;
+
+          // Exception frame is always 5 bytes total
+          if ((buf[1] & 0x80) != 0) {
+            targetLen = 5;
+            state = S_READ_REST;
+            break;
+          }
+
+          // If third byte looks like a byteCount for a response (reasonable 1..252)
+          // we assume it's a response.
+          if (buf[2] >= 1 && buf[2] <= 252) {
+            // Could still be a request (addrHi) coincidentally in range.
+            // Heuristic: if we can parse a valid 8-byte request later, great.
+            targetLen = 3 + buf[2] + 2;
+            if (targetLen > bufSize) {
+              // Too big -> probably not a response bytecount; restart
+              state = S_SYNC_ID;
+              break;
+            }
+            state = S_READ_REST;
+            break;
+          }
+
+          // Otherwise assume it's a request and read fixed 8 bytes.
+          targetLen = 8;
+          if (targetLen > bufSize) {
+            state = S_SYNC_ID;
+            break;
+          }
+          state = S_READ_REST;
+          break;
+
+        case S_READ_REST:
+          if (len < bufSize) buf[len++] = c;
+          if (targetLen > 0 && len >= targetLen) {
+            // Validate CRC; if it fails, restart sync and keep scanning
+            if (validateModbusCrc(buf, len)) {
+              return len;
+            }
+            state = S_SYNC_ID;
+            len = 0;
+            targetLen = 0;
+          }
+          break;
+      }
+    }
+    vTaskDelay(1);
+  }
+  return 0;
+}
+
+static void printSniffedFrame(const uint8_t* b, int len) {
+  uint8_t id = b[0];
+  uint8_t func = b[1];
+
+  if ((func & 0x80) && len == 5) {
+    Serial.print("[SNIFF] EXC id="); Serial.print(id);
+    Serial.print(" func=0x"); Serial.print((uint8_t)(func & 0x7F), HEX);
+    Serial.print(" code="); Serial.println(b[2]);
+    return;
+  }
+
+  if (len == 8) {
+    uint16_t addr = ((uint16_t)b[2] << 8) | b[3];
+    uint16_t cnt  = ((uint16_t)b[4] << 8) | b[5];
+    Serial.print("[SNIFF] REQ id="); Serial.print(id);
+    Serial.print(" func=0x"); Serial.print(func, HEX);
+    Serial.print(" addr=0x"); Serial.print(addr, HEX);
+    Serial.print(" count="); Serial.println(cnt);
+    return;
+  }
+
+  if (len >= 5) {
+    uint8_t byteCount = b[2];
+    Serial.print("[SNIFF] RESP id="); Serial.print(id);
+    Serial.print(" func=0x"); Serial.print(func, HEX);
+    Serial.print(" bytes="); Serial.print(byteCount);
+    Serial.print(" head=");
+    dumpBytes(b, len, 12);
+    Serial.println();
+    return;
+  }
 }
 
 /********************  DECODE BLOCKS  ********************/
@@ -235,7 +361,7 @@ void decodeBlock2(uint8_t *b) {
 
 /********************  SOLIS POLLING TASK (CORE 1)  ********************/
 void solisTask(void *pv) {
-  uint8_t buf[128];
+  uint8_t buf[256];
   uint32_t lastDump = 0;
   uint32_t lastStats = 0;
 
@@ -245,8 +371,41 @@ void solisTask(void *pv) {
   uint32_t timeouts = 0;
   uint32_t exceptions = 0;
 
+  // Sniffer: bitset of seen slave IDs
+  static uint8_t seenIds[32]; // 256 bits
+  auto markSeen = [&](uint8_t id) {
+    seenIds[id >> 3] |= (1u << (id & 7));
+  };
+
   for (;;) {
-    // Modbus RTU requires some idle time between frames; also helps on shared bus.
+    if (SNIFFER_MODE) {
+      int n = sniffFrame(buf, sizeof(buf));
+      if (n > 0) {
+        markSeen(buf[0]);
+        if (DEBUG_MODBUS) {
+          printSniffedFrame(buf, n);
+        }
+      }
+
+      uint32_t now = millis();
+      if (DEBUG_MODBUS && (now - lastStats) > DEBUG_STATS_MS) {
+        lastStats = now;
+        Serial.print("[SNIFF-STATS] seenIds=");
+        for (int id = 1; id <= 247; id++) {
+          if (seenIds[id >> 3] & (1u << (id & 7))) {
+            Serial.print(id);
+            Serial.print(' ');
+          }
+        }
+        Serial.println();
+      }
+
+      // Yield a bit
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
+    }
+
+    // Active poller mode (not used in sniff mode)
     vTaskDelay(pdMS_TO_TICKS(20));
 
     // Block 1: 0x3100 (40 registers => expect byteCount=80 => 85-byte frame)
@@ -446,13 +605,11 @@ String buildJson() {
   xSemaphoreGive(solisMutex);
 
   if (DEBUG_JSON) {
-    // Non-finite values will mess up formatting / indicate decode issues
     if (!isfinite(local.batteryCurrent) || !isfinite(local.gridVoltage) || !isfinite(local.frequency)) {
       Serial.println("[API] Non-finite value detected in SolisData snapshot");
     }
   }
 
-  // Build JSON manually to avoid extra libs
   String json = "{";
   json += "\"pv1Voltage\":"    + String(local.pv1Voltage, 1) + ",";
   json += "\"pv1Current\":"    + String(local.pv1Current, 1) + ",";
@@ -476,13 +633,11 @@ String buildJson() {
 
 /********************  WIFI + WEB SETUP  ********************/
 void setupWeb() {
-  // HTTP UI on port 80
   serverHTTP.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send_P(200, "text/html", INDEX_HTML);
   });
   serverHTTP.begin();
 
-  // JSON API on port 8080
   serverAPI.on("/api/solis", HTTP_GET, [](AsyncWebServerRequest *request){
     String json = buildJson();
 
@@ -511,7 +666,6 @@ void setup() {
 
   solisMutex = xSemaphoreCreateMutex();
 
-  // WiFi connect
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to WiFi");
@@ -525,18 +679,20 @@ void setup() {
 
   setupWeb();
 
-  // Start Solis polling task on core 1
   xTaskCreatePinnedToCore(
     solisTask,
     "SolisPoller",
-    4096,
+    6144,
     NULL,
     1,
     NULL,
-    1   // core 1
+    1
   );
 
   Serial.println("Solis poller + web servers started");
+  if (SNIFFER_MODE) {
+    Serial.println("*** SNIFFER_MODE enabled: transmit disabled, passive listen only ***");
+  }
 }
 
 /********************  LOOP (CORE 0)  ********************/
