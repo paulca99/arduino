@@ -11,6 +11,10 @@
    - Hex-dumps first bytes of frames periodically
    - Flushes UART RX before each request (to prevent misaligned frames)
    - Logs JSON response periodically + heap
+
+   IMPORTANT:
+   - At 9600 baud, an 85-byte Modbus response takes ~90ms on the wire.
+     The original 40ms read window will frequently timeout.
 ************************************************************/
 
 #include <WiFi.h>
@@ -49,6 +53,10 @@ static const bool  DEBUG_MODBUS = true;
 static const bool  DEBUG_JSON   = true;
 static const uint32_t DEBUG_FRAME_DUMP_MS = 2000;
 static const uint32_t DEBUG_JSON_DUMP_MS  = 2000;
+
+/********************  MODBUS TIMING  ********************/
+// 85 bytes at 9600 baud is ~90ms on the wire, plus device processing time.
+static const uint32_t MODBUS_REPLY_TIMEOUT_MS = 250;
 
 /********************  CRC  ********************/
 uint16_t modbusCRC(uint8_t *buf, int len) {
@@ -120,23 +128,43 @@ void sendRequest(uint16_t startReg, uint16_t count) {
 }
 
 /********************  MODBUS RX (NON-BLOCKING)  ********************/
-bool readReply(uint8_t *buf, int expected) {
+// Reads a Modbus RTU reply.
+// - If expectedLen > 0, reads exactly that many bytes.
+// - If expectedLen == 0, dynamically determines length after reading first 3 bytes:
+//     total = 3 + byteCount + 2
+// Returns number of bytes read (0 on timeout).
+int readReply(uint8_t *buf, int bufSize, int expectedLen) {
   int len = 0;
+  int targetLen = expectedLen;
   unsigned long start = millis();
 
-  while (millis() - start < 40) {
+  while (millis() - start < MODBUS_REPLY_TIMEOUT_MS) {
     while (RS485.available()) {
-      if (len < expected) {
-        buf[len++] = RS485.read();
-        if (len >= expected) return true;
-      } else {
-        // Defensive: if something goes wrong, drain extra bytes.
-        RS485.read();
+      int c = RS485.read();
+      if (len < bufSize) {
+        buf[len++] = (uint8_t)c;
+      }
+
+      if (expectedLen == 0 && len >= 3) {
+        uint8_t byteCount = buf[2];
+        targetLen = 3 + byteCount + 2;
+        if (targetLen > bufSize) {
+          if (DEBUG_MODBUS) {
+            Serial.print("[RS485] reply too big for buffer, byteCount=");
+            Serial.println(byteCount);
+          }
+          return 0;
+        }
+      }
+
+      if (targetLen > 0 && len >= targetLen) {
+        return len;
       }
     }
     vTaskDelay(1);  // yield to other tasks
   }
-  return false;
+
+  return 0;
 }
 
 /********************  DECODE BLOCKS  ********************/
@@ -170,24 +198,26 @@ void decodeBlock2(uint8_t *b) {
 
 /********************  SOLIS POLLING TASK (CORE 1)  ********************/
 void solisTask(void *pv) {
-  uint8_t buf[100];
+  uint8_t buf[128];
   uint32_t lastDump = 0;
 
   for (;;) {
-    // Block 1: 0x3100 (40 registers => 80 data bytes => 85-byte frame)
+    // Block 1: 0x3100 (40 registers => expect byteCount=80 => 85-byte frame)
     flushRS485Rx();
     sendRequest(0x3100, 40);
-    if (readReply(buf, 85)) {
-      bool ok = validateModbusReply(buf, 85, 1, 3, 80);
+    int n1 = readReply(buf, sizeof(buf), 0);
+    if (n1 > 0) {
+      bool ok = (n1 == 85) && validateModbusReply(buf, n1, 1, 3, 80);
 
       uint32_t now = millis();
       if (DEBUG_MODBUS && (now - lastDump) > DEBUG_FRAME_DUMP_MS) {
         lastDump = now;
-        dumpFrameHead("3100", buf, 85);
+        dumpFrameHead("3100", buf, n1);
         if (!ok) {
-          uint16_t rxCrc = (uint16_t)buf[83] | ((uint16_t)buf[84] << 8);
-          uint16_t calc  = modbusCRC(buf, 83);
-          Serial.print("[3100] INVALID frame id="); Serial.print(buf[0]);
+          uint16_t rxCrc = (n1 >= 2) ? ((uint16_t)buf[n1 - 2] | ((uint16_t)buf[n1 - 1] << 8)) : 0;
+          uint16_t calc  = (n1 >= 2) ? modbusCRC(buf, n1 - 2) : 0;
+          Serial.print("[3100] INVALID frame n="); Serial.print(n1);
+          Serial.print(" id="); Serial.print(buf[0]);
           Serial.print(" func="); Serial.print(buf[1]);
           Serial.print(" bytes="); Serial.print(buf[2]);
           Serial.print(" crcRx=0x"); Serial.print(rxCrc, HEX);
@@ -207,17 +237,19 @@ void solisTask(void *pv) {
     // Block 2: 0x3200
     flushRS485Rx();
     sendRequest(0x3200, 40);
-    if (readReply(buf, 85)) {
-      bool ok = validateModbusReply(buf, 85, 1, 3, 80);
+    int n2 = readReply(buf, sizeof(buf), 0);
+    if (n2 > 0) {
+      bool ok = (n2 == 85) && validateModbusReply(buf, n2, 1, 3, 80);
 
       uint32_t now = millis();
       if (DEBUG_MODBUS && (now - lastDump) > DEBUG_FRAME_DUMP_MS) {
         lastDump = now;
-        dumpFrameHead("3200", buf, 85);
+        dumpFrameHead("3200", buf, n2);
         if (!ok) {
-          uint16_t rxCrc = (uint16_t)buf[83] | ((uint16_t)buf[84] << 8);
-          uint16_t calc  = modbusCRC(buf, 83);
-          Serial.print("[3200] INVALID frame id="); Serial.print(buf[0]);
+          uint16_t rxCrc = (n2 >= 2) ? ((uint16_t)buf[n2 - 2] | ((uint16_t)buf[n2 - 1] << 8)) : 0;
+          uint16_t calc  = (n2 >= 2) ? modbusCRC(buf, n2 - 2) : 0;
+          Serial.print("[3200] INVALID frame n="); Serial.print(n2);
+          Serial.print(" id="); Serial.print(buf[0]);
           Serial.print(" func="); Serial.print(buf[1]);
           Serial.print(" bytes="); Serial.print(buf[2]);
           Serial.print(" crcRx=0x"); Serial.print(rxCrc, HEX);
