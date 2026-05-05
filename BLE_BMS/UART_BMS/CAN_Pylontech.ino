@@ -29,6 +29,33 @@
 static uint32_t aliveCounter = 0;
 
 // -----------------------------------------------------------------------
+// SOC_EMA_TAU_S — EMA time constant for the voltage-based SoC filter.
+//
+// Using instantaneous pack voltage to derive SoC causes the reported SoC
+// to rebound immediately when the inverter stops drawing current (voltage
+// recovers).  That makes the inverter think the battery is usable again,
+// which re-enables discharge, voltage sags, SoC drops again — the classic
+// oscillation near the inverter's lower SoC threshold.
+//
+// We smooth the voltage with an exponential moving average (EMA) before
+// passing it to voltageToSoc().  An EMA needs only two state variables
+// (filtered value + last timestamp) — no ring buffer, negligible RAM.
+//
+// Time constant τ = 120 s ≈ 2 minutes.  That means a sudden 1 V voltage
+// step takes ~2 minutes to be fully reflected in the reported SoC, so
+// brief load/no-load rebounds are suppressed.
+//
+// Tuning:
+//   Increase SOC_EMA_TAU_S → more smoothing (slower SoC response).
+//   Decrease SOC_EMA_TAU_S → less smoothing (faster SoC response).
+//   Set to 0 → disables smoothing (reverts to instantaneous behaviour).
+//
+// Alpha is computed per-call from elapsed wall-clock time so the
+// behaviour is stable even if loop timing varies.
+// -----------------------------------------------------------------------
+#define SOC_EMA_TAU_S   120.0f   // EMA time constant ≈ 2-minute smoothing window
+
+// -----------------------------------------------------------------------
 // voltageToSoc — NMC discharge curve lookup + linear interpolation
 // Input: pack voltage (V). Output: SoC 0–100%.
 // Curve is authored for a 14S reference pack; voltages are scaled by
@@ -112,13 +139,42 @@ static void can_send_limits() {
 }
 
 static void can_send_soc(OverkillSolarBms2& bms) {
+    // EMA state — persists across calls; filteredV < 0 means "not yet seeded".
+    static float         filteredV = -1.0f;
+    static unsigned long lastEmaMs = 0;
+
+    float        rawV  = bms.get_voltage();
+    unsigned long nowMs = millis();
+
+    if (rawV > 0.0f) {
+        if (filteredV < 0.0f) {
+            // First valid reading: seed the filter so we start from a sensible
+            // voltage immediately rather than ramping up from 0 V.
+            filteredV = rawV;
+        } else if (SOC_EMA_TAU_S > 0.0f) {
+            float dtSec = (nowMs - lastEmaMs) * 1.0e-3f;
+            // alpha = 1 - exp(-dt / tau).  For dt << tau this ≈ dt/tau (small
+            // step); for dt >> tau this → 1 (instant follow, e.g. after a long
+            // gap with no BLE/UART data).  expf() is part of the ESP32 Arduino core.
+            float alpha = 1.0f - expf(-dtSec / SOC_EMA_TAU_S);
+            filteredV  += alpha * (rawV - filteredV);
+        } else {
+            filteredV = rawV;  // tau == 0: smoothing disabled, use raw voltage
+        }
+        lastEmaMs = nowMs;
+    }
+    // rawV <= 0 means no valid BMS data yet — leave filteredV unchanged so
+    // the last known good voltage (or the initial -1 sentinel) is preserved.
+
     twai_message_t msg;
     msg.identifier       = 0x355;
     msg.flags            = TWAI_MSG_FLAG_NONE;
     msg.data_length_code = 4;
 
     // Use voltage-based SoC — immune to BMS coulomb counter misreports/resets.
-    msg.data[0] = voltageToSoc(bms.get_voltage());
+    // filteredV is the EMA-smoothed pack voltage; see SOC_EMA_TAU_S above.
+    // voltageToSoc() clamps out-of-range inputs, so the -1 sentinel returns 0%.
+    msg.data[0] = voltageToSoc(filteredV);
     msg.data[1] = 0x00;
     msg.data[2] = 100;   // SoH — JBD doesn't report it
     msg.data[3] = 0x00;
