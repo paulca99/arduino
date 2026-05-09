@@ -16,41 +16,40 @@ const uint8_t SOLIS_SLAVE_ID = 1;
 HardwareSerial RS485(2);
 AsyncWebServer server(80);
 
-static const uint8_t SLAVE_ID = SOLIS_SLAVE_ID;
 static const uint32_t MODBUS_TIMEOUT_MS = 180;
 static const uint32_t POLL_INTERVAL_MS = 1000;
 static const uint32_t INTER_REGISTER_DELAY_MS = 15;
 
 struct RegisterSpec {
-  const char* key;
   uint16_t reg;
 };
 
 static const RegisterSpec REGISTER_SPECS[] = {
-  {"33050", 33050},
-  {"33051", 33051},
-  {"33052", 33052},
-  {"33053", 33053},
-  {"33059", 33059},
-  {"33072", 33072},
-  {"33074", 33074},
-  {"33080", 33080},
-  {"33081", 33081},
-  {"33085", 33085},
-  {"33095", 33095},
-  {"33129", 33129},
-  {"33130", 33130},
-  {"33131", 33131},
-  {"33132", 33132},
-  {"33134", 33134},
-  {"33135", 33135},
-  {"33136", 33136},
-  {"33137", 33137},
-  {"33140", 33140},
-  {"33142", 33142},
+  {33050},
+  {33051},
+  {33052},
+  {33053},
+  {33059},
+  {33072},
+  {33074},
+  {33080},
+  {33081},
+  {33085},
+  {33095},
+  {33129},
+  {33130},
+  {33131},
+  {33132},
+  {33134},
+  {33135},
+  {33136},
+  {33137},
+  {33140},
+  {33142},
 };
 
 static const size_t REGISTER_COUNT = sizeof(REGISTER_SPECS) / sizeof(REGISTER_SPECS[0]);
+// Base JSON object overhead plus a small fixed budget per register entry.
 static const size_t JSON_RESERVE_BYTES = 160 + (REGISTER_COUNT * 48);
 
 struct RegisterValue {
@@ -169,7 +168,7 @@ static String buildJson() {
 
   for (size_t i = 0; i < REGISTER_COUNT; i++) {
     json += ",\"";
-    json += REGISTER_SPECS[i].key;
+    json += String(REGISTER_SPECS[i].reg);
     json += "\":{";
     json += "\"valid\":";
     json += snapshot.values[i].valid ? "true" : "false";
@@ -432,7 +431,7 @@ static void pollTask(void* pv) {
 
     for (size_t i = 0; i < REGISTER_COUNT; i++) {
       uint16_t raw = 0;
-      if (readDocRegU16(SLAVE_ID, REGISTER_SPECS[i].reg, raw)) {
+      if (readDocRegU16(SOLIS_SLAVE_ID, REGISTER_SPECS[i].reg, raw)) {
         const uint32_t now = millis();
         xSemaphoreTake(monitorMutex, portMAX_DELAY);
         monitorState.values[i].raw = raw;
@@ -462,7 +461,7 @@ static void pollTask(void* pv) {
 
 void setup() {
   Serial.begin(115200);
-  delay(1200);
+  delay(1200);  // Let Serial and ESP32 startup messages settle before Wi-Fi output.
   Serial.println();
   Serial.println("Solis RS485 web monitor starting");
 
