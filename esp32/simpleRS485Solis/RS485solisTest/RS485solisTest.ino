@@ -19,6 +19,7 @@ AsyncWebServer server(80);
 static const uint32_t MODBUS_TIMEOUT_MS = 180;
 static const uint32_t POLL_INTERVAL_MS = 1000;
 static const uint32_t INTER_REGISTER_DELAY_MS = 15;
+static const uint32_t SERIAL_SETTLE_DELAY_MS = 1200;
 
 struct RegisterSpec {
   uint16_t reg;
@@ -49,8 +50,10 @@ static const RegisterSpec REGISTER_SPECS[] = {
 };
 
 static const size_t REGISTER_COUNT = sizeof(REGISTER_SPECS) / sizeof(REGISTER_SPECS[0]);
-// Base JSON object overhead plus a small fixed budget per register entry.
-static const size_t JSON_RESERVE_BYTES = 160 + (REGISTER_COUNT * 48);
+static const size_t JSON_BASE_OVERHEAD_BYTES = 160;
+static const size_t JSON_BYTES_PER_REGISTER = 48;
+static const size_t JSON_RESERVE_BYTES =
+  JSON_BASE_OVERHEAD_BYTES + (REGISTER_COUNT * JSON_BYTES_PER_REGISTER);
 
 struct RegisterValue {
   uint16_t raw;
@@ -461,7 +464,7 @@ static void pollTask(void* pv) {
 
 void setup() {
   Serial.begin(115200);
-  delay(1200);  // Let Serial and ESP32 startup messages settle before Wi-Fi output.
+  delay(SERIAL_SETTLE_DELAY_MS);  // Let Serial and ESP32 startup messages settle before Wi-Fi output.
   Serial.println();
   Serial.println("Solis RS485 web monitor starting");
 
