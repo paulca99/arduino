@@ -10,14 +10,16 @@
 #else
 const char* WIFI_SSID = "YOUR_SSID";
 const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+const uint8_t SOLIS_SLAVE_ID = 1;
 #endif
 
 HardwareSerial RS485(2);
 AsyncWebServer server(80);
 
-static const uint8_t SLAVE_ID = 1;
+static const uint8_t SLAVE_ID = SOLIS_SLAVE_ID;
 static const uint32_t MODBUS_TIMEOUT_MS = 180;
 static const uint32_t POLL_INTERVAL_MS = 1000;
+static const uint32_t INTER_REGISTER_DELAY_MS = 15;
 
 struct RegisterSpec {
   const char* key;
@@ -104,7 +106,7 @@ static bool validCRC(const uint8_t* buf, int len) {
   if (len < 4) {
     return false;
   }
-  uint16_t rxCRC = (uint16_t(buf[len - 1]) << 8) | buf[len - 2];
+  uint16_t rxCRC = buf[len - 2] | (uint16_t(buf[len - 1]) << 8);
   return rxCRC == modbusCRC(buf, len - 2);
 }
 
@@ -441,7 +443,7 @@ static void pollTask(void* pv) {
       } else {
         errorsThisPass++;
       }
-      vTaskDelay(pdMS_TO_TICKS(15));
+      vTaskDelay(pdMS_TO_TICKS(INTER_REGISTER_DELAY_MS));
     }
 
     xSemaphoreTake(monitorMutex, portMAX_DELAY);
