@@ -20,6 +20,7 @@ static const uint32_t MODBUS_TIMEOUT_MS = 180;
 static const uint32_t POLL_INTERVAL_MS = 1000;
 static const uint32_t INTER_REGISTER_DELAY_MS = 15;
 static const uint32_t SERIAL_SETTLE_DELAY_MS = 1200;
+static const uint32_t MONITOR_MUTEX_TIMEOUT_MS = 100;
 
 struct RegisterSpec {
   uint16_t reg;
@@ -150,10 +151,11 @@ static bool readDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) {
 }
 
 static String buildJson() {
-  MonitorState snapshot;
-  xSemaphoreTake(monitorMutex, portMAX_DELAY);
-  snapshot = monitorState;
-  xSemaphoreGive(monitorMutex);
+  MonitorState snapshot = {};
+  if (xSemaphoreTake(monitorMutex, pdMS_TO_TICKS(MONITOR_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+    snapshot = monitorState;
+    xSemaphoreGive(monitorMutex);
+  }
 
   String json;
   json.reserve(JSON_RESERVE_BYTES);
@@ -313,9 +315,9 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <script>
   const mainRegs = [
     { reg: '33050', label: 'PV string 1 voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Strong candidate from testing.' },
-    { reg: '33051', label: 'PV string 1 current / power-related', divisor: 10, decimals: 1, unit: '?', note: 'Exact meaning still unknown.' },
+    { reg: '33051', label: 'PV string 1 current / power-related', divisor: 10, decimals: 1, unit: 'TBD', note: 'Exact meaning still unknown.' },
     { reg: '33052', label: 'PV string 2 voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Strong candidate from testing.' },
-    { reg: '33053', label: 'PV string 2 current / power-related', divisor: 10, decimals: 1, unit: '?', note: 'Exact meaning still unknown.' },
+    { reg: '33053', label: 'PV string 2 current / power-related', divisor: 10, decimals: 1, unit: 'TBD', note: 'Exact meaning still unknown.' },
     { reg: '33074', label: 'AC / grid voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Known 0.1 V scaling.' },
     { reg: '33095', label: 'Grid frequency', divisor: 100, decimals: 2, unit: 'Hz', note: 'Known 0.01 Hz scaling.' },
     { reg: '33129', label: 'AC voltage 2', divisor: 10, decimals: 1, unit: 'V', note: 'Second AC-voltage-looking register.' },
@@ -436,23 +438,27 @@ static void pollTask(void* pv) {
       uint16_t raw = 0;
       if (readDocRegU16(SOLIS_SLAVE_ID, REGISTER_SPECS[i].reg, raw)) {
         const uint32_t now = millis();
-        xSemaphoreTake(monitorMutex, portMAX_DELAY);
-        monitorState.values[i].raw = raw;
-        monitorState.values[i].valid = true;
-        monitorState.lastSuccessMs = now;
-        xSemaphoreGive(monitorMutex);
-        anySuccess = true;
+        if (xSemaphoreTake(monitorMutex, pdMS_TO_TICKS(MONITOR_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+          monitorState.values[i].raw = raw;
+          monitorState.values[i].valid = true;
+          monitorState.lastSuccessMs = now;
+          xSemaphoreGive(monitorMutex);
+          anySuccess = true;
+        } else {
+          errorsThisPass++;
+        }
       } else {
         errorsThisPass++;
       }
       vTaskDelay(pdMS_TO_TICKS(INTER_REGISTER_DELAY_MS));
     }
 
-    xSemaphoreTake(monitorMutex, portMAX_DELAY);
-    monitorState.lastPollMs = millis();
-    monitorState.pollCount++;
-    monitorState.readErrors += errorsThisPass;
-    xSemaphoreGive(monitorMutex);
+    if (xSemaphoreTake(monitorMutex, pdMS_TO_TICKS(MONITOR_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+      monitorState.lastPollMs = millis();
+      monitorState.pollCount++;
+      monitorState.readErrors += errorsThisPass;
+      xSemaphoreGive(monitorMutex);
+    }
 
     if (!anySuccess) {
       Serial.println("Poll completed with no successful register reads");
