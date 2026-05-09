@@ -67,6 +67,7 @@ struct MonitorState {
   uint32_t lastSuccessMs;
   uint32_t pollCount;
   uint32_t readErrors;
+  uint32_t lockTimeouts;
 };
 
 MonitorState monitorState = {};
@@ -170,6 +171,8 @@ static String buildJson() {
   json += String(snapshot.pollCount);
   json += ",\"readErrors\":";
   json += String(snapshot.readErrors);
+  json += ",\"lockTimeouts\":";
+  json += String(snapshot.lockTimeouts);
 
   for (size_t i = 0; i < REGISTER_COUNT; i++) {
     json += ",\"";
@@ -229,6 +232,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     <div id="age">Waiting for first poll…</div>
     <div id="polls">Polls: --</div>
     <div id="errors">Read errors: --</div>
+    <div id="locks">Lock timeouts: --</div>
   </div>
 
   <div class="cards">
@@ -392,6 +396,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     ageNode.className = ageMs > 5000 ? 'stale' : '';
     document.getElementById('polls').textContent = `Polls: ${data.pollCount}`;
     document.getElementById('errors').textContent = `Read errors: ${data.readErrors}`;
+    document.getElementById('locks').textContent = `Lock timeouts: ${data.lockTimeouts}`;
   }
 
   async function fetchData() {
@@ -432,6 +437,7 @@ static void pollTask(void* pv) {
 
   for (;;) {
     uint32_t errorsThisPass = 0;
+    uint32_t lockTimeoutsThisPass = 0;
     bool anySuccess = false;
 
     for (size_t i = 0; i < REGISTER_COUNT; i++) {
@@ -445,7 +451,7 @@ static void pollTask(void* pv) {
           xSemaphoreGive(monitorMutex);
           anySuccess = true;
         } else {
-          errorsThisPass++;
+          lockTimeoutsThisPass++;
         }
       } else {
         errorsThisPass++;
@@ -457,6 +463,7 @@ static void pollTask(void* pv) {
       monitorState.lastPollMs = millis();
       monitorState.pollCount++;
       monitorState.readErrors += errorsThisPass;
+      monitorState.lockTimeouts += lockTimeoutsThisPass;
       xSemaphoreGive(monitorMutex);
     }
 
