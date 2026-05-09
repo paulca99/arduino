@@ -49,6 +49,7 @@ static const RegisterSpec REGISTER_SPECS[] = {
 };
 
 static const size_t REGISTER_COUNT = sizeof(REGISTER_SPECS) / sizeof(REGISTER_SPECS[0]);
+static const size_t JSON_RESERVE_BYTES = 160 + (REGISTER_COUNT * 48);
 
 struct RegisterValue {
   uint16_t raw;
@@ -151,7 +152,7 @@ static String buildJson() {
   xSemaphoreGive(monitorMutex);
 
   String json;
-  json.reserve(1700);
+  json.reserve(JSON_RESERVE_BYTES);
   json += "{";
   json += "\"uptimeMs\":";
   json += String(millis());
@@ -332,6 +333,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     { reg: '33136', label: 'Register 33136', rawOnly: true, note: 'Unknown; grouped with 33134/33135.' },
     { reg: '33137', label: 'Register 33137', rawOnly: true, note: 'Tentative PV-related candidate.' }
   ];
+  const regMeta = Object.fromEntries([...mainRegs, ...tentativeRegs].map(meta => [meta.reg, meta]));
 
   function rowHtml(meta) {
     return `<tr>
@@ -371,13 +373,9 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   }
 
   function updateCards(data) {
-    document.getElementById('card33132').textContent = formatValue(mainRegs[9], data['33132']);
-    document.getElementById('card33074').textContent = formatValue(mainRegs[4], data['33074']);
-    document.getElementById('card33095').textContent = formatValue(mainRegs[5], data['33095']);
-    document.getElementById('card33050').textContent = formatValue(mainRegs[0], data['33050']);
-    document.getElementById('card33052').textContent = formatValue(mainRegs[2], data['33052']);
-    document.getElementById('card33140').textContent = formatValue(mainRegs[10], data['33140']);
-    document.getElementById('card33142').textContent = formatValue(mainRegs[11], data['33142']);
+    ['33132', '33074', '33095', '33050', '33052', '33140', '33142'].forEach(reg => {
+      document.getElementById(`card${reg}`).textContent = formatValue(regMeta[reg], data[reg]);
+    });
   }
 
   function updateStatus(data) {
