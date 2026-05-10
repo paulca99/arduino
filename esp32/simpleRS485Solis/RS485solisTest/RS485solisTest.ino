@@ -298,9 +298,24 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       <div class="subvalue">Reg 33135 · 0.1 A (candidate)</div>
     </div>
     <div class="card">
-      <div class="label">Battery charge power ⚡</div>
-      <div class="value" id="card33059">--</div>
-      <div class="subvalue">Reg 33059 · W (candidate)</div>
+      <div class="label">Battery power (derived) ⚡</div>
+      <div class="value" id="cardDerivedBatteryPower">--</div>
+      <div class="subvalue">Derived from Reg 33142 × Reg 33135</div>
+    </div>
+    <div class="card">
+      <div class="label">PV1 power (derived)</div>
+      <div class="value" id="cardDerivedPv1Power">--</div>
+      <div class="subvalue">Derived from Reg 33050 × Reg 33051</div>
+    </div>
+    <div class="card">
+      <div class="label">PV2 power (derived)</div>
+      <div class="value" id="cardDerivedPv2Power">--</div>
+      <div class="subvalue">Derived from Reg 33052 × Reg 33053</div>
+    </div>
+    <div class="card">
+      <div class="label">Total PV power (derived)</div>
+      <div class="value" id="cardDerivedPvTotalPower">--</div>
+      <div class="subvalue">Derived from PV1 + PV2 power</div>
     </div>
   </div>
 
@@ -359,11 +374,11 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     { reg: '33140', label: 'Battery SOC', divisor: 1, decimals: 0, unit: '%', note: 'Confirmed. SOC percent.' },
     { reg: '33142', label: 'Battery voltage', divisor: 100, decimals: 2, unit: 'V', note: 'Confirmed. 0.01 V scale.' },
     { reg: '33135', label: 'Battery current (candidate)', divisor: 10, decimals: 1, unit: 'A', note: 'Strong candidate. Likely 0.1 A scale.' },
-    { reg: '33059', label: 'Battery charge power (candidate)', divisor: 1, decimals: 0, unit: 'W', note: 'Strong candidate. Likely watts.' },
     { reg: '33136', label: 'Battery charge/discharge direction flag (candidate)', rawOnly: true, note: 'Watch for flips during charge/discharge transitions.' },
   ];
 
   const tentativeRegs = [
+    { reg: '33059', label: 'Battery/power-related unknown metric (candidate)', rawOnly: true, note: 'Not direct battery power; keep watching while map is refined.' },
     { reg: '33130', label: 'Unknown AC-side metric (candidate)', rawOnly: true, note: 'Previously mislabeled as current; meaning now uncertain.' },
     { reg: '33131', label: 'Register 33131', rawOnly: true, note: 'Tentative; watch for mode flips during load changes.' },
     { reg: '33072', label: 'Register 33072', rawOnly: true, note: 'Unknown; may be AC-side related.' },
@@ -414,9 +429,26 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   }
 
   function updateCards(data) {
-    ['33132', '33074', '33095', '33050', '33052', '33140', '33142', '33135', '33059'].forEach(reg => {
+    ['33132', '33074', '33095', '33050', '33052', '33140', '33142', '33135'].forEach(reg => {
       document.getElementById(`card${reg}`).textContent = formatValue(regMeta[reg], data[reg]);
     });
+
+    const pv1Voltage = data['33050'] && data['33050'].valid ? data['33050'].raw / 10.0 : null;
+    const pv1Current = data['33051'] && data['33051'].valid ? data['33051'].raw / 10.0 : null;
+    const pv2Voltage = data['33052'] && data['33052'].valid ? data['33052'].raw / 10.0 : null;
+    const pv2Current = data['33053'] && data['33053'].valid ? data['33053'].raw / 10.0 : null;
+    const batteryVoltage = data['33142'] && data['33142'].valid ? data['33142'].raw / 100.0 : null;
+    const batteryCurrent = data['33135'] && data['33135'].valid ? data['33135'].raw / 10.0 : null;
+
+    const pv1Power = (pv1Voltage !== null && pv1Current !== null) ? (pv1Voltage * pv1Current) : null;
+    const pv2Power = (pv2Voltage !== null && pv2Current !== null) ? (pv2Voltage * pv2Current) : null;
+    const totalPvPower = (pv1Power !== null && pv2Power !== null) ? (pv1Power + pv2Power) : null;
+    const batteryPower = (batteryVoltage !== null && batteryCurrent !== null) ? (batteryVoltage * batteryCurrent) : null;
+
+    document.getElementById('cardDerivedBatteryPower').textContent = batteryPower === null ? '--' : `${batteryPower.toFixed(1)} W`;
+    document.getElementById('cardDerivedPv1Power').textContent = pv1Power === null ? '--' : `${pv1Power.toFixed(1)} W`;
+    document.getElementById('cardDerivedPv2Power').textContent = pv2Power === null ? '--' : `${pv2Power.toFixed(1)} W`;
+    document.getElementById('cardDerivedPvTotalPower').textContent = totalPvPower === null ? '--' : `${totalPvPower.toFixed(1)} W`;
   }
 
   function updateStatus(data) {

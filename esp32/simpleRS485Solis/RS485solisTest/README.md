@@ -32,5 +32,12 @@ This lets you correlate serial logs against your BMS / inverter readings while t
 
 **Strong candidates being monitored:**
 - `33135` Battery current (likely 0.1 A)
-- `33059` Battery charge power (likely W)
 - `33136` Battery charge/discharge direction flag
+- `33059` Battery/power-related unknown metric (not direct battery power)
+
+## Derived values shown in the UI
+
+- Battery power (derived): `(33142 / 100.0) * (33135 / 10.0)`
+- PV1 power (derived): `(33050 / 10.0) * (33051 / 10.0)`
+- PV2 power (derived): `(33052 / 10.0) * (33053 / 10.0)`
+- Total PV power (derived): `PV1 power + PV2 power`
