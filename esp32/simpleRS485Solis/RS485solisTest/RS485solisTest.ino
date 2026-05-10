@@ -429,16 +429,28 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   }
 
   function updateCards(data) {
-    ['33132', '33074', '33095', '33050', '33052', '33140', '33142', '33135'].forEach(reg => {
+    const summaryCardRegs = ['33132', '33074', '33095', '33050', '33052', '33140', '33142', '33135'];
+    summaryCardRegs.forEach(reg => {
       document.getElementById(`card${reg}`).textContent = formatValue(regMeta[reg], data[reg]);
     });
 
-    const pv1Voltage = data['33050'] && data['33050'].valid ? data['33050'].raw / 10.0 : null;
-    const pv1Current = data['33051'] && data['33051'].valid ? data['33051'].raw / 10.0 : null;
-    const pv2Voltage = data['33052'] && data['33052'].valid ? data['33052'].raw / 10.0 : null;
-    const pv2Current = data['33053'] && data['33053'].valid ? data['33053'].raw / 10.0 : null;
-    const batteryVoltage = data['33142'] && data['33142'].valid ? data['33142'].raw / 100.0 : null;
-    const batteryCurrent = data['33135'] && data['33135'].valid ? data['33135'].raw / 10.0 : null;
+    const getScaledValue = (reg) => {
+      const entry = data[reg];
+      if (!entry || !entry.valid) {
+        return null;
+      }
+      const meta = regMeta[reg];
+      const divisor = (meta && meta.divisor) ? meta.divisor : 1;
+      const source = (meta && meta.signed) ? entry.signed : entry.raw;
+      return source / divisor;
+    };
+
+    const pv1Voltage = getScaledValue('33050');
+    const pv1Current = getScaledValue('33051');
+    const pv2Voltage = getScaledValue('33052');
+    const pv2Current = getScaledValue('33053');
+    const batteryVoltage = getScaledValue('33142');
+    const batteryCurrent = getScaledValue('33135');
 
     const pv1Power = (pv1Voltage !== null && pv1Current !== null) ? (pv1Voltage * pv1Current) : null;
     const pv2Power = (pv2Voltage !== null && pv2Current !== null) ? (pv2Voltage * pv2Current) : null;
