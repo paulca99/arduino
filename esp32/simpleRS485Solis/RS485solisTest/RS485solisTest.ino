@@ -151,6 +151,27 @@ static bool readDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) {
   return true;
 }
 
+static void serialLogPoll() {
+  MonitorState snapshot = {};
+  if (xSemaphoreTake(monitorMutex, pdMS_TO_TICKS(MONITOR_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+    snapshot = monitorState;
+    xSemaphoreGive(monitorMutex);
+  }
+  Serial.print("ms=");
+  Serial.print(millis());
+  for (size_t i = 0; i < REGISTER_COUNT; i++) {
+    Serial.print(' ');
+    Serial.print(REGISTER_SPECS[i].reg);
+    Serial.print('=');
+    if (snapshot.values[i].valid) {
+      Serial.print(snapshot.values[i].raw);
+    } else {
+      Serial.print('?');
+    }
+  }
+  Serial.println();
+}
+
 static String buildJson() {
   MonitorState snapshot = {};
   if (xSemaphoreTake(monitorMutex, pdMS_TO_TICKS(MONITOR_MUTEX_TIMEOUT_MS)) == pdTRUE) {
@@ -239,37 +260,47 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     <div class="card">
       <div class="label">Grid power</div>
       <div class="value" id="card33132">--</div>
-      <div class="subvalue">Reg 33132, signed 16-bit watts</div>
+      <div class="subvalue">Reg 33132 · −=import, +=export</div>
     </div>
     <div class="card">
       <div class="label">Grid voltage</div>
       <div class="value" id="card33074">--</div>
-      <div class="subvalue">Reg 33074</div>
+      <div class="subvalue">Reg 33074 · 0.1 V</div>
     </div>
     <div class="card">
       <div class="label">Grid frequency</div>
       <div class="value" id="card33095">--</div>
-      <div class="subvalue">Reg 33095</div>
+      <div class="subvalue">Reg 33095 · 0.01 Hz</div>
     </div>
     <div class="card">
       <div class="label">PV string 1 voltage</div>
       <div class="value" id="card33050">--</div>
-      <div class="subvalue">Reg 33050</div>
+      <div class="subvalue">Reg 33050 · 0.1 V</div>
     </div>
     <div class="card">
       <div class="label">PV string 2 voltage</div>
       <div class="value" id="card33052">--</div>
-      <div class="subvalue">Reg 33052</div>
+      <div class="subvalue">Reg 33052 · 0.1 V</div>
     </div>
     <div class="card">
       <div class="label">Battery SOC</div>
       <div class="value" id="card33140">--</div>
-      <div class="subvalue">Reg 33140</div>
+      <div class="subvalue">Reg 33140 · %</div>
     </div>
     <div class="card">
       <div class="label">Battery voltage</div>
       <div class="value" id="card33142">--</div>
-      <div class="subvalue">Reg 33142</div>
+      <div class="subvalue">Reg 33142 · 0.01 V</div>
+    </div>
+    <div class="card">
+      <div class="label">Battery current ⚡</div>
+      <div class="value" id="card33135">--</div>
+      <div class="subvalue">Reg 33135 · 0.1 A (candidate)</div>
+    </div>
+    <div class="card">
+      <div class="label">Battery charge power ⚡</div>
+      <div class="value" id="card33059">--</div>
+      <div class="subvalue">Reg 33059 · W (candidate)</div>
     </div>
   </div>
 
@@ -318,30 +349,30 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
 <script>
   const mainRegs = [
-    { reg: '33050', label: 'PV string 1 voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Strong candidate from testing.' },
-    { reg: '33051', label: 'PV string 1 current / power-related', divisor: 10, decimals: 1, unit: 'TBD', note: 'Exact meaning still unknown.' },
-    { reg: '33052', label: 'PV string 2 voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Strong candidate from testing.' },
-    { reg: '33053', label: 'PV string 2 current / power-related', divisor: 10, decimals: 1, unit: 'TBD', note: 'Exact meaning still unknown.' },
-    { reg: '33074', label: 'AC / grid voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Known 0.1 V scaling.' },
-    { reg: '33095', label: 'Grid frequency', divisor: 100, decimals: 2, unit: 'Hz', note: 'Known 0.01 Hz scaling.' },
-    { reg: '33129', label: 'AC voltage 2', divisor: 10, decimals: 1, unit: 'V', note: 'Second AC-voltage-looking register.' },
-    { reg: '33130', label: 'Grid / load current candidate', divisor: 10, decimals: 1, unit: 'A', note: 'Likely current, scaling still tentative.' },
-    { reg: '33131', label: 'Import / export direction flag candidate', rawOnly: true, note: 'Watch for mode flips during load changes.' },
-    { reg: '33132', label: 'Grid power', divisor: 1, decimals: 0, unit: 'W', signed: true, note: 'Strong candidate; signed 16-bit watts.' },
-    { reg: '33140', label: 'Battery SOC', divisor: 1, decimals: 0, unit: '%', note: 'SOC percentage.' },
-    { reg: '33142', label: 'Battery voltage', divisor: 100, decimals: 2, unit: 'V', note: 'Likely 0.01 V scaling.' }
+    { reg: '33050', label: 'PV string 1 voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Confirmed. 0.1 V scale.' },
+    { reg: '33051', label: 'PV string 1 current', divisor: 10, decimals: 1, unit: 'A', note: 'Confirmed. 0.1 A scale.' },
+    { reg: '33052', label: 'PV string 2 voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Confirmed. 0.1 V scale.' },
+    { reg: '33053', label: 'PV string 2 current', divisor: 10, decimals: 1, unit: 'A', note: 'Confirmed. 0.1 A scale.' },
+    { reg: '33074', label: 'Grid voltage', divisor: 10, decimals: 1, unit: 'V', note: 'Confirmed. 0.1 V scale.' },
+    { reg: '33095', label: 'Grid frequency', divisor: 100, decimals: 2, unit: 'Hz', note: 'Confirmed. 0.01 Hz scale.' },
+    { reg: '33132', label: 'Grid power', divisor: 1, decimals: 0, unit: 'W', signed: true, note: 'Confirmed. Signed 16-bit watts. Negative = importing, positive = exporting.' },
+    { reg: '33140', label: 'Battery SOC', divisor: 1, decimals: 0, unit: '%', note: 'Confirmed. SOC percent.' },
+    { reg: '33142', label: 'Battery voltage', divisor: 100, decimals: 2, unit: 'V', note: 'Confirmed. 0.01 V scale.' },
+    { reg: '33135', label: 'Battery current (candidate)', divisor: 10, decimals: 1, unit: 'A', note: 'Strong candidate. Likely 0.1 A scale.' },
+    { reg: '33059', label: 'Battery charge power (candidate)', divisor: 1, decimals: 0, unit: 'W', note: 'Strong candidate. Likely watts.' },
+    { reg: '33136', label: 'Battery charge/discharge direction flag (candidate)', rawOnly: true, note: 'Watch for flips during charge/discharge transitions.' },
   ];
 
   const tentativeRegs = [
-    { reg: '33059', label: 'Register 33059', rawOnly: true, note: 'Unknown; show raw for comparison.' },
+    { reg: '33130', label: 'Unknown AC-side metric (candidate)', rawOnly: true, note: 'Previously mislabeled as current; meaning now uncertain.' },
+    { reg: '33131', label: 'Register 33131', rawOnly: true, note: 'Tentative; watch for mode flips during load changes.' },
     { reg: '33072', label: 'Register 33072', rawOnly: true, note: 'Unknown; may be AC-side related.' },
-    { reg: '33080', label: 'Register 33080', rawOnly: true, note: 'Unknown candidate from recent change logging.' },
+    { reg: '33080', label: 'Register 33080', rawOnly: true, note: 'Unknown candidate from earlier tests.' },
     { reg: '33081', label: 'Register 33081', rawOnly: true, note: 'Moved strongly during earlier tests.' },
     { reg: '33085', label: 'Register 33085', rawOnly: true, note: 'Moved strongly during earlier tests.' },
     { reg: '33134', label: 'Register 33134', rawOnly: true, note: 'Tentative battery / power-related candidate.' },
-    { reg: '33135', label: 'Register 33135', rawOnly: true, note: 'Tentative grid / net-power-related candidate.' },
-    { reg: '33136', label: 'Register 33136', rawOnly: true, note: 'Unknown; grouped with 33134/33135.' },
-    { reg: '33137', label: 'Register 33137', rawOnly: true, note: 'Tentative PV-related candidate.' }
+    { reg: '33137', label: 'Register 33137', rawOnly: true, note: 'Tentative PV-related candidate.' },
+    { reg: '33129', label: 'Register 33129 (AC-side candidate)', rawOnly: true, note: 'Shows AC voltage-like values; meaning unclear.' },
   ];
   const regMeta = Object.fromEntries([...mainRegs, ...tentativeRegs].map(meta => [meta.reg, meta]));
 
@@ -383,7 +414,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   }
 
   function updateCards(data) {
-    ['33132', '33074', '33095', '33050', '33052', '33140', '33142'].forEach(reg => {
+    ['33132', '33074', '33095', '33050', '33052', '33140', '33142', '33135', '33059'].forEach(reg => {
       document.getElementById(`card${reg}`).textContent = formatValue(regMeta[reg], data[reg]);
     });
   }
@@ -414,7 +445,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
   installRows();
   fetchData();
-  setInterval(fetchData, 1000);
+  setInterval(fetchData, 5000);
 </script>
 </body>
 </html>
@@ -470,6 +501,8 @@ static void pollTask(void* pv) {
     if (!anySuccess) {
       Serial.println("Poll completed with no successful register reads");
     }
+
+    serialLogPoll();
 
     vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
   }
