@@ -8,8 +8,8 @@
 #elif __has_include("secrets_template.h")
 #include "secrets_template.h"
 #else
-const char* WIFI_SSID = "YOUR_SSID";
-const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+const char* WIFI_SSID = "TP-LINK_73F3";
+const char* WIFI_PASSWORD = "DEADBEEF";
 const uint8_t SOLIS_SLAVE_ID = 1;
 #endif
 
