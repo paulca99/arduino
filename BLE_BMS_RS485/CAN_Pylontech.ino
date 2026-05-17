@@ -289,7 +289,7 @@ static void can_send_request(OverkillSolarBms2& bms) {
 }
 
 // -----------------------------------------------------------------------
-// 0x35E — Manufacturer name "PYLONTEC"
+// 0x35E — Manufacturer name "PYLONTEC" (8-byte CAN payload field)
 // -----------------------------------------------------------------------
 static void can_send_manufacturer() {
     twai_message_t msg;

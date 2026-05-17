@@ -151,7 +151,7 @@ class BmsStream : public Stream {
       txLen = 0;  // Drop oversized frame and resync.
       return 0;
     }
-    if (txLen < sizeof(txBuf)) txBuf[txLen++] = b;
+    txBuf[txLen++] = b;
     if (b == BMS_FRAME_TERMINATOR) {
       if (!pTxChar || !connected) {
         txLen = 0;
@@ -255,11 +255,13 @@ class ClientCallbacks : public NimBLEClientCallbacks {
   }
 };
 
+static ClientCallbacks gClientCallbacks;
+
 static bool connectToBMS() {
   Serial.printf("Connecting to BMS %s...\n", BMS_MAC);
 
   pClient = NimBLEDevice::createClient();
-  pClient->setClientCallbacks(new ClientCallbacks(), false);
+  pClient->setClientCallbacks(&gClientCallbacks, false);
   pClient->setConnectionParams(BLE_CONN_INTERVAL_MIN, BLE_CONN_INTERVAL_MAX, BLE_CONN_LATENCY,
                                BLE_CONN_TIMEOUT);
   pClient->setConnectTimeout(30);
