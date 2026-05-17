@@ -223,6 +223,12 @@ struct SolisState {
 static SolisState solisState = {};
 static SemaphoreHandle_t solisMutex = nullptr;
 
+// Explicit prototypes avoid Arduino auto-generated prototypes being emitted
+// before the custom type definitions above.
+static RegisterValue getRegisterValueByDocReg(const SolisState& state, uint16_t docReg);
+static bool isSolisBatteryDischarging(bool valid, uint16_t raw);
+static bool tryBuildSignedBatteryPowerW(const SolisState& state, float& powerW);
+
 static RegisterValue getRegisterValueByDocReg(const SolisState& state, uint16_t docReg) {
   for (size_t i = 0; i < REGISTER_COUNT; i++) {
     if (REGISTER_SPECS[i].reg == docReg) return state.values[i];
