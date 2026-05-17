@@ -202,6 +202,9 @@ static const RegisterSpec REGISTER_SPECS[] = {
 };
 
 static const size_t REGISTER_COUNT = sizeof(REGISTER_SPECS) / sizeof(REGISTER_SPECS[0]);
+static const uint16_t SOLIS_REG_BATTERY_DIRECTION = 33136;  // Confirmed: 0=charging, 1=discharging.
+static const uint16_t SOLIS_REG_BATTERY_CURRENT = 33135;    // Register current, unsigned 0.1A magnitude.
+static const uint16_t SOLIS_REG_BATTERY_VOLTAGE = 33142;    // Register voltage, unsigned 0.01V.
 
 struct RegisterValue {
   uint16_t raw;
@@ -219,6 +222,31 @@ struct SolisState {
 
 static SolisState solisState = {};
 static SemaphoreHandle_t solisMutex = nullptr;
+
+static RegisterValue getRegisterValueByDocReg(const SolisState& state, uint16_t docReg) {
+  for (size_t i = 0; i < REGISTER_COUNT; i++) {
+    if (REGISTER_SPECS[i].reg == docReg) return state.values[i];
+  }
+  return {0, false};
+}
+
+static bool isSolisBatteryDischarging(bool valid, uint16_t raw) {
+  return valid && raw == 1;
+}
+
+static bool tryBuildSignedBatteryPowerW(const SolisState& state, float& powerW) {
+  RegisterValue current = getRegisterValueByDocReg(state, SOLIS_REG_BATTERY_CURRENT);
+  RegisterValue voltage = getRegisterValueByDocReg(state, SOLIS_REG_BATTERY_VOLTAGE);
+  if (!current.valid || !voltage.valid) return false;
+
+  RegisterValue direction = getRegisterValueByDocReg(state, SOLIS_REG_BATTERY_DIRECTION);
+  float currentAmps = float(current.raw) / 10.0f;
+  float voltageVolts = float(voltage.raw) / 100.0f;
+  powerW = voltageVolts * currentAmps;
+  // Apply sign convention: positive = charging, negative = discharging.
+  if (isSolisBatteryDischarging(direction.valid, direction.raw)) powerW = -powerW;
+  return true;
+}
 
 // -----------------------------------------------------------------------
 // CAN API implemented in companion file
@@ -444,6 +472,15 @@ static String buildSolisJson() {
   json += String(snapshot.readErrors);
   json += ",\"lockTimeouts\":";
   json += String(snapshot.lockTimeouts);
+
+  float batteryPowerW = 0.0f;
+  json += ",\"batteryPowerW\":";
+  if (tryBuildSignedBatteryPowerW(snapshot, batteryPowerW)) {
+    json += String(batteryPowerW, 1);
+  } else {
+    json += "null";
+  }
+
   for (size_t i = 0; i < REGISTER_COUNT; i++) {
     json += ",\"";
     json += String(REGISTER_SPECS[i].reg);
@@ -544,9 +581,15 @@ static void handleRoot() {
   html += F("</div>");
 
   html += F("<div class='card'><b>Solis RS485</b><br>");
+  float batteryPowerW = 0.0f;
   html += String("Polls: ") + String(snapshot.pollCount) + "<br>";
   html += String("Read errors: ") + String(snapshot.readErrors) + "<br>";
-  html += String("Last success ms: ") + String(snapshot.lastSuccessMs);
+  html += String("Last success ms: ") + String(snapshot.lastSuccessMs) + "<br>";
+  if (tryBuildSignedBatteryPowerW(snapshot, batteryPowerW)) {
+    html += String("Battery power: ") + String(batteryPowerW, 1) + " W";
+  } else {
+    html += F("Battery power: --");
+  }
   html += F("</div>");
 
   html += F("<div class='card'><b>API endpoints</b><br>");
