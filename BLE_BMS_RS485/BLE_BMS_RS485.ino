@@ -63,20 +63,12 @@
 #define WIFI_SSID ""
 #endif
 
-#ifndef WIFI_PASSWORD_UPPER
-#define WIFI_PASSWORD_UPPER ""
-#endif
-
-#ifndef WIFI_PASSWORD_LOWER
-#define WIFI_PASSWORD_LOWER ""
-#endif
-
 #ifndef WIFI_PASSWORD_PRIMARY
-#define WIFI_PASSWORD_PRIMARY WIFI_PASSWORD_UPPER
+#define WIFI_PASSWORD_PRIMARY ""
 #endif
 
 #ifndef WIFI_PASSWORD_FALLBACK
-#define WIFI_PASSWORD_FALLBACK WIFI_PASSWORD_LOWER
+#define WIFI_PASSWORD_FALLBACK ""
 #endif
 
 // JBD BLE command frame terminator byte.
@@ -661,7 +653,7 @@ void loop() {
 
   if (now - lastCAN >= CAN_INTERVAL_MS) {
     lastCAN = now;
-    if (connected || (millis() - lastBLEDataMs < BLE_TIMEOUT_MS)) {
+    if (connected || (now - lastBLEDataMs < BLE_TIMEOUT_MS)) {
       sendCANFrames(bms);
     }
   }
