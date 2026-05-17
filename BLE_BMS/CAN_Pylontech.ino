@@ -23,7 +23,7 @@
 // All pack-voltage parameters are derived from this single constant.
 // -----------------------------------------------------------------------
 #ifndef PACK_SERIES_CELLS
-#define PACK_SERIES_CELLS       13      // default: 13S; set to 14 for 14S
+#define PACK_SERIES_CELLS       14      // default: 13S; set to 14 for 14S
 #endif
 
 // Pack max charge voltage in decivolts: PACK_SERIES_CELLS × 4.20 V × 10
