@@ -90,10 +90,10 @@ static NimBLERemoteCharacteristic* pTxChar  = nullptr;
 static NimBLERemoteCharacteristic* pRxChar  = nullptr;
 static NimBLEAddress               bmsMacAddress(BMS_MAC, BLE_ADDR_PUBLIC);
 
-static bool doConnect = false;
-static bool connected = false;
+static volatile bool doConnect = false;
+static volatile bool connected = false;
 static bool wifiReady = false;
-static unsigned long lastBLEDataMs = 0;
+static volatile unsigned long lastBLEDataMs = 0;
 
 // -----------------------------------------------------------------------
 // BMS ring buffer and Stream wrapper
@@ -657,8 +657,10 @@ static unsigned long lastLog = 0;
 void loop() {
   if (doConnect) {
     doConnect = false;
+    taskENTER_CRITICAL(&rxMux);
     rxHead = 0;
     rxTail = 0;
+    taskEXIT_CRITICAL(&rxMux);
     if (connectToBMS()) {
       bms.begin(&bmsStream);
       delay(500);

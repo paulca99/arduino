@@ -252,10 +252,11 @@ static void can_send_alarms(OverkillSolarBms2& bms) {
     }
 
     uint8_t protection = 0;
+    const float ntcTemp = bms.get_ntc_temperature(0);
     if (maxV > 4.20f)  bitSet(protection, 1);  // cell overvoltage  — NMC max 4.20V
     if (minV < 2.75f)  bitSet(protection, 2);  // cell undervoltage — NMC cutoff 2.75V
-    if (bms.get_ntc_temperature(0) > 55.0f) bitSet(protection, 3);  // high temp
-    if (bms.get_ntc_temperature(0) <  0.0f) bitSet(protection, 4);  // low temp
+    if (ntcTemp > 55.0f) bitSet(protection, 3);  // high temp
+    if (ntcTemp <  0.0f) bitSet(protection, 4);  // low temp
 
     twai_message_t msg;
     msg.identifier       = 0x359;
