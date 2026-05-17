@@ -96,8 +96,9 @@ static volatile bool doConnect = false;
 static volatile bool connected = false;
 static bool wifiReady = false;
 static volatile unsigned long lastBLEDataMs = 0;
-static unsigned long bleConnectAttempts = 0;
-static unsigned long nextBLEConnectAttemptMs = 0;
+static unsigned long bleConnectAttemptsSinceBoot = 0;
+static bool bleRetryScheduled = false;
+static unsigned long bleRetryScheduledAtMs = 0;
 static unsigned long lastBLERetryLogMs = 0;
 
 // -----------------------------------------------------------------------
@@ -326,8 +327,9 @@ static void resetBLEClient() {
 }
 
 static void scheduleBLEReconnect(const char* reason) {
-  nextBLEConnectAttemptMs = millis() + BLE_RETRY_INTERVAL_MS;
-  lastBLERetryLogMs = 0;
+  bleRetryScheduledAtMs = millis();
+  bleRetryScheduled = true;
+  lastBLERetryLogMs = bleRetryScheduledAtMs;
   doConnect = false;
   Serial.printf("%s Retrying BLE in %lu ms and will keep retrying until connected.\n", reason,
                 BLE_RETRY_INTERVAL_MS);
@@ -335,8 +337,8 @@ static void scheduleBLEReconnect(const char* reason) {
 
 static bool connectToBMS() {
   resetBLEClient();
-  bleConnectAttempts++;
-  Serial.printf("BLE connect attempt %lu to BMS %s...\n", bleConnectAttempts, BMS_MAC);
+  bleConnectAttemptsSinceBoot++;
+  Serial.printf("BLE connect attempt %lu to BMS %s...\n", bleConnectAttemptsSinceBoot, BMS_MAC);
 
   pClient = NimBLEDevice::createClient();
   pClient->setClientCallbacks(&gClientCallbacks, false);
@@ -376,7 +378,7 @@ static bool connectToBMS() {
     return false;
   }
 
-  nextBLEConnectAttemptMs = 0;
+  bleRetryScheduled = false;
   lastBLERetryLogMs = 0;
   Serial.println("BLE fully connected");
   return true;
@@ -794,11 +796,14 @@ void loop() {
     bms.main_task(true);
     lastBLEDataMs = now;
   } else if (!doConnect) {
-    if (nextBLEConnectAttemptMs != 0 && now >= nextBLEConnectAttemptMs) {
+    if (bleRetryScheduled && now - bleRetryScheduledAtMs >= BLE_RETRY_INTERVAL_MS) {
+      bleRetryScheduled = false;
       doConnect = true;
-    } else if (nextBLEConnectAttemptMs != 0 &&
-               now - lastBLERetryLogMs >= BLE_RETRY_LOG_INTERVAL_MS) {
-      unsigned long remainingMs = nextBLEConnectAttemptMs - now;
+    } else if (bleRetryScheduled && now - lastBLERetryLogMs >= BLE_RETRY_LOG_INTERVAL_MS) {
+      unsigned long elapsedMs = now - bleRetryScheduledAtMs;
+      unsigned long remainingMs = (elapsedMs < BLE_RETRY_INTERVAL_MS)
+                                      ? (BLE_RETRY_INTERVAL_MS - elapsedMs)
+                                      : 0;
       Serial.printf("BLE still disconnected - next retry in %lu ms\n", remainingMs);
       lastBLERetryLogMs = now;
     }
