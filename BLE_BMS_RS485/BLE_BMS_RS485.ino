@@ -5,6 +5,13 @@
 #include <WebServer.h>
 #include <HardwareSerial.h>
 #include <float.h>
+#include <string.h>
+
+#if __has_include("secrets.h")
+#include "secrets.h"
+#elif __has_include("secrets_template.h")
+#include "secrets_template.h"
+#endif
 
 // -----------------------------------------------------------------------
 // Combined BLE BMS + Pylontech CAN + Solis RS485 monitor sketch.
@@ -20,7 +27,6 @@
 // -----------------------------------------------------------------------
 // BLE BMS configuration
 // -----------------------------------------------------------------------
-#define BMS_MAC        "a5:c2:37:51:85:89"
 #define SERVICE_UUID   "ff00"
 #define RX_UUID        "ff01"
 #define TX_UUID        "ff02"
@@ -39,9 +45,6 @@
 #define LOG_INTERVAL_MS            5000
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
 
-#define WIFI_SSID           "TP-LINK_73F3"
-#define WIFI_PASSWORD_UPPER "DEADBEEF"
-#define WIFI_PASSWORD_LOWER "deadbeef"
 #define WIFI_CONNECT_TIMEOUT_MS      10000
 
 // RS485 poll timing; tune here if inverter responses are slow/noisy.
@@ -51,6 +54,22 @@
 #define MONITOR_MUTEX_TIMEOUT_MS       100
 #define SERIAL_SETTLE_DELAY_MS        1200
 #define SOLIS_SLAVE_ID                   1
+
+#ifndef BMS_MAC
+#define BMS_MAC "00:00:00:00:00:00"
+#endif
+
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
+#endif
+
+#ifndef WIFI_PASSWORD_UPPER
+#define WIFI_PASSWORD_UPPER ""
+#endif
+
+#ifndef WIFI_PASSWORD_LOWER
+#define WIFI_PASSWORD_LOWER ""
+#endif
 
 // -----------------------------------------------------------------------
 // BLE globals
@@ -559,13 +578,18 @@ void setup() {
       nullptr,
       1);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  bool wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
-  if (!wifiOk) {
-    WiFi.disconnect(true);
-    delay(500);
-    wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
+  bool wifiOk = false;
+  if (strlen(WIFI_SSID) > 0) {
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
+    if (!wifiOk) {
+      WiFi.disconnect(true);
+      delay(500);
+      wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
+    }
+  } else {
+    Serial.println("WiFi SSID not configured; skipping web server startup");
   }
 
   if (wifiOk) {

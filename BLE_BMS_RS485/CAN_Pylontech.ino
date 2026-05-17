@@ -1,5 +1,6 @@
 #include "driver/twai.h"
 #include <bms2.h>
+#include <float.h>
 
 // -----------------------------------------------------------------------
 // Pylontech CAN protocol for Solis S5-EH1P3.6K-L
@@ -242,7 +243,7 @@ static void can_send_measurements(OverkillSolarBms2& bms) {
 static void can_send_alarms(OverkillSolarBms2& bms) {
     // Calculate cell min/max for over/under voltage detection
     uint8_t  numCells = bms.get_num_cells();
-    float minV = 9999, maxV = 0;
+    float minV = FLT_MAX, maxV = 0;
     for (uint8_t c = 0; c < numCells; c++) {
         float v = bms.get_cell_voltage(c);
         if (v < minV) minV = v;
