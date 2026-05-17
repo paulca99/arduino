@@ -801,9 +801,7 @@ void loop() {
       doConnect = true;
     } else if (bleRetryScheduled && now - lastBLERetryLogMs >= BLE_RETRY_LOG_INTERVAL_MS) {
       unsigned long elapsedMs = now - bleRetryScheduledAtMs;
-      unsigned long remainingMs = (elapsedMs < BLE_RETRY_INTERVAL_MS)
-                                      ? (BLE_RETRY_INTERVAL_MS - elapsedMs)
-                                      : 0;
+      unsigned long remainingMs = BLE_RETRY_INTERVAL_MS - elapsedMs;
       Serial.printf("BLE still disconnected - next retry in %lu ms\n", remainingMs);
       lastBLERetryLogMs = now;
     }
