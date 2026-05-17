@@ -846,6 +846,7 @@ void setup() {
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   doConnect = true;
   nextBLEConnectAtMs = 0;
+  bleLastAttemptStartedMs = millis();
 }
 
 static unsigned long lastCAN = 0;
