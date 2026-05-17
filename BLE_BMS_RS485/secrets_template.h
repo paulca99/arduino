@@ -6,7 +6,7 @@
 
 #define BMS_MAC "00:00:00:00:00:00"
 #define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD_UPPER "YOUR_WIFI_PASSWORD"
-#define WIFI_PASSWORD_LOWER "your_wifi_password"
+#define WIFI_PASSWORD_PRIMARY "YOUR_WIFI_PASSWORD"
+#define WIFI_PASSWORD_FALLBACK "your_wifi_password"
 
 #endif

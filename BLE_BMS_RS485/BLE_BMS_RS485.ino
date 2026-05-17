@@ -71,6 +71,24 @@
 #define WIFI_PASSWORD_LOWER ""
 #endif
 
+#ifndef WIFI_PASSWORD_PRIMARY
+#define WIFI_PASSWORD_PRIMARY WIFI_PASSWORD_UPPER
+#endif
+
+#ifndef WIFI_PASSWORD_FALLBACK
+#define WIFI_PASSWORD_FALLBACK WIFI_PASSWORD_LOWER
+#endif
+
+// JBD BLE command frame terminator byte.
+static const uint8_t BMS_FRAME_TERMINATOR = 0x77;
+
+// BLE connection parameter defaults:
+// interval min/max 6, latency 0, supervision timeout 51.
+static const uint16_t BLE_CONN_INTERVAL_MIN = 6;
+static const uint16_t BLE_CONN_INTERVAL_MAX = 6;
+static const uint16_t BLE_CONN_LATENCY = 0;
+static const uint16_t BLE_CONN_TIMEOUT = 51;
+
 // -----------------------------------------------------------------------
 // BLE globals
 // -----------------------------------------------------------------------
@@ -126,7 +144,7 @@ class BmsStream : public Stream {
 
   size_t write(uint8_t b) override {
     if (txLen < sizeof(txBuf)) txBuf[txLen++] = b;
-    if (b == 0x77) {
+    if (b == BMS_FRAME_TERMINATOR) {
       if (!pTxChar || !connected) {
         txLen = 0;
         return 0;
@@ -234,7 +252,8 @@ static bool connectToBMS() {
 
   pClient = NimBLEDevice::createClient();
   pClient->setClientCallbacks(new ClientCallbacks(), false);
-  pClient->setConnectionParams(6, 6, 0, 51);
+  pClient->setConnectionParams(BLE_CONN_INTERVAL_MIN, BLE_CONN_INTERVAL_MAX, BLE_CONN_LATENCY,
+                               BLE_CONN_TIMEOUT);
   pClient->setConnectTimeout(30);
 
   if (!pClient->connect(bmsMacAddress)) {
@@ -323,6 +342,7 @@ static void sendReadInput(uint8_t slave, uint16_t rawAddr, uint16_t count) {
 
 static bool readDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) {
   uint8_t buf[32];
+  // Solis docs use 1-based register numbers while Modbus frame address is 0-based.
   const uint16_t rawAddr = docReg - 1;
 
   flush485();
@@ -582,11 +602,11 @@ void setup() {
   if (strlen(WIFI_SSID) > 0) {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
-    wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
+    wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_PRIMARY);
     if (!wifiOk) {
       WiFi.disconnect(true);
       delay(500);
-      wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
+      wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_FALLBACK);
     }
   } else {
     Serial.println("WiFi SSID not configured; skipping web server startup");
