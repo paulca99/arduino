@@ -563,7 +563,7 @@ static void handleRoot() {
   }
 
   String html;
-  html.reserve(5000);
+  html.reserve(2600 + size_t(numCells) * 64);
   // Keep browser refresh simple and conservative for low ESP32 load.
   html += F("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
