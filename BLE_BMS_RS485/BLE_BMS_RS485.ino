@@ -358,7 +358,6 @@ static void scheduleBLEReconnect(const char* reason) {
 static bool connectToBMS() {
   clearBLEConnectionState();
   bleConnectAttemptsSinceBoot++;
-  bleLastAttemptStartedMs = millis();
   Serial.printf("BLE connect attempt %lu to BMS %s...\n", bleConnectAttemptsSinceBoot, BMS_MAC);
 
   NimBLEClient* client = ensureBLEClient();
@@ -367,6 +366,7 @@ static bool connectToBMS() {
     scheduleBLEReconnect("BLE client creation failed.");
     return false;
   }
+  bleLastAttemptStartedMs = millis();
 
   if (client->isConnected()) client->disconnect();
 
