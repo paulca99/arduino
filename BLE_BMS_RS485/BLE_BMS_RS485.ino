@@ -101,6 +101,7 @@ static volatile bool bleBmsInitialized = false;
 static volatile bool bleConnectTaskRunning = false;
 static unsigned long nextBLEConnectAtMs = 0;
 static unsigned long lastBLEStatusLogMs = 0;
+static unsigned long bleLastAttemptStartedMs = 0;
 
 // -----------------------------------------------------------------------
 // BMS ring buffer and Stream wrapper
@@ -293,7 +294,8 @@ void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t le
   for (size_t i = 0; i < length; i++) rxPush(pData[i]);
 }
 
-static void resetBLEClient();
+static void clearBLEConnectionState();
+static NimBLEClient* ensureBLEClient();
 static void clearBmsRxBuffer();
 static void scheduleBLEReconnect(const char* reason);
 static void startBLEConnectTask();
@@ -318,19 +320,24 @@ class ClientCallbacks : public NimBLEClientCallbacks {
 
 static ClientCallbacks gClientCallbacks;
 
-static void resetBLEClient() {
+static void clearBLEConnectionState() {
   connected = false;
   bleBmsInitialized = false;
   pTxChar = nullptr;
   pRxChar = nullptr;
+}
 
-  NimBLEClient* oldClient = pClient;
-  pClient = nullptr;
-  if (!oldClient) return;
+static NimBLEClient* ensureBLEClient() {
+  if (pClient) return pClient;
 
-  oldClient->setClientCallbacks(nullptr, false);
-  if (oldClient->isConnected()) oldClient->disconnect();
-  NimBLEDevice::deleteClient(oldClient);
+  pClient = NimBLEDevice::createClient();
+  if (!pClient) return nullptr;
+
+  pClient->setClientCallbacks(&gClientCallbacks, false);
+  pClient->setConnectionParams(BLE_CONN_INTERVAL_MIN, BLE_CONN_INTERVAL_MAX, BLE_CONN_LATENCY,
+                               BLE_CONN_TIMEOUT);
+  pClient->setConnectTimeout(5);
+  return pClient;
 }
 
 static void clearBmsRxBuffer() {
@@ -349,32 +356,32 @@ static void scheduleBLEReconnect(const char* reason) {
 }
 
 static bool connectToBMS() {
-  resetBLEClient();
+  clearBLEConnectionState();
   bleConnectAttemptsSinceBoot++;
+  bleLastAttemptStartedMs = millis();
   Serial.printf("BLE connect attempt %lu to BMS %s...\n", bleConnectAttemptsSinceBoot, BMS_MAC);
 
-  pClient = NimBLEDevice::createClient();
-  if (!pClient) {
+  NimBLEClient* client = ensureBLEClient();
+  if (!client) {
     Serial.println("Failed to create BLE client");
     scheduleBLEReconnect("BLE client creation failed.");
     return false;
   }
-  pClient->setClientCallbacks(&gClientCallbacks, false);
-  pClient->setConnectionParams(BLE_CONN_INTERVAL_MIN, BLE_CONN_INTERVAL_MAX, BLE_CONN_LATENCY,
-                               BLE_CONN_TIMEOUT);
-  pClient->setConnectTimeout(5);
 
-  if (!pClient->connect(bmsMacAddress)) {
+  if (client->isConnected()) client->disconnect();
+
+  if (!client->connect(bmsMacAddress)) {
     Serial.println("BLE connect() failed");
-    resetBLEClient();
+    clearBLEConnectionState();
     scheduleBLEReconnect("BLE connect() failed.");
     return false;
   }
 
-  NimBLERemoteService* pSvc = pClient->getService(SERVICE_UUID);
+  NimBLERemoteService* pSvc = client->getService(SERVICE_UUID);
   if (!pSvc) {
     Serial.println("Service FF00 not found");
-    resetBLEClient();
+    if (client->isConnected()) client->disconnect();
+    clearBLEConnectionState();
     scheduleBLEReconnect("Service FF00 not found.");
     return false;
   }
@@ -382,13 +389,15 @@ static bool connectToBMS() {
   pRxChar = pSvc->getCharacteristic(RX_UUID);
   if (!pRxChar) {
     Serial.println("RX char FF01 not found");
-    resetBLEClient();
+    if (client->isConnected()) client->disconnect();
+    clearBLEConnectionState();
     scheduleBLEReconnect("RX char FF01 not found.");
     return false;
   }
   if (pRxChar->canNotify() && !pRxChar->subscribe(true, notifyCallback)) {
     Serial.println("Failed to subscribe to RX notifications");
-    resetBLEClient();
+    if (client->isConnected()) client->disconnect();
+    clearBLEConnectionState();
     scheduleBLEReconnect("RX notify subscribe failed.");
     return false;
   }
@@ -396,7 +405,8 @@ static bool connectToBMS() {
   pTxChar = pSvc->getCharacteristic(TX_UUID);
   if (!pTxChar) {
     Serial.println("TX char FF02 not found");
-    resetBLEClient();
+    if (client->isConnected()) client->disconnect();
+    clearBLEConnectionState();
     scheduleBLEReconnect("TX char FF02 not found.");
     return false;
   }
@@ -857,10 +867,12 @@ void loop() {
   } else {
     if (now - lastBLEStatusLogMs >= BLE_RETRY_LOG_INTERVAL_MS) {
       if (bleConnectTaskRunning) {
-        Serial.println("BLE connect attempt still running; loop alive, web/CAN still being serviced.");
+        Serial.printf("BLE connect attempt %lu still running (%lu ms); loop alive, web/CAN still being serviced.\n",
+                      bleConnectAttemptsSinceBoot, now - bleLastAttemptStartedMs);
       } else if (doConnect) {
         unsigned long remainingMs = (now >= nextBLEConnectAtMs) ? 0 : (nextBLEConnectAtMs - now);
-        Serial.printf("BLE disconnected; loop alive, next retry in %lu ms\n", remainingMs);
+        Serial.printf("BLE disconnected; loop alive; attempts=%lu; next retry in %lu ms\n",
+                      bleConnectAttemptsSinceBoot, remainingMs);
       } else {
         Serial.println("BLE disconnected; loop alive.");
       }
