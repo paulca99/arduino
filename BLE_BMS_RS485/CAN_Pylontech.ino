@@ -185,6 +185,7 @@ static void can_send_soc(OverkillSolarBms2& bms) {
             // First valid reading: seed the filter so we start from a sensible
             // voltage immediately rather than ramping up from 0 V.
             filteredV = rawV;
+            lastEmaMs = nowMs;
         } else if (SOC_EMA_TAU_S > 0.0f) {
             float dtSec = (nowMs - lastEmaMs) * 1.0e-3f;
             // alpha = 1 - exp(-dt / tau).  For dt << tau this ≈ dt/tau (small

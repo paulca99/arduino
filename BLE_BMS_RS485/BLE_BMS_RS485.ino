@@ -75,7 +75,8 @@
 static const uint8_t BMS_FRAME_TERMINATOR = 0x77;
 
 // BLE connection parameter defaults:
-// interval min/max 6, latency 0, supervision timeout 51.
+// interval min/max 6 units (6 * 1.25ms = 7.5ms), latency 0 events,
+// supervision timeout 51 units (51 * 10ms = 510ms).
 static const uint16_t BLE_CONN_INTERVAL_MIN = 6;
 static const uint16_t BLE_CONN_INTERVAL_MAX = 6;
 static const uint16_t BLE_CONN_LATENCY = 0;
@@ -101,24 +102,35 @@ static unsigned long lastBLEDataMs = 0;
 static uint8_t rxBuf[RX_BUF_SIZE];
 static volatile int rxHead = 0;
 static volatile int rxTail = 0;
+static portMUX_TYPE rxMux = portMUX_INITIALIZER_UNLOCKED;
 
 static void rxPush(uint8_t b) {
+  taskENTER_CRITICAL(&rxMux);
   int next = (rxHead + 1) % RX_BUF_SIZE;
   if (next != rxTail) {
     rxBuf[rxHead] = b;
     rxHead = next;
   }
+  taskEXIT_CRITICAL(&rxMux);
 }
 
 static int rxPop() {
-  if (rxHead == rxTail) return -1;
+  taskENTER_CRITICAL(&rxMux);
+  if (rxHead == rxTail) {
+    taskEXIT_CRITICAL(&rxMux);
+    return -1;
+  }
   uint8_t b = rxBuf[rxTail];
   rxTail = (rxTail + 1) % RX_BUF_SIZE;
+  taskEXIT_CRITICAL(&rxMux);
   return b;
 }
 
 static int rxAvailable() {
-  return (rxHead - rxTail + RX_BUF_SIZE) % RX_BUF_SIZE;
+  taskENTER_CRITICAL(&rxMux);
+  int count = (rxHead - rxTail + RX_BUF_SIZE) % RX_BUF_SIZE;
+  taskEXIT_CRITICAL(&rxMux);
+  return count;
 }
 
 class BmsStream : public Stream {
@@ -135,6 +147,10 @@ class BmsStream : public Stream {
   }
 
   size_t write(uint8_t b) override {
+    if (txLen >= sizeof(txBuf)) {
+      txLen = 0;  // Drop oversized frame and resync.
+      return 0;
+    }
     if (txLen < sizeof(txBuf)) txBuf[txLen++] = b;
     if (b == BMS_FRAME_TERMINATOR) {
       if (!pTxChar || !connected) {
