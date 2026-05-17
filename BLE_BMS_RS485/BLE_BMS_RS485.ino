@@ -553,6 +553,8 @@ static String buildAllJson() {
 // -----------------------------------------------------------------------
 static void handleRoot() {
   const unsigned long ageSec = (millis() - lastBLEDataMs) / 1000UL;
+  const uint8_t numCells = bms.get_num_cells();
+  const float temperatureC = bms.get_ntc_temperature(0);
 
   SolisState snapshot = {};
   if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(MONITOR_MUTEX_TIMEOUT_MS)) == pdTRUE) {
@@ -561,29 +563,57 @@ static void handleRoot() {
   }
 
   String html;
-  html.reserve(2500);
+  html.reserve(5000);
+  // Keep browser refresh simple and conservative for low ESP32 load.
   html += F("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<meta http-equiv='refresh' content='5'>"
             "<title>BLE BMS + CAN + RS485</title>"
             "<style>body{font-family:Arial,sans-serif;margin:16px;background:#101820;color:#e6eef8}"
-            "h1{margin-bottom:6px}.card{background:#172533;padding:10px;border-radius:8px;margin:8px 0}"
-            "a{color:#9bd0ff}code{color:#9bd0ff}</style></head><body>");
+            "h1{margin-bottom:6px}h2{margin:14px 0 8px}.card{background:#172533;padding:10px;border-radius:8px;margin:8px 0}"
+            ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}"
+            "table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #2a3a4a;padding:6px 8px;text-align:left}"
+            "th{background:#1f3142}.mono{font-family:monospace}a{color:#9bd0ff}code{color:#9bd0ff}</style></head><body>");
   html += F("<h1>ESP32 merged monitor</h1>");
-  html += F("<p>Conservative merged sketch: BLE BMS + Pylontech CAN in loop, Solis RS485 in dedicated task.</p>");
+  html += F("<p>Conservative merged sketch: BLE BMS + Pylontech CAN in loop, Solis RS485 in dedicated task. Auto-refreshes every 5s.</p>");
 
-  html += F("<div class='card'><b>BMS</b><br>");
-  html += String("BLE: ") + (connected ? "Connected" : "Disconnected") + "<br>";
-  html += String("Last BMS frame: ") + String(ageSec) + " s ago<br>";
-  html += String("Voltage: ") + String(bms.get_voltage(), 2) + " V<br>";
-  html += String("Current: ") + String(bms.get_current(), 2) + " A<br>";
-  html += String("SoC: ") + String(bms.get_state_of_charge()) + " %";
+  html += F("<h2>BMS summary</h2><div class='card'><div class='grid'>");
+  html += String("<div><b>BLE</b><br>") + (connected ? "Connected" : "Disconnected") + "</div>";
+  html += String("<div><b>Last frame age</b><br>") + String(ageSec) + " s</div>";
+  html += String("<div><b>Voltage</b><br>") + String(bms.get_voltage(), 2) + " V</div>";
+  html += String("<div><b>Current</b><br>") + String(bms.get_current(), 2) + " A</div>";
+  html += String("<div><b>SoC</b><br>") + String(bms.get_state_of_charge()) + " %</div>";
+  html += String("<div><b>Temp</b><br>") + String(temperatureC, 1) + " C</div>";
+  html += String("<div><b>Charge MOS</b><br>") + (bms.get_charge_mosfet_status() ? "ON" : "OFF") + "</div>";
+  html += String("<div><b>Discharge MOS</b><br>") + (bms.get_discharge_mosfet_status() ? "ON" : "OFF") + "</div>";
+  html += String("<div><b>Cells reported</b><br>") + String(numCells) + "</div>";
+  html += F("</div>");
   html += F("</div>");
 
-  html += F("<div class='card'><b>Solis RS485</b><br>");
+  html += F("<h2>BMS cell voltages</h2><div class='card'>");
+  if (numCells == 0) {
+    html += F("No cell data yet");
+  } else {
+    html += F("<table><tr><th>Cell</th><th>Voltage (V)</th><th>Balance</th></tr>");
+    for (uint8_t c = 0; c < numCells; c++) {
+      html += F("<tr><td>");
+      html += String(c + 1);
+      html += F("</td><td class='mono'>");
+      html += String(bms.get_cell_voltage(c), 3);
+      html += F("</td><td>");
+      html += bms.get_balance_status(c) ? "ON" : "-";
+      html += F("</td></tr>");
+    }
+    html += F("</table>");
+  }
+  html += F("</div>");
+
+  html += F("<h2>Solis summary</h2><div class='card'>");
   float batteryPowerW = 0.0f;
   html += String("Polls: ") + String(snapshot.pollCount) + "<br>";
   html += String("Read errors: ") + String(snapshot.readErrors) + "<br>";
+  html += String("Lock timeouts: ") + String(snapshot.lockTimeouts) + "<br>";
+  html += String("Last poll ms: ") + String(snapshot.lastPollMs) + "<br>";
   html += String("Last success ms: ") + String(snapshot.lastSuccessMs) + "<br>";
   if (tryBuildSignedBatteryPowerW(snapshot, batteryPowerW)) {
     html += String("Battery power: ") + String(batteryPowerW, 1) + " W";
