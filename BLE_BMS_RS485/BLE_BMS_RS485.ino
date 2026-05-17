@@ -97,9 +97,10 @@ static volatile bool connected = false;
 static bool wifiReady = false;
 static volatile unsigned long lastBLEDataMs = 0;
 static unsigned long bleConnectAttemptsSinceBoot = 0;
-static bool bleRetryScheduled = false;
-static unsigned long bleRetryScheduledAtMs = 0;
-static unsigned long lastBLERetryLogMs = 0;
+static volatile bool bleBmsInitialized = false;
+static volatile bool bleConnectTaskRunning = false;
+static unsigned long nextBLEConnectAtMs = 0;
+static unsigned long lastBLEStatusLogMs = 0;
 
 // -----------------------------------------------------------------------
 // BMS ring buffer and Stream wrapper
@@ -293,13 +294,15 @@ void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t le
 }
 
 static void resetBLEClient();
+static void clearBmsRxBuffer();
 static void scheduleBLEReconnect(const char* reason);
+static void startBLEConnectTask();
+static void bleConnectTask(void* pv);
 
 class ClientCallbacks : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* pC) override {
     (void)pC;
-    Serial.println("BLE Connected");
-    connected = true;
+    Serial.println("BLE link connected");
   }
 
   void onDisconnect(NimBLEClient* pC, int reason) override {
@@ -308,6 +311,7 @@ class ClientCallbacks : public NimBLEClientCallbacks {
     pTxChar = nullptr;
     pRxChar = nullptr;
     connected = false;
+    bleBmsInitialized = false;
     scheduleBLEReconnect("BLE disconnected.");
   }
 };
@@ -316,21 +320,30 @@ static ClientCallbacks gClientCallbacks;
 
 static void resetBLEClient() {
   connected = false;
+  bleBmsInitialized = false;
   pTxChar = nullptr;
   pRxChar = nullptr;
 
-  if (!pClient) return;
-
-  if (pClient->isConnected()) pClient->disconnect();
-  NimBLEDevice::deleteClient(pClient);
+  NimBLEClient* oldClient = pClient;
   pClient = nullptr;
+  if (!oldClient) return;
+
+  oldClient->setClientCallbacks(nullptr, false);
+  if (oldClient->isConnected()) oldClient->disconnect();
+  NimBLEDevice::deleteClient(oldClient);
+}
+
+static void clearBmsRxBuffer() {
+  taskENTER_CRITICAL(&rxMux);
+  rxHead = 0;
+  rxTail = 0;
+  taskEXIT_CRITICAL(&rxMux);
 }
 
 static void scheduleBLEReconnect(const char* reason) {
-  bleRetryScheduledAtMs = millis();
-  bleRetryScheduled = true;
-  lastBLERetryLogMs = bleRetryScheduledAtMs;
-  doConnect = false;
+  nextBLEConnectAtMs = millis() + BLE_RETRY_INTERVAL_MS;
+  lastBLEStatusLogMs = 0;
+  doConnect = true;
   Serial.printf("%s Retrying BLE in %lu ms and will keep retrying until connected.\n", reason,
                 BLE_RETRY_INTERVAL_MS);
 }
@@ -341,10 +354,15 @@ static bool connectToBMS() {
   Serial.printf("BLE connect attempt %lu to BMS %s...\n", bleConnectAttemptsSinceBoot, BMS_MAC);
 
   pClient = NimBLEDevice::createClient();
+  if (!pClient) {
+    Serial.println("Failed to create BLE client");
+    scheduleBLEReconnect("BLE client creation failed.");
+    return false;
+  }
   pClient->setClientCallbacks(&gClientCallbacks, false);
   pClient->setConnectionParams(BLE_CONN_INTERVAL_MIN, BLE_CONN_INTERVAL_MAX, BLE_CONN_LATENCY,
                                BLE_CONN_TIMEOUT);
-  pClient->setConnectTimeout(30);
+  pClient->setConnectTimeout(5);
 
   if (!pClient->connect(bmsMacAddress)) {
     Serial.println("BLE connect() failed");
@@ -368,7 +386,12 @@ static bool connectToBMS() {
     scheduleBLEReconnect("RX char FF01 not found.");
     return false;
   }
-  if (pRxChar->canNotify()) pRxChar->subscribe(true, notifyCallback);
+  if (pRxChar->canNotify() && !pRxChar->subscribe(true, notifyCallback)) {
+    Serial.println("Failed to subscribe to RX notifications");
+    resetBLEClient();
+    scheduleBLEReconnect("RX notify subscribe failed.");
+    return false;
+  }
 
   pTxChar = pSvc->getCharacteristic(TX_UUID);
   if (!pTxChar) {
@@ -378,10 +401,54 @@ static bool connectToBMS() {
     return false;
   }
 
-  bleRetryScheduled = false;
-  lastBLERetryLogMs = 0;
+  lastBLEStatusLogMs = 0;
   Serial.println("BLE fully connected");
+  connected = true;
+  lastBLEDataMs = millis();
   return true;
+}
+
+static void bleConnectTask(void* pv) {
+  (void)pv;
+
+  bool connectOk = connectToBMS();
+  if (connectOk) {
+    bms.begin(&bmsStream);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    for (int i = 0; i < 10 && connected; i++) {
+      bms.main_task(true);
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (connected) {
+      bleBmsInitialized = true;
+      lastBLEDataMs = millis();
+      Serial.println("BLE session ready; loop is still servicing CAN and web.");
+    }
+  }
+
+  bleConnectTaskRunning = false;
+  vTaskDelete(nullptr);
+}
+
+static void startBLEConnectTask() {
+  if (bleConnectTaskRunning) return;
+
+  clearBmsRxBuffer();
+  bleBmsInitialized = false;
+  bleConnectTaskRunning = true;
+
+  if (xTaskCreatePinnedToCore(
+          bleConnectTask,
+          "BLEConnect",
+          6144,
+          nullptr,
+          1,
+          nullptr,
+          0) != pdPASS) {
+    bleConnectTaskRunning = false;
+    scheduleBLEReconnect("Failed to start BLE connect task.");
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -768,57 +835,47 @@ void setup() {
   NimBLEDevice::init("");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   doConnect = true;
+  nextBLEConnectAtMs = 0;
 }
 
 static unsigned long lastCAN = 0;
 static unsigned long lastLog = 0;
 
 void loop() {
-  if (doConnect) {
-    doConnect = false;
-    taskENTER_CRITICAL(&rxMux);
-    rxHead = 0;
-    rxTail = 0;
-    taskEXIT_CRITICAL(&rxMux);
-    if (connectToBMS()) {
-      bms.begin(&bmsStream);
-      delay(500);
-      for (int i = 0; i < 10; i++) {
-        bms.main_task(true);
-        delay(100);
-      }
-    }
-  }
-
   unsigned long now = millis();
 
-  if (connected) {
+  if (wifiReady) server.handleClient();
+
+  if (doConnect && !bleConnectTaskRunning && now >= nextBLEConnectAtMs) {
+    doConnect = false;
+    startBLEConnectTask();
+  }
+
+  if (connected && bleBmsInitialized) {
     bms.main_task(true);
     lastBLEDataMs = now;
-  } else if (!doConnect) {
-    if (bleRetryScheduled && now - bleRetryScheduledAtMs >= BLE_RETRY_INTERVAL_MS) {
-      bleRetryScheduled = false;
-      doConnect = true;
-    } else if (bleRetryScheduled && now - lastBLERetryLogMs >= BLE_RETRY_LOG_INTERVAL_MS) {
-      unsigned long elapsedMs = now - bleRetryScheduledAtMs;
-      unsigned long remainingMs = BLE_RETRY_INTERVAL_MS - elapsedMs;
-      Serial.printf("BLE still disconnected - next retry in %lu ms\n", remainingMs);
-      lastBLERetryLogMs = now;
+  } else {
+    if (now - lastBLEStatusLogMs >= BLE_RETRY_LOG_INTERVAL_MS) {
+      if (bleConnectTaskRunning) {
+        Serial.println("BLE connect attempt still running; loop alive, web/CAN still being serviced.");
+      } else if (doConnect) {
+        unsigned long remainingMs = (now >= nextBLEConnectAtMs) ? 0 : (nextBLEConnectAtMs - now);
+        Serial.printf("BLE disconnected; loop alive, next retry in %lu ms\n", remainingMs);
+      } else {
+        Serial.println("BLE disconnected; loop alive.");
+      }
+      lastBLEStatusLogMs = now;
     }
-    delay(200);
+    delay(20);
   }
 
   if (now - lastCAN >= CAN_INTERVAL_MS) {
     lastCAN = now;
-    if (connected || (now - lastBLEDataMs < BLE_TIMEOUT_MS)) {
-      sendCANFrames(bms);
-    }
+    sendCANFrames(bms);
   }
 
   if (now - lastLog >= LOG_INTERVAL_MS) {
     lastLog = now;
-    if (connected) logBMSData();
+    if (connected && bleBmsInitialized) logBMSData();
   }
-
-  if (wifiReady) server.handleClient();
 }
