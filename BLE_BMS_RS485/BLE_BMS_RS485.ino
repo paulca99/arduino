@@ -846,7 +846,6 @@ void setup() {
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   doConnect = true;
   nextBLEConnectAtMs = 0;
-  bleLastAttemptStartedMs = millis();
 }
 
 static unsigned long lastCAN = 0;
@@ -868,8 +867,10 @@ void loop() {
   } else {
     if (now - lastBLEStatusLogMs >= BLE_RETRY_LOG_INTERVAL_MS) {
       if (bleConnectTaskRunning) {
+        unsigned long attemptElapsedMs =
+            (bleLastAttemptStartedMs == 0) ? 0 : (now - bleLastAttemptStartedMs);
         Serial.printf("BLE connect attempt %lu still running (%lu ms); loop alive, web/CAN still being serviced.\n",
-                      bleConnectAttemptsSinceBoot, now - bleLastAttemptStartedMs);
+                      bleConnectAttemptsSinceBoot, attemptElapsedMs);
       } else if (doConnect) {
         unsigned long remainingMs = (now >= nextBLEConnectAtMs) ? 0 : (nextBLEConnectAtMs - now);
         Serial.printf("BLE disconnected; loop alive; attempts=%lu; next retry in %lu ms\n",
