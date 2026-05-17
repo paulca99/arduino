@@ -55,20 +55,20 @@
 #define SERIAL_SETTLE_DELAY_MS        1200
 #define SOLIS_SLAVE_ID                   1
 
-#ifndef BMS_MAC
-#define BMS_MAC "00:00:00:00:00:00"
+#ifndef BMS_MAC 
+#define BMS_MAC "a5:c2:37:51:85:89"
 #endif
 
 #ifndef WIFI_SSID
-#define WIFI_SSID ""
+#define WIFI_SSID "TP-LINK_73F3"
 #endif
 
 #ifndef WIFI_PASSWORD_PRIMARY
-#define WIFI_PASSWORD_PRIMARY ""
+#define WIFI_PASSWORD_PRIMARY "DEADBEEF"
 #endif
 
 #ifndef WIFI_PASSWORD_FALLBACK
-#define WIFI_PASSWORD_FALLBACK ""
+#define WIFI_PASSWORD_FALLBACK "deadbeef"
 #endif
 
 // JBD BLE command frame terminator byte.

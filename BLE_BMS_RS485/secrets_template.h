@@ -4,9 +4,9 @@
 // Copy this file to secrets.h and fill with your local values.
 // secrets.h is intended for local use and should not be committed.
 
-#define BMS_MAC "00:00:00:00:00:00"
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD_PRIMARY "YOUR_WIFI_PASSWORD"
-#define WIFI_PASSWORD_FALLBACK "your_wifi_password"
+#define BMS_MAC "a5:c2:37:51:85:89"
+#define WIFI_SSID "TP-LINK_73F3"
+#define WIFI_PASSWORD_PRIMARY "DEADBEEF"
+#define WIFI_PASSWORD_FALLBACK "deadbeef"
 
 #endif
