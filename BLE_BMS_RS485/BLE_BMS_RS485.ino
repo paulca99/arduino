@@ -202,6 +202,7 @@ static const RegisterSpec REGISTER_SPECS[] = {
 };
 
 static const size_t REGISTER_COUNT = sizeof(REGISTER_SPECS) / sizeof(REGISTER_SPECS[0]);
+static const uint16_t SOLIS_REG_BATTERY_DIRECTION = 33136;  // Confirmed: 0=charging, 1=discharging.
 
 struct RegisterValue {
   uint16_t raw;
@@ -219,6 +220,20 @@ struct SolisState {
 
 static SolisState solisState = {};
 static SemaphoreHandle_t solisMutex = nullptr;
+
+static RegisterValue getRegisterValueByDocReg(const SolisState& state, uint16_t docReg) {
+  for (size_t i = 0; i < REGISTER_COUNT; i++) {
+    if (REGISTER_SPECS[i].reg == docReg) return state.values[i];
+  }
+  return {0, false};
+}
+
+static String decodeSolisBatteryDirection(bool valid, uint16_t raw) {
+  if (!valid) return "Unknown";
+  if (raw == 0) return "Charging";
+  if (raw == 1) return "Discharging";
+  return String("Unknown (") + String(raw) + ")";
+}
 
 // -----------------------------------------------------------------------
 // CAN API implemented in companion file
@@ -444,6 +459,14 @@ static String buildSolisJson() {
   json += String(snapshot.readErrors);
   json += ",\"lockTimeouts\":";
   json += String(snapshot.lockTimeouts);
+
+  RegisterValue direction = getRegisterValueByDocReg(snapshot, SOLIS_REG_BATTERY_DIRECTION);
+  json += ",\"batteryDirectionRaw\":";
+  json += String(direction.raw);
+  json += ",\"batteryDirectionText\":\"";
+  json += decodeSolisBatteryDirection(direction.valid, direction.raw);
+  json += "\"";
+
   for (size_t i = 0; i < REGISTER_COUNT; i++) {
     json += ",\"";
     json += String(REGISTER_SPECS[i].reg);
@@ -544,9 +567,13 @@ static void handleRoot() {
   html += F("</div>");
 
   html += F("<div class='card'><b>Solis RS485</b><br>");
+  RegisterValue direction = getRegisterValueByDocReg(snapshot, SOLIS_REG_BATTERY_DIRECTION);
   html += String("Polls: ") + String(snapshot.pollCount) + "<br>";
   html += String("Read errors: ") + String(snapshot.readErrors) + "<br>";
-  html += String("Last success ms: ") + String(snapshot.lastSuccessMs);
+  html += String("Last success ms: ") + String(snapshot.lastSuccessMs) + "<br>";
+  html += String("Battery direction (reg 33136): ") +
+          decodeSolisBatteryDirection(direction.valid, direction.raw) +
+          String(" (raw ") + String(direction.raw) + ")";
   html += F("</div>");
 
   html += F("<div class='card'><b>API endpoints</b><br>");
