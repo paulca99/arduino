@@ -554,6 +554,7 @@ static String buildAllJson() {
 static void handleRoot() {
   const unsigned long ageSec = (millis() - lastBLEDataMs) / 1000UL;
   const uint8_t numCells = bms.get_num_cells();
+  // Use the primary BMS NTC reading for dashboard temperature.
   const float temperatureC = bms.get_ntc_temperature(0);
 
   SolisState snapshot = {};
@@ -563,7 +564,7 @@ static void handleRoot() {
   }
 
   String html;
-  html.reserve(2600 + size_t(numCells) * 64);
+  html.reserve(2600 + size_t(numCells) * 100);
   // Keep browser refresh simple and conservative for low ESP32 load.
   html += F("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
