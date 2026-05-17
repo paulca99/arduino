@@ -142,12 +142,24 @@ class BmsStream : public Stream {
   int available() override { return rxAvailable(); }
   int read() override { return rxPop(); }
   int peek() override {
-    if (rxHead == rxTail) return -1;
-    return rxBuf[rxTail];
+    taskENTER_CRITICAL(&rxMux);
+    if (rxHead == rxTail) {
+      taskEXIT_CRITICAL(&rxMux);
+      return -1;
+    }
+    int b = rxBuf[rxTail];
+    taskEXIT_CRITICAL(&rxMux);
+    return b;
   }
 
   size_t write(uint8_t b) override {
     if (txLen >= sizeof(txBuf)) {
+      static unsigned long lastOverflowLogMs = 0;
+      unsigned long now = millis();
+      if (now - lastOverflowLogMs > 2000) {
+        Serial.println("BMS TX buffer overflow, dropping frame");
+        lastOverflowLogMs = now;
+      }
       txLen = 0;  // Drop oversized frame and resync.
       return 0;
     }
