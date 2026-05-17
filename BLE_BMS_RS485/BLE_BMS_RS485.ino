@@ -5,7 +5,6 @@
 #include <WebServer.h>
 #include <HardwareSerial.h>
 #include <float.h>
-#include <math.h>
 #include <string.h>
 
 #if __has_include("secrets.h")
@@ -204,8 +203,8 @@ static const RegisterSpec REGISTER_SPECS[] = {
 
 static const size_t REGISTER_COUNT = sizeof(REGISTER_SPECS) / sizeof(REGISTER_SPECS[0]);
 static const uint16_t SOLIS_REG_BATTERY_DIRECTION = 33136;  // Confirmed: 0=charging, 1=discharging.
-static const uint16_t SOLIS_REG_BATTERY_CURRENT = 33135;    // 0.1A units (magnitude).
-static const uint16_t SOLIS_REG_BATTERY_VOLTAGE = 33142;    // 0.01V units.
+static const uint16_t SOLIS_REG_BATTERY_CURRENT = 33135;    // Register current, unsigned 0.1A magnitude.
+static const uint16_t SOLIS_REG_BATTERY_VOLTAGE = 33142;    // Register voltage, unsigned 0.01V.
 
 struct RegisterValue {
   uint16_t raw;
@@ -241,9 +240,10 @@ static bool tryBuildSignedBatteryPowerW(const SolisState& state, float& powerW) 
   if (!current.valid || !voltage.valid) return false;
 
   RegisterValue direction = getRegisterValueByDocReg(state, SOLIS_REG_BATTERY_DIRECTION);
-  float currentA = fabsf(float((int16_t)current.raw) / 10.0f);
-  float voltageV = float(voltage.raw) / 100.0f;
-  powerW = voltageV * currentA;
+  float currentAmps = float(current.raw) / 10.0f;
+  float voltageVolts = float(voltage.raw) / 100.0f;
+  powerW = voltageVolts * currentAmps;
+  // Apply sign convention: positive = charging, negative = discharging.
   if (isSolisBatteryDischarging(direction.valid, direction.raw)) powerW = -powerW;
   return true;
 }
