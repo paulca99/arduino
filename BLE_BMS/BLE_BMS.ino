@@ -429,7 +429,7 @@ static bool scanForBattery(BatteryRuntime& br, unsigned long deadlineMs) {
     while (!gScanFoundTarget && millis() < deadlineMs) {
         pBLEScan->setActiveScan(true);
         // Keep the tested interval/window pair from proven single-battery polling sketches.
-        // Values are in BLE units (0.625 ms): 1349≈843.1 ms interval, 449≈280.6 ms window.
+        // Values are in BLE units (0.625 ms): 1349≈843.125 ms interval, 449≈280.625 ms window.
         pBLEScan->setInterval(1349);
         pBLEScan->setWindow(449);
         pBLEScan->start(1, false);
@@ -715,6 +715,6 @@ void loop() {
         nextBattery = (nextBattery + 1) % BATTERY_COUNT;
         if (!br.enabled) continue;
         pollBattery(br);
-        return;
+        break;
     }
 }
