@@ -353,7 +353,7 @@ static void cleanupConnection() {
     if (pClient) {
         if (pClient->isConnected()) {
             pClient->disconnect();
-            delay(100);
+            delay(100); // brief settle to avoid immediate reconnect races in the BT stack
         }
         delete pClient;
         pClient = nullptr;
@@ -424,6 +424,8 @@ static bool scanForBattery(BatteryRuntime& br, unsigned long deadlineMs) {
 
     while (!gScanFoundTarget && millis() < deadlineMs) {
         pBLEScan->setActiveScan(true);
+        // Keep the tested interval/window pair from proven single-battery polling sketches.
+        // Values are in BLE units (0.625 ms): 1349≈843 ms interval, 449≈281 ms window.
         pBLEScan->setInterval(1349);
         pBLEScan->setWindow(449);
         pBLEScan->start(1, false);
@@ -439,7 +441,7 @@ static bool connectToBattery(BatteryRuntime& br) {
     pClient = BLEDevice::createClient();
     if (!pClient) return false;
 
-    pClient->setMTU(517);
+    pClient->setMTU(517); // max ATT MTU on ESP32 classic BLE
     pClient->connect(pRemoteDevice);
 
     if (!pClient->isConnected()) {
@@ -538,9 +540,11 @@ static AggregatedBmsData buildAggregate(unsigned long now) {
         agg.valid = true;
         agg.validCount++;
         sumV += packV;
+        // Parallel-pack aggregate: currents add, while pack voltage is averaged.
         agg.totalCurrent += br.bms.get_current();
         sumTemp += br.bms.get_ntc_temperature(0);
 
+        // Conservative inverter gating: any battery disallowing charge/discharge blocks it.
         agg.chargeAllowed = agg.chargeAllowed && br.bms.get_charge_mosfet_status();
         agg.dischargeAllowed = agg.dischargeAllowed && br.bms.get_discharge_mosfet_status();
 
@@ -555,6 +559,7 @@ static AggregatedBmsData buildAggregate(unsigned long now) {
     if (agg.validCount > 0) {
         agg.avgVoltage = sumV / agg.validCount;
         agg.avgTemperature = sumTemp / agg.validCount;
+        // Defensive fallback if a pack reports voltage but no cells.
         if (agg.minCellVoltage == FLT_MAX) agg.minCellVoltage = 0.0f;
     } else {
         agg.chargeAllowed = false;
