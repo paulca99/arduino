@@ -353,7 +353,11 @@ static void cleanupConnection() {
     if (pClient) {
         if (pClient->isConnected()) {
             pClient->disconnect();
-            delay(100); // brief settle to avoid immediate reconnect races in the BT stack
+            unsigned long settleStart = millis();
+            while (millis() - settleStart < 100) {
+                runPeriodicTasks();
+                delay(5);
+            }
         }
         delete pClient;
         pClient = nullptr;
@@ -425,7 +429,7 @@ static bool scanForBattery(BatteryRuntime& br, unsigned long deadlineMs) {
     while (!gScanFoundTarget && millis() < deadlineMs) {
         pBLEScan->setActiveScan(true);
         // Keep the tested interval/window pair from proven single-battery polling sketches.
-        // Values are in BLE units (0.625 ms): 1349≈843 ms interval, 449≈281 ms window.
+        // Values are in BLE units (0.625 ms): 1349≈843.1 ms interval, 449≈280.6 ms window.
         pBLEScan->setInterval(1349);
         pBLEScan->setWindow(449);
         pBLEScan->start(1, false);
@@ -441,7 +445,7 @@ static bool connectToBattery(BatteryRuntime& br) {
     pClient = BLEDevice::createClient();
     if (!pClient) return false;
 
-    pClient->setMTU(517); // max ATT MTU on ESP32 classic BLE
+    pClient->setMTU(517); // request a large MTU to reduce packet fragmentation
     pClient->connect(pRemoteDevice);
 
     if (!pClient->isConnected()) {
@@ -560,7 +564,10 @@ static AggregatedBmsData buildAggregate(unsigned long now) {
         agg.avgVoltage = sumV / agg.validCount;
         agg.avgTemperature = sumTemp / agg.validCount;
         // Defensive fallback if a pack reports voltage but no cells.
-        if (agg.minCellVoltage == FLT_MAX) agg.minCellVoltage = 0.0f;
+        if (agg.minCellVoltage == FLT_MAX) {
+            agg.minCellVoltage = 0.0f;
+            agg.maxCellVoltage = 0.0f;
+        }
     } else {
         agg.chargeAllowed = false;
         agg.dischargeAllowed = false;
@@ -703,14 +710,11 @@ void loop() {
         return;
     }
 
-    uint8_t checked = 0;
-    while (checked < BATTERY_COUNT) {
+    for (uint8_t checked = 0; checked < BATTERY_COUNT; checked++) {
         BatteryRuntime& br = batteries[nextBattery];
         nextBattery = (nextBattery + 1) % BATTERY_COUNT;
-        checked++;
-
         if (!br.enabled) continue;
         pollBattery(br);
-        break;
+        return;
     }
 }
