@@ -204,7 +204,7 @@ size_t BmsStream::write(const uint8_t* buf, size_t size) {
 // -----------------------------------------------------------------------
 // Generic helpers
 // -----------------------------------------------------------------------
-static bool hasValidBatteryData(const BatteryRuntime& br) {
+static bool hasValidBatteryData(BatteryRuntime& br) {
     return br.bms.get_num_cells() > 0 && br.bms.get_voltage() > 0.0f;
 }
 
@@ -226,7 +226,7 @@ static String card(const String& label, const String& value, const String& cls =
     return c;
 }
 
-static void appendBatterySection(String& html, const BatteryRuntime& br, unsigned long now) {
+static void appendBatterySection(String& html, BatteryRuntime& br, unsigned long now) {
     uint8_t numCells = br.bms.get_num_cells();
     float voltage = br.bms.get_voltage();
     float current = br.bms.get_current();
