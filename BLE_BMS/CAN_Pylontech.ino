@@ -1,5 +1,6 @@
 #include "driver/twai.h"
 #include <bms2.h>
+#include "BatteryAggregate.h"
 
 // -----------------------------------------------------------------------
 // Pylontech CAN protocol for Solis S5-EH1P3.6K-L
@@ -171,15 +172,15 @@ static void can_send_limits() {
 // retained because the JBD BMS can report 0% SoC whenever an alarm fires.
 // See SOC_EMA_TAU_S above for smoothing details and tuning guidance.
 // -----------------------------------------------------------------------
-static void can_send_soc(OverkillSolarBms2& bms) {
+static void can_send_soc(const AggregatedBmsData& agg) {
     // EMA state — persists across calls; filteredV < 0 means "not yet seeded".
     static float         filteredV = -1.0f;
     static unsigned long lastEmaMs = 0;
 
-    float        rawV  = bms.get_voltage();
+    float        rawV  = agg.avgVoltage;
     unsigned long nowMs = millis();
 
-    if (rawV > 0.0f) {
+    if (agg.valid && rawV > 0.0f) {
         if (filteredV < 0.0f) {
             // First valid reading: seed the filter so we start from a sensible
             // voltage immediately rather than ramping up from 0 V.
@@ -218,10 +219,10 @@ static void can_send_soc(OverkillSolarBms2& bms) {
 // -----------------------------------------------------------------------
 // 0x356 — Voltage, current, temperature
 // -----------------------------------------------------------------------
-static void can_send_measurements(OverkillSolarBms2& bms) {
-    int16_t voltage = (int16_t)(bms.get_voltage() * 100.0f);  // e.g. 54.9V → 5490
-    int16_t current = (int16_t)(bms.get_current() * 10.0f);  // e.g. 12.3A → 123 (signed)
-    int16_t temp    = (int16_t)(bms.get_ntc_temperature(0) * 10.0f);
+static void can_send_measurements(const AggregatedBmsData& agg) {
+    int16_t voltage = (int16_t)(agg.avgVoltage * 100.0f);   // parallel packs: average pack voltage
+    int16_t current = (int16_t)(agg.totalCurrent * 10.0f);  // parallel packs: total current
+    int16_t temp    = (int16_t)(agg.avgTemperature * 10.0f);
 
     twai_message_t msg;
     msg.identifier       = 0x356;
@@ -239,21 +240,14 @@ static void can_send_measurements(OverkillSolarBms2& bms) {
 // -----------------------------------------------------------------------
 // 0x359 — Protection & alarm flags
 // -----------------------------------------------------------------------
-static void can_send_alarms(OverkillSolarBms2& bms) {
-    // Calculate cell min/max for over/under voltage detection
-    uint8_t  numCells = bms.get_num_cells();
-    float minV = 9999, maxV = 0;
-    for (uint8_t c = 0; c < numCells; c++) {
-        float v = bms.get_cell_voltage(c);
-        if (v < minV) minV = v;
-        if (v > maxV) maxV = v;
-    }
-
+static void can_send_alarms(const AggregatedBmsData& agg) {
+    float minV = agg.minCellVoltage;
+    float maxV = agg.maxCellVoltage;
     uint8_t protection = 0;
     if (maxV > 4.20f)  bitSet(protection, 1);  // cell overvoltage  — NMC max 4.20V
     if (minV < 2.75f)  bitSet(protection, 2);  // cell undervoltage — NMC cutoff 2.75V
-    if (bms.get_ntc_temperature(0) > 55.0f) bitSet(protection, 3);  // high temp
-    if (bms.get_ntc_temperature(0) <  0.0f) bitSet(protection, 4);  // low temp
+    if (agg.avgTemperature > 55.0f) bitSet(protection, 3);  // high temp
+    if (agg.avgTemperature <  0.0f) bitSet(protection, 4);  // low temp
 
     twai_message_t msg;
     msg.identifier       = 0x359;
@@ -272,10 +266,10 @@ static void can_send_alarms(OverkillSolarBms2& bms) {
 // -----------------------------------------------------------------------
 // 0x35C — Charge/discharge request flags
 // -----------------------------------------------------------------------
-static void can_send_request(OverkillSolarBms2& bms) {
+static void can_send_request(const AggregatedBmsData& agg) {
     uint8_t flags = 0;
-    if (bms.get_charge_mosfet_status())    flags |= 0x80;
-    if (bms.get_discharge_mosfet_status()) flags |= 0x40;
+    if (agg.chargeAllowed)    flags |= 0x80;
+    if (agg.dischargeAllowed) flags |= 0x40;
 
     twai_message_t msg;
     msg.identifier       = 0x35C;
@@ -328,12 +322,12 @@ static void can_send_alive() {
 // -----------------------------------------------------------------------
 // Send all Pylontech frames — call every 100ms from main loop
 // -----------------------------------------------------------------------
-void sendCANFrames(OverkillSolarBms2& bms) {
+void sendCANFrames(const AggregatedBmsData& agg) {
     can_send_limits();
-    can_send_soc(bms);
-    can_send_measurements(bms);
-    can_send_alarms(bms);
-    can_send_request(bms);
+    can_send_soc(agg);
+    can_send_measurements(agg);
+    can_send_alarms(agg);
+    can_send_request(agg);
     can_send_manufacturer();
     can_send_alive();
 }
