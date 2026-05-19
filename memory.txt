@@ -16,6 +16,7 @@ Project memory for BLE_BMS multi-battery work.
 - Earlier evidence suggested startup failures while bringing up the 3rd or 4th BLE connection in the full sketch, even though a stripped-down persistent BLE test sketch had previously handled 3 batteries.
 - Interpretation from those tests: 3 persistent classic BLE connections may be possible in isolation, but not necessarily in the full production sketch once WiFi, WebServer, CAN, and the rest of the application are active.
 - Practical conclusion from early tests: the issue was likely total system pressure / coexistence / resource limits in the full sketch rather than just the raw battery count alone.
+- Separate historical note now captured explicitly: an earlier classic-BLE test sketch had already successfully read all cell voltages, so per-cell data over classic BLE is known to be achievable in a test configuration.
 - User tested 2 batteries in the full sketch; 2 batteries worked, but the web page was hit-and-miss / unreliable.
 - That pointed to the web server being starved by blocking BLE request/response handling in the earlier implementation.
 - The blocking pattern that needed changing was the old requestBatterySnapshot()-style logic: send request, wait in a loop for reply/timeout, then move on.
@@ -75,3 +76,4 @@ Project memory for BLE_BMS multi-battery work.
 - Purpose of memory.txt: act as an in-repo project log / memory so future sessions can read and continue from prior findings.
 - User explicitly asked to append everything known from the conversation to memory.txt.
 - User granted standing permission to update memory.txt without asking each time.
+- User later pointed out that if this memory mechanism had existed earlier, it would have preserved the fact that an earlier classic-BLE test sketch had already succeeded in reading all cells; this reminder was added here so it is not lost again.
