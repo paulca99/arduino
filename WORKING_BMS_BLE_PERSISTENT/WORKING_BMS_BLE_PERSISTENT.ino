@@ -97,8 +97,12 @@ static bool isBatteryConnected(const BatteryState& battery) {
            battery.tx != nullptr;
 }
 
-static bool timeReached(unsigned long deadlineMs) {
+static bool hasDeadlinePassed(unsigned long deadlineMs) {
     return (unsigned long)(millis() - deadlineMs) < 0x80000000UL;
+}
+
+static uint32_t scanDurationSeconds(unsigned long durationMs) {
+    return (uint32_t)((durationMs + (MS_PER_SECOND - 1)) / MS_PER_SECOND);
 }
 
 static int enabledBatteryCount() {
@@ -124,19 +128,24 @@ static void resetPacketAssembly(BatteryState& battery) {
     battery.gotPacket03 = false;
 }
 
-static uint16_t calcChecksum(const uint8_t* data) {
+static uint16_t calcChecksum(const uint8_t* data, int length) {
+    if (data == nullptr || length < 7) return 0;
+
     int checksum = 0x10000;
     int dataLength = data[3];
+    if (length < dataLength + 7) return 0;
+
     for (int i = 0; i < dataLength + 1; i++) checksum -= data[i + 3];
     return (uint16_t)checksum;
 }
 
 static bool checksumValid(const uint8_t* data, int length) {
+    if (data == nullptr) return false;
     if (length < 7) return false;
     int checksumIndex = data[3] + 4;
     if (checksumIndex + 1 >= length) return false;
     uint16_t got = ((uint16_t)data[checksumIndex] << 8) | data[checksumIndex + 1];
-    return calcChecksum(data) == got;
+    return calcChecksum(data, length) == got;
 }
 
 static void notifyCallback(BLERemoteCharacteristic* characteristic,
@@ -295,7 +304,7 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
         unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
         if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
-        pBLEScan->start((uint32_t)((sliceMs + (MS_PER_SECOND - 1)) / MS_PER_SECOND), false);
+        pBLEScan->start(scanDurationSeconds(sliceMs), false);
         pBLEScan->clearResults();
     }
 
@@ -319,7 +328,7 @@ static bool scanForBattery(BatteryState& battery, unsigned long timeoutMs) {
         unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
         if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
-        pBLEScan->start((uint32_t)((sliceMs + (MS_PER_SECOND - 1)) / MS_PER_SECOND), false);
+        pBLEScan->start(scanDurationSeconds(sliceMs), false);
         pBLEScan->clearResults();
     }
 
@@ -380,13 +389,13 @@ static bool connectBattery(BatteryState& battery) {
 }
 
 static bool requestBatterySnapshot(BatteryState& battery) {
-    static const uint8_t cmd3[7] = {0xDD, 0xA5, 0x03, 0x00, 0xFF, 0xFD, 0x77};
+    static uint8_t cmd3[7] = {0xDD, 0xA5, 0x03, 0x00, 0xFF, 0xFD, 0x77};
 
     if (!isBatteryConnected(battery)) return false;
 
     resetPacketAssembly(battery);
     battery.lastRequestMs = millis();
-    battery.tx->writeValue((uint8_t*)cmd3, sizeof(cmd3), false);
+    battery.tx->writeValue(cmd3, sizeof(cmd3), false);
 
     unsigned long deadlineMs = millis() + RESPONSE_TIMEOUT_MS;
     while (millis() < deadlineMs) {
@@ -539,7 +548,7 @@ void loop() {
                               battery.name);
             }
         } else if (battery.nextReconnectMs != 0 &&
-                   timeReached(battery.nextReconnectMs)) {
+                   hasDeadlinePassed(battery.nextReconnectMs)) {
             bool ok = reconnectBattery(battery);
             Serial.printf("[%s] reconnect %s\n",
                           battery.name,
