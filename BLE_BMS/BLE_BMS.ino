@@ -39,9 +39,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BLE_SCAN_WINDOW_UNITS       449
 #define CONNECT_DELAY_MS            100
 #define REQUEST_DELAY_MS            150
+#define REQUEST_INTERVAL_MS        2000
 #define RESPONSE_TIMEOUT_MS        1200
-#define RESPONSE_POLL_MS             15
-#define BETWEEN_BATTERIES_MS         30
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
 #define PACKET03_MIN_LEN            24
@@ -82,6 +81,8 @@ struct BatteryState {
     unsigned long lastGoodDataMs = 0;
     unsigned long lastDisconnectMs = 0;
     unsigned long nextReconnectMs = 0;
+    unsigned long lastRequestMs = 0;
+    unsigned long requestDeadlineMs = 0;
     unsigned long okReads = 0;
     unsigned long failedReads = 0;
     unsigned long disconnectCount = 0;
@@ -96,6 +97,7 @@ struct BatteryState {
     int expectedLen = 0;
     bool packetError = false;
     bool gotPacket03 = false;
+    bool requestInFlight = false;
 };
 
 struct AggregateSnapshot {
@@ -308,6 +310,11 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     }
 
     parsePacket03(battery);
+    if (battery.requestInFlight && battery.gotPacket03) {
+        battery.requestInFlight = false;
+        battery.requestDeadlineMs = 0;
+        battery.okReads++;
+    }
 }
 
 class ClientCallbacks : public BLEClientCallbacks {
@@ -331,6 +338,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.service = nullptr;
         battery.rx = nullptr;
         battery.tx = nullptr;
+        battery.requestInFlight = false;
         battery.lastDisconnectMs = millis();
         battery.nextReconnectMs = battery.lastDisconnectMs + RECONNECT_INTERVAL_MS;
         battery.disconnectCount++;
@@ -398,6 +406,8 @@ static void cleanupBatteryClient(int index) {
     battery.service = nullptr;
     battery.rx = nullptr;
     battery.tx = nullptr;
+    battery.requestInFlight = false;
+    battery.requestDeadlineMs = 0;
     resetPacketAssembly(battery);
 }
 
@@ -517,6 +527,10 @@ static bool connectBattery(int index) {
     delay(REQUEST_DELAY_MS);
     battery.connected = battery.client->isConnected();
     battery.connectedAtMs = millis();
+    battery.requestInFlight = false;
+    battery.requestDeadlineMs = 0;
+    // Backdate by one interval so first connected poll runs immediately.
+    battery.lastRequestMs = millis() - REQUEST_INTERVAL_MS;
 
     if (battery.connected) {
         Serial.printf("[%s] ready: connected + notifications registered\n", batteryConfigs[index].name);
@@ -524,28 +538,34 @@ static bool connectBattery(int index) {
     return battery.connected;
 }
 
-static bool requestBatterySnapshot(int index) {
+static void serviceBatteryPolling(int index, unsigned long nowMs) {
     static uint8_t cmd3[7] = {0xDD, 0xA5, 0x03, 0x00, 0xFF, 0xFD, 0x77};
 
-    if (!isBatteryConnected(index)) return false;
+    if (!isBatteryConnected(index)) return;
 
     BatteryState& battery = batteries[index];
-    resetPacketAssembly(battery);
-    battery.tx->writeValue(cmd3, sizeof(cmd3), false);
-
-    unsigned long deadlineMs = millis() + RESPONSE_TIMEOUT_MS;
-    while (!hasDeadlinePassed(deadlineMs)) {
-        if (!isBatteryConnected(index)) break;
-        if (battery.gotPacket03) {
-            battery.okReads++;
-            return true;
+    if (battery.requestInFlight) {
+        if (hasDeadlinePassed(battery.requestDeadlineMs)) {
+            battery.requestInFlight = false;
+            battery.requestDeadlineMs = 0;
+            battery.failedReads++;
         }
-        if (wifiReady) server.handleClient();
-        delay(RESPONSE_POLL_MS);
+        return;
     }
 
-    battery.failedReads++;
-    return false;
+    if ((nowMs - battery.lastRequestMs) < REQUEST_INTERVAL_MS) return;
+
+    resetPacketAssembly(battery);
+    battery.lastRequestMs = nowMs;
+    battery.requestDeadlineMs = nowMs + RESPONSE_TIMEOUT_MS;
+    battery.requestInFlight = true;
+
+    bool ok = battery.tx->writeValue(cmd3, sizeof(cmd3), false);
+    if (!ok) {
+        battery.requestInFlight = false;
+        battery.requestDeadlineMs = 0;
+        battery.failedReads++;
+    }
 }
 
 static bool reconnectBattery(int index) {
@@ -864,14 +884,13 @@ void loop() {
         if (!batteryConfigs[i].enabled) continue;
 
         if (isBatteryConnected(i)) {
-            requestBatterySnapshot(i);
+            serviceBatteryPolling(i, millis());
         } else if (shouldAttemptReconnect(i, millis())) {
             bool ok = reconnectBattery(i);
             Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
 
         if (wifiReady) server.handleClient();
-        delay(BETWEEN_BATTERIES_MS);
     }
 
     aggregate = buildAggregateSnapshot(millis());
@@ -894,5 +913,5 @@ void loop() {
         logBMSData();
     }
 
-    delay(10);
+    delay(5);
 }
