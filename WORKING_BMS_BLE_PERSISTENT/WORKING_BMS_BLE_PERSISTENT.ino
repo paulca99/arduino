@@ -13,6 +13,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
 #define SCAN_SLICE_MS              1200
 #define MIN_SCAN_SLICE_MS           200
+// Matches the scan settings used in WORKING_BMS_BLE/WORKING_BMS_BLE.ino.
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
 #define MS_PER_SECOND              1000
@@ -94,6 +95,10 @@ static bool isBatteryConnected(const BatteryState& battery) {
            battery.client->isConnected() &&
            battery.rx != nullptr &&
            battery.tx != nullptr;
+}
+
+static bool timeReached(unsigned long deadlineMs) {
+    return (unsigned long)(millis() - deadlineMs) < 0x80000000UL;
 }
 
 static int enabledBatteryCount() {
@@ -281,7 +286,6 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
     }
 
     pBLEScan->setActiveScan(true);
-    // Reuse the interval/window values from the working classic BLE sketch.
     pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
     pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
 
@@ -306,7 +310,6 @@ static bool scanForBattery(BatteryState& battery, unsigned long timeoutMs) {
     }
 
     pBLEScan->setActiveScan(true);
-    // Reuse the interval/window values from the working classic BLE sketch.
     pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
     pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
 
@@ -536,7 +539,7 @@ void loop() {
                               battery.name);
             }
         } else if (battery.nextReconnectMs != 0 &&
-                   (long)(millis() - battery.nextReconnectMs) >= 0) {
+                   timeReached(battery.nextReconnectMs)) {
             bool ok = reconnectBattery(battery);
             Serial.printf("[%s] reconnect %s\n",
                           battery.name,
