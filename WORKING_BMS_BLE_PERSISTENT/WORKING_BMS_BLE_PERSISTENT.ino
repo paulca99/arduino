@@ -9,6 +9,18 @@ static BLEUUID serviceUUID("0000ff00-0000-1000-8000-00805f9b34fb");
 static BLEUUID charUUID_rx("0000ff01-0000-1000-8000-00805f9b34fb");
 static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 
+#define BMS1_NAME "Battery 1"
+#define BMS1_MAC  "aa:bb:cc:dd:ee:01"
+#define BMS1_ENABLED true
+
+#define BMS2_NAME "Battery 2"
+#define BMS2_MAC  "aa:bb:cc:dd:ee:02"
+#define BMS2_ENABLED true
+
+#define BMS3_NAME "Battery 3"
+#define BMS3_MAC  "aa:bb:cc:dd:ee:03"
+#define BMS3_ENABLED true
+
 #define STARTUP_SCAN_TIMEOUT_MS   15000
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
 #define SCAN_SLICE_MS              1200
@@ -63,9 +75,9 @@ struct BatteryState {
 };
 
 static BatteryState batteries[] = {
-    {"Growatt", "a5:c2:37:49:c7:a2", true},
-    {"Solax", "a4:c1:37:20:4e:3b", true},
-    {"SP14S004P14S40A", "a5:c2:37:51:85:7f", true},
+    {BMS1_NAME, BMS1_MAC, BMS1_ENABLED},
+    {BMS2_NAME, BMS2_MAC, BMS2_ENABLED},
+    {BMS3_NAME, BMS3_MAC, BMS3_ENABLED},
 };
 
 static const int BATTERY_COUNT = sizeof(batteries) / sizeof(batteries[0]);
@@ -248,11 +260,17 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
             targetMac.toLowerCase();
             if (seenMac != targetMac) continue;
 
+            BLEAdvertisedDevice* discoveredDevice = new BLEAdvertisedDevice(advertisedDevice);
+            if (discoveredDevice == nullptr) {
+                Serial.printf("[%s] discovery allocation failed\n", batteries[i].name);
+                return;
+            }
+
             batteries[i].seen = true;
             if (batteries[i].advertisedDevice != nullptr) {
                 delete batteries[i].advertisedDevice;
             }
-            batteries[i].advertisedDevice = new BLEAdvertisedDevice(advertisedDevice);
+            batteries[i].advertisedDevice = discoveredDevice;
 
             Serial.printf("[%s] discovered at %s\n",
                           batteries[i].name,
@@ -299,9 +317,12 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
     pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
 
     unsigned long deadlineMs = millis() + timeoutMs;
-    while (millis() < deadlineMs && seenBatteryCount() < enabledBatteryCount()) {
-        unsigned long remainingMs = (millis() < deadlineMs) ? (deadlineMs - millis()) : 0;
-        unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
+    while (!hasDeadlinePassed(deadlineMs) && seenBatteryCount() < enabledBatteryCount()) {
+        int32_t remainingMs = (int32_t)(deadlineMs - millis());
+        if (remainingMs < 0) remainingMs = 0;
+        unsigned long sliceMs = ((unsigned long)remainingMs < SCAN_SLICE_MS)
+                              ? (unsigned long)remainingMs
+                              : SCAN_SLICE_MS;
         if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
         pBLEScan->start(scanDurationSeconds(sliceMs), false);
@@ -323,9 +344,12 @@ static bool scanForBattery(BatteryState& battery, unsigned long timeoutMs) {
     pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
 
     unsigned long deadlineMs = millis() + timeoutMs;
-    while (millis() < deadlineMs && !battery.seen) {
-        unsigned long remainingMs = (millis() < deadlineMs) ? (deadlineMs - millis()) : 0;
-        unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
+    while (!hasDeadlinePassed(deadlineMs) && !battery.seen) {
+        int32_t remainingMs = (int32_t)(deadlineMs - millis());
+        if (remainingMs < 0) remainingMs = 0;
+        unsigned long sliceMs = ((unsigned long)remainingMs < SCAN_SLICE_MS)
+                              ? (unsigned long)remainingMs
+                              : SCAN_SLICE_MS;
         if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
         pBLEScan->start(scanDurationSeconds(sliceMs), false);
@@ -398,7 +422,7 @@ static bool requestBatterySnapshot(BatteryState& battery) {
     battery.tx->writeValue(cmd3, sizeof(cmd3), false);
 
     unsigned long deadlineMs = millis() + RESPONSE_TIMEOUT_MS;
-    while (millis() < deadlineMs) {
+    while (!hasDeadlinePassed(deadlineMs)) {
         if (!isBatteryConnected(battery)) break;
         if (battery.gotPacket03) {
             battery.okReads++;
