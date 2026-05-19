@@ -90,3 +90,11 @@ Project memory for BLE_BMS multi-battery work.
   - most parallel groups are 18P
   - groups 1 and 9 are 20P because those groups had been relatively weak
   - cells are Boston Swing 5300
+- Overnight voltage-monitoring note:
+  - user observed Growatt2 pack voltage dropping from about 44.0 V to 43.7 V over roughly one hour while powering a 60V->12V buck, then a 12V->5V buck, then the ESP32U with external antenna
+  - Growatt2 was not being discharged by the inverter during that period; the electronics load was the apparent load
+  - because the current multi-battery production sketch is not yet scanning individual cell/group voltages, overnight judgement must rely on pack voltage only
+  - pack-average interpretation discussed: 44.0 V / 14S ~= 3.14 V avg per group; 43.7 V / 14S ~= 3.12 V avg; 42.0 V ~= 3.00 V avg; 41.3 V ~= 2.95 V avg; 40.6 V ~= 2.90 V avg
+  - key caution recorded: pack average can hide a weaker group, especially relevant because groups 1 and 9 had historically been weaker
+  - conservative overnight guidance discussed: if pack voltage continues falling toward about 42.5 V, use caution; if it reaches around 42.0 V and is still falling, strongly consider disconnecting the ESP/buck load for the night
+  - specific limitation recorded: without per-group voltage visibility, it is not possible to know whether an individual weak group is already significantly below the pack average
