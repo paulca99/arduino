@@ -9,6 +9,7 @@
 #include <math.h>
 #include <new>
 #include <string.h>
+#include "driver/twai.h"
 
 // -----------------------------------------------------------------------
 // Config
