@@ -40,6 +40,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
 
+// Per-battery persistent BLE connection, telemetry, reconnect timing, and
+// in-flight JBD packet assembly state.
 struct BatteryState {
     const char* name;
     const char* mac;
@@ -143,6 +145,7 @@ static void resetPacketAssembly(BatteryState& battery) {
 static uint16_t calcChecksum(const uint8_t* data, int length) {
     if (data == nullptr || length < 7) return 0;
 
+    // JBD checksum starts at 0x10000 and subtracts the length byte plus payload.
     int checksum = 0x10000;
     int dataLength = data[3];
     if (length < dataLength + 7) return 0;
@@ -173,6 +176,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     if (battery.packetError) return;
 
     if (battery.packetLen == 0) {
+        // 0xDD is the JBD packet start marker and byte 2 == 0x00 means success.
         if (length == 0 || pData[0] != 0xDD) return;
         battery.packetError = (pData[2] != 0x00);
         battery.expectedLen = pData[3] + 7;
@@ -193,6 +197,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     }
 
     if (!checksumValid(battery.packetBuf, battery.packetLen) ||
+        // 0x03 is the JBD "basic info" response packet.
         battery.packetBuf[1] != 0x03) {
         battery.packetError = true;
         return;
@@ -285,6 +290,7 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
 };
 
 static ClientCallbacks clientCallbacks;
+static DiscoveryCallbacks discoveryCallbacks;
 
 static void cleanupBatteryClient(BatteryState& battery) {
     if (battery.client != nullptr) {
@@ -413,6 +419,7 @@ static bool connectBattery(BatteryState& battery) {
 }
 
 static bool requestBatterySnapshot(BatteryState& battery) {
+    // JBD read-basic-info command: DD A5 03 00 FF FD 77.
     static uint8_t cmd3[7] = {0xDD, 0xA5, 0x03, 0x00, 0xFF, 0xFD, 0x77};
 
     if (!isBatteryConnected(battery)) return false;
@@ -510,7 +517,7 @@ void setup() {
     BLEDevice::setPower(ESP_PWR_LVL_P9);
 
     pBLEScan = BLEDevice::getScan();
-    pBLEScan->setAdvertisedDeviceCallbacks(new DiscoveryCallbacks());
+    pBLEScan->setAdvertisedDeviceCallbacks(&discoveryCallbacks);
 
     Serial.printf("Configured entries: %d\n", BATTERY_COUNT);
     for (int i = 0; i < BATTERY_COUNT; i++) {
