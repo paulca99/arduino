@@ -4,16 +4,72 @@ Project memory for BLE_BMS multi-battery work.
 
 - Repository: paulca99/arduino
 - Active branch: copilot/update-ble-bms-to-multi-battery
-- Growatt2 MAC: a5:c2:37:51:85:89
-- Multi-battery persistent BLE sketch initially crashed/rebooted when more batteries were enabled in the full BLE_BMS production sketch.
-- Earlier evidence suggested startup failures while bringing up the 3rd or 4th BLE connection in the full sketch.
-- BLE polling was refactored toward a non-blocking model with per-battery request state and a 2000 ms request cadence.
-- Web responsiveness improved compared with the earlier blocking request loop, but long-run hangs still needed investigation.
-- Debug breadcrumbs/logging were added to help identify whether hangs occurred around BLE connect, getService, getCharacteristic, registerForNotify, or writeValue.
-- A later stable test used only 1 battery (Growatt2) with the CAN bus physically connected to the inverter.
-- In that configuration, the inverter showed CAN OK, the system ran stably for at least ~20 minutes, and the web page refreshed reliably.
-- Working hypothesis: earlier instability may have been worsened by the CAN bus not being physically connected during some previous tests.
-- For overnight testing, 1 battery + connected CAN bus is the current stable baseline.
-- The existing BLE_BMS/BLE_BMS.ino on the repository default branch (master) already exposes per-cell data and computes min/max cell voltages in the single-battery implementation.
-- The current multi-battery sketch does not yet carry per-cell data into BatteryState, so adding min/max cell ID/value there requires porting cell-voltage acquisition/parsing rather than only changing HTML.
-- User preference: keep a project memory file in-repo so previous findings can be reviewed in later sessions.
+- Goal during this conversation was to stabilize the BLE_BMS multi-battery sketch, understand the crashes/hangs, improve web responsiveness, and preserve findings for later sessions.
+- Configured battery list seen in logs:
+  - [0] Growatt  a5:c2:37:49:c7:a2
+  - [1] Solax  a4:c1:37:20:4e:3b
+  - [2] SP14S004P14S40A  a5:c2:37:51:85:7f
+  - [3] Growatt2  a5:c2:37:51:85:89
+- Growatt2 MAC explicitly captured separately as: a5:c2:37:51:85:89
+- Early production-sketch logs showed startup discovery succeeding for the enabled batteries, then an abort/reboot while bringing up the 3rd connection in the full BLE_BMS sketch.
+- Earlier evidence suggested startup failures while bringing up the 3rd or 4th BLE connection in the full sketch, even though a stripped-down persistent BLE test sketch had previously handled 3 batteries.
+- Interpretation from those tests: 3 persistent classic BLE connections may be possible in isolation, but not necessarily in the full production sketch once WiFi, WebServer, CAN, and the rest of the application are active.
+- Practical conclusion from early tests: the issue was likely total system pressure / coexistence / resource limits in the full sketch rather than just the raw battery count alone.
+- User tested 2 batteries in the full sketch; 2 batteries worked, but the web page was hit-and-miss / unreliable.
+- That pointed to the web server being starved by blocking BLE request/response handling in the earlier implementation.
+- The blocking pattern that needed changing was the old requestBatterySnapshot()-style logic: send request, wait in a loop for reply/timeout, then move on.
+- We decided to refactor BLE polling into a non-blocking per-battery state machine.
+- Requested BLE polling changes:
+  - per-battery request state
+  - fields like requestInFlight, lastRequestMs, requestDeadlineMs
+  - request fresh data every 2000 ms per connected battery
+  - let notify callback complete in-flight request asynchronously
+  - mark timeout/failure without blocking the loop
+  - keep persistent classic BLE connections
+  - preserve aggregate CAN output and multi-battery web page
+  - reduce or remove between-battery delays in the active polling path
+- A request was prepared to update the existing PR (#51) on branch copilot/update-ble-bms-to-multi-battery with the non-blocking BLE polling changes.
+- User noted that on GitHub the task only started working after explicitly mentioning @copilot in the PR thread/comment.
+- After the non-blocking work, a later test ran for a couple of minutes and then hung.
+- When that hang happened, the serial monitor stopped updating and the web page just spun.
+- Interpretation: the whole main loop appeared stalled, not just the webpage.
+- Based on that symptom, we suspected a blocking/hung BLE or reconnect/library call rather than only page rendering issues.
+- To investigate the hang, we added/requested breadcrumb and debug logging around the highest-risk BLE operations, especially:
+  - connect()
+  - getService()
+  - getCharacteristic()
+  - registerForNotify()
+  - writeValue()
+- We also added/requested:
+  - loop heartbeat logging
+  - per-battery debug state dumps
+  - timeout logging
+  - cleanup/disconnect logging
+  - heap and WiFi status logging
+- A full debug-instrumented variant of BLE_BMS.ino was drafted from the current file the user pasted.
+- A specific thread-scoped snippet showed growatt2_mac.cpp containing only the string "a5:c2:37:51:85:89".
+- Later, the user simplified the setup to only 1 battery: Growatt2, which is the only one physically connected to the inverter.
+- In that simplified test, the CAN bus was physically connected and the inverter reported CAN OK.
+- In the 1-battery + connected-CAN setup, the system ran stably for at least ~20 minutes and the web page refreshed reliably.
+- Working hypothesis from that result: previous instability may have been worsened by the CAN bus not being physically connected during some earlier tests.
+- Important caution: the 1-battery stable result changed multiple variables at once (battery count, non-blocking BLE behavior, connected CAN), so it does not prove disconnected CAN was the only root cause.
+- However, the 1-battery + connected CAN configuration is the current stable baseline.
+- Because moving batteries is difficult/heavy, the user preferred not to do more multi-battery physical tests that evening.
+- For that night, the user wanted to tweak the web page to show min and max cell ID and value for each battery, then leave the system to run for over 24 hours.
+- The user pointed out that the existing BLE_BMS/BLE_BMS.ino on the repository default branch already returns every single cell.
+- Repository metadata confirmed the repo default branch is master, not main.
+- The BLE_BMS/BLE_BMS.ino file on master was inspected.
+- Findings from the master-branch single-battery sketch:
+  - it uses NimBLEDevice and OverkillSolarBms2 / bms2.h
+  - it already iterates over all cells using bms.get_cell_voltage(c)
+  - it computes min/max/avg/delta cell voltage
+  - it renders every cell in the web page
+- Conclusion from that inspection:
+  - the old single-battery sketch already has per-cell support
+  - the current manual-parser multi-battery sketch does not yet carry per-cell data in BatteryState
+  - therefore, adding min/max cell ID/value to the current multi-battery page is not just an HTML tweak; it requires porting cell-voltage acquisition/parsing into the new per-battery model (or otherwise reusing the old bms2 approach)
+- Suggested practical strategy for the evening was to avoid large protocol changes if the main priority was an overnight stability soak test.
+- User asked for a repo-based memory mechanism so previous discoveries would not need to be re-entered on later days.
+- memory.txt was created on branch copilot/update-ble-bms-to-multi-battery to store project learnings.
+- Purpose of memory.txt: act as an in-repo project log / memory so future sessions can read and continue from prior findings.
+- User explicitly asked to append everything known from the conversation to memory.txt.
