@@ -1,0 +1,19 @@
+## 2026-05-19
+
+Project memory for BLE_BMS multi-battery work.
+
+- Repository: paulca99/arduino
+- Active branch: copilot/update-ble-bms-to-multi-battery
+- Growatt2 MAC: a5:c2:37:51:85:89
+- Multi-battery persistent BLE sketch initially crashed/rebooted when more batteries were enabled in the full BLE_BMS production sketch.
+- Earlier evidence suggested startup failures while bringing up the 3rd or 4th BLE connection in the full sketch.
+- BLE polling was refactored toward a non-blocking model with per-battery request state and a 2000 ms request cadence.
+- Web responsiveness improved compared with the earlier blocking request loop, but long-run hangs still needed investigation.
+- Debug breadcrumbs/logging were added to help identify whether hangs occurred around BLE connect, getService, getCharacteristic, registerForNotify, or writeValue.
+- A later stable test used only 1 battery (Growatt2) with the CAN bus physically connected to the inverter.
+- In that configuration, the inverter showed CAN OK, the system ran stably for at least ~20 minutes, and the web page refreshed reliably.
+- Working hypothesis: earlier instability may have been worsened by the CAN bus not being physically connected during some previous tests.
+- For overnight testing, 1 battery + connected CAN bus is the current stable baseline.
+- The existing BLE_BMS/BLE_BMS.ino on the repository default branch (master) already exposes per-cell data and computes min/max cell voltages in the single-battery implementation.
+- The current multi-battery sketch does not yet carry per-cell data into BatteryState, so adding min/max cell ID/value there requires porting cell-voltage acquisition/parsing rather than only changing HTML.
+- User preference: keep a project memory file in-repo so previous findings can be reviewed in later sessions.
