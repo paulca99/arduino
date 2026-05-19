@@ -77,3 +77,11 @@ Project memory for BLE_BMS multi-battery work.
 - User explicitly asked to append everything known from the conversation to memory.txt.
 - User granted standing permission to update memory.txt without asking each time.
 - User later pointed out that if this memory mechanism had existed earlier, it would have preserved the fact that an earlier classic-BLE test sketch had already succeeded in reading all cells; this reminder was added here so it is not lost again.
+- Memory policy clarified:
+  - standing permission exists to update master/memory.txt whenever useful learnings arise
+  - preferred practice is to append a short summary near the end of a work session/day
+  - this file is a workflow aid only; it does not create autonomous timed actions or scheduled updates
+- End-of-day wrap-up for 2026-05-19:
+  - stable baseline at close of day was 1 battery (Growatt2) with CAN connected and inverter reporting CAN OK
+  - responsive web page and at least ~20 minutes stable runtime were observed in that configuration
+  - next likely future task is porting already-proven classic-BLE per-cell read capability into the current multi-battery production architecture without destabilizing the stable baseline
