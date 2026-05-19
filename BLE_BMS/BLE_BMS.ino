@@ -23,6 +23,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 
 #define CAN_INTERVAL_MS            100
 #define LOG_INTERVAL_MS           5000
+#define HEARTBEAT_INTERVAL_MS     1000
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
 #define DATA_FRESH_MS            15000UL
 
@@ -56,9 +57,10 @@ struct BatteryConfig {
 };
 
 static BatteryConfig batteryConfigs[] = {
-    {"Growatt", "a5:c2:37:49:c7:a2", true},
-    {"Solax", "a4:c1:37:20:4e:3b", true},
-    {"SP14S004P14S40A", "a5:c2:37:51:85:7f", true},
+    {"Growatt", "a5:c2:37:49:c7:a2", false},
+    {"Solax", "a4:c1:37:20:4e:3b", false},
+    {"SP14S004P14S40A", "a5:c2:37:51:85:7f", false},
+    {"Growatt2", "a5:c2:37:51:85:89", true}
 };
 
 static const int BATTERY_COUNT = sizeof(batteryConfigs) / sizeof(batteryConfigs[0]);
@@ -83,8 +85,11 @@ struct BatteryState {
     unsigned long nextReconnectMs = 0;
     unsigned long lastRequestMs = 0;
     unsigned long requestDeadlineMs = 0;
+    unsigned long lastRequestStartedMs = 0;
+    unsigned long lastRequestCompletedMs = 0;
     unsigned long okReads = 0;
     unsigned long failedReads = 0;
+    unsigned long requestTimeouts = 0;
     unsigned long disconnectCount = 0;
 
     float voltage = 0.0f;
@@ -129,6 +134,20 @@ void sendCANFrames(float voltage,
                    float temperature,
                    bool chargeAllowed,
                    bool dischargeAllowed);
+
+static const char* wifiStatusToString(wl_status_t status) {
+    switch (status) {
+        case WL_NO_SHIELD: return "NO_SHIELD";
+        case WL_IDLE_STATUS: return "IDLE";
+        case WL_NO_SSID_AVAIL: return "NO_SSID";
+        case WL_SCAN_COMPLETED: return "SCAN_DONE";
+        case WL_CONNECTED: return "CONNECTED";
+        case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+        case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+        case WL_DISCONNECTED: return "DISCONNECTED";
+        default: return "UNKNOWN";
+    }
+}
 
 static int findBatteryByClient(BLEClient* client) {
     for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -203,6 +222,61 @@ static int connectedBatteryCount() {
     return count;
 }
 
+static void logBatteryDebugState(int index, const char* prefix) {
+    if (index < 0 || index >= BATTERY_COUNT) return;
+
+    BatteryState& battery = batteries[index];
+    unsigned long now = millis();
+    unsigned long ageGood = battery.lastGoodDataMs == 0 ? 0 : (now - battery.lastGoodDataMs);
+    unsigned long ageReq = battery.lastRequestMs == 0 ? 0 : (now - battery.lastRequestMs);
+    long deadlineIn = battery.requestInFlight ? (long)(battery.requestDeadlineMs - now) : 0L;
+
+    Serial.printf(
+        "%s [%s] enabled=%s seen=%s connected=%s hasData=%s reqInFlight=%s "
+        "lastReqAge=%lu lastGoodAge=%lu deadlineIn=%ld packetLen=%d expectedLen=%d "
+        "packetError=%s gotPacket03=%s ok=%lu fail=%lu timeouts=%lu drops=%lu heap=%u wifi=%s\n",
+        prefix,
+        batteryConfigs[index].name,
+        batteryConfigs[index].enabled ? "yes" : "no",
+        battery.seen ? "yes" : "no",
+        isBatteryConnected(index) ? "yes" : "no",
+        battery.hasData ? "yes" : "no",
+        battery.requestInFlight ? "yes" : "no",
+        ageReq,
+        ageGood,
+        deadlineIn,
+        battery.packetLen,
+        battery.expectedLen,
+        battery.packetError ? "yes" : "no",
+        battery.gotPacket03 ? "yes" : "no",
+        battery.okReads,
+        battery.failedReads,
+        battery.requestTimeouts,
+        battery.disconnectCount,
+        ESP.getFreeHeap(),
+        wifiStatusToString(WiFi.status())
+    );
+}
+
+static void logSystemDebugSummary(const char* prefix) {
+    unsigned long now = millis();
+    Serial.printf(
+        "%s now=%lu heap=%u wifi=%s connected=%d/%d enabled=%d\n",
+        prefix,
+        now,
+        ESP.getFreeHeap(),
+        wifiStatusToString(WiFi.status()),
+        connectedBatteryCount(),
+        BATTERY_COUNT,
+        enabledBatteryCount()
+    );
+
+    for (int i = 0; i < BATTERY_COUNT; i++) {
+        if (!batteryConfigs[i].enabled) continue;
+        logBatteryDebugState(i, "  state");
+    }
+}
+
 static void resetPacketAssembly(BatteryState& battery) {
     battery.packetLen = 0;
     battery.expectedLen = 0;
@@ -252,8 +326,6 @@ static void parsePacket03(BatteryState& battery) {
     battery.temperature = 0.0f;
 
     int tempCountIndex = -1;
-    // JBD variants seen in the field expose temperature-count at either byte 25
-    // or 26 depending on firmware payload layout.
     if (battery.packetLen > PACKET03_TEMP_COUNT_IDX_A) {
         tempCountIndex = PACKET03_TEMP_COUNT_IDX_A;
     } else if (battery.packetLen > PACKET03_TEMP_COUNT_IDX_B) {
@@ -290,9 +362,18 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         if (length == 0 || pData[0] != 0xDD) return;
         battery.packetError = (pData[2] != 0x00);
         battery.expectedLen = pData[3] + 7;
+        Serial.printf("[DBG] [%s] notify start chunkLen=%u expected=%d status=0x%02X\n",
+                      batteryConfigs[index].name,
+                      (unsigned)length,
+                      battery.expectedLen,
+                      length > 2 ? pData[2] : 0xFF);
     }
 
     if (battery.packetLen + (int)length > MAX_PACKET_LEN) {
+        Serial.printf("[DBG] [%s] notify overflow packetLen=%d add=%u\n",
+                      batteryConfigs[index].name,
+                      battery.packetLen,
+                      (unsigned)length);
         battery.packetError = true;
         return;
     }
@@ -305,15 +386,27 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     }
 
     if (!checksumValid(battery.packetBuf, battery.packetLen) || battery.packetBuf[1] != 0x03) {
+        Serial.printf("[DBG] [%s] checksum/type fail type=0x%02X len=%d\n",
+                      batteryConfigs[index].name,
+                      battery.packetBuf[1],
+                      battery.packetLen);
         battery.packetError = true;
         return;
     }
 
     parsePacket03(battery);
+
     if (battery.requestInFlight && battery.gotPacket03) {
         battery.requestInFlight = false;
         battery.requestDeadlineMs = 0;
+        battery.lastRequestCompletedMs = millis();
         battery.okReads++;
+
+        Serial.printf("[DBG] [%s] packet complete V=%.2f I=%.2f SoC=%u\n",
+                      batteryConfigs[index].name,
+                      battery.voltage,
+                      battery.current,
+                      battery.soc);
     }
 }
 
@@ -327,6 +420,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.connectedAtMs = millis();
         battery.nextReconnectMs = 0;
         Serial.printf("[%s] connected\n", batteryConfigs[index].name);
+        logBatteryDebugState(index, "[DBG onConnect]");
     }
 
     void onDisconnect(BLEClient* client) override {
@@ -339,6 +433,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.rx = nullptr;
         battery.tx = nullptr;
         battery.requestInFlight = false;
+        battery.requestDeadlineMs = 0;
         battery.lastDisconnectMs = millis();
         battery.nextReconnectMs = battery.lastDisconnectMs + RECONNECT_INTERVAL_MS;
         battery.disconnectCount++;
@@ -346,6 +441,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         Serial.printf("[%s] disconnected (drops=%lu)\n",
                       batteryConfigs[index].name,
                       battery.disconnectCount);
+        logBatteryDebugState(index, "[DBG onDisconnect]");
     }
 };
 
@@ -396,8 +492,15 @@ static DiscoveryCallbacks discoveryCallbacks;
 static void cleanupBatteryClient(int index) {
     BatteryState& battery = batteries[index];
 
+    Serial.printf("[DBG] cleanupBatteryClient start [%s]\n", batteryConfigs[index].name);
+    logBatteryDebugState(index, "[DBG before cleanup]");
+
     if (battery.client != nullptr) {
-        if (battery.client->isConnected()) battery.client->disconnect();
+        if (battery.client->isConnected()) {
+            Serial.printf("[DBG] [%s] before disconnect()\n", batteryConfigs[index].name);
+            battery.client->disconnect();
+            Serial.printf("[DBG] [%s] after disconnect()\n", batteryConfigs[index].name);
+        }
         delete battery.client;
         battery.client = nullptr;
     }
@@ -409,6 +512,8 @@ static void cleanupBatteryClient(int index) {
     battery.requestInFlight = false;
     battery.requestDeadlineMs = 0;
     resetPacketAssembly(battery);
+
+    logBatteryDebugState(index, "[DBG after cleanup]");
 }
 
 static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
@@ -481,13 +586,20 @@ static bool connectBattery(int index) {
 
     BatteryState& battery = batteries[index];
     if (battery.advertisedDevice == nullptr) {
+        Serial.printf("[DBG] [%s] connect skipped: no advertisedDevice\n", batteryConfigs[index].name);
         battery.nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
         return false;
     }
 
+    Serial.printf("[DBG] [%s] connectBattery start\n", batteryConfigs[index].name);
+    logBatteryDebugState(index, "[DBG before connect]");
+
     cleanupBatteryClient(index);
 
+    Serial.printf("[DBG] [%s] before createClient()\n", batteryConfigs[index].name);
     battery.client = BLEDevice::createClient();
+    Serial.printf("[DBG] [%s] after createClient() client=%p\n", batteryConfigs[index].name, battery.client);
+
     if (battery.client == nullptr) {
         Serial.printf("[%s] failed to create BLE client\n", batteryConfigs[index].name);
         return false;
@@ -496,28 +608,45 @@ static bool connectBattery(int index) {
     battery.client->setClientCallbacks(&clientCallbacks);
 
     delay(CONNECT_DELAY_MS);
-    if (!battery.client->connect(battery.advertisedDevice)) {
+
+    Serial.printf("[DBG] [%s] before connect()\n", batteryConfigs[index].name);
+    bool connectOk = battery.client->connect(battery.advertisedDevice);
+    Serial.printf("[DBG] [%s] after connect() => %s\n", batteryConfigs[index].name, connectOk ? "OK" : "FAIL");
+
+    if (!connectOk) {
         Serial.printf("[%s] connect() failed\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
     }
 
+    Serial.printf("[DBG] [%s] before getService()\n", batteryConfigs[index].name);
     battery.service = battery.client->getService(serviceUUID);
+    Serial.printf("[DBG] [%s] after getService() service=%p\n", batteryConfigs[index].name, battery.service);
+
     if (battery.service == nullptr) {
         Serial.printf("[%s] FF00 service not found\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
     }
 
+    Serial.printf("[DBG] [%s] before getCharacteristic(RX)\n", batteryConfigs[index].name);
     battery.rx = battery.service->getCharacteristic(charUUID_rx);
+    Serial.printf("[DBG] [%s] after getCharacteristic(RX) rx=%p\n", batteryConfigs[index].name, battery.rx);
+
     if (battery.rx == nullptr || !battery.rx->canNotify()) {
         Serial.printf("[%s] FF01 notify characteristic not found\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
     }
-    battery.rx->registerForNotify(notifyCallback);
 
+    Serial.printf("[DBG] [%s] before registerForNotify()\n", batteryConfigs[index].name);
+    battery.rx->registerForNotify(notifyCallback);
+    Serial.printf("[DBG] [%s] after registerForNotify()\n", batteryConfigs[index].name);
+
+    Serial.printf("[DBG] [%s] before getCharacteristic(TX)\n", batteryConfigs[index].name);
     battery.tx = battery.service->getCharacteristic(charUUID_tx);
+    Serial.printf("[DBG] [%s] after getCharacteristic(TX) tx=%p\n", batteryConfigs[index].name, battery.tx);
+
     if (battery.tx == nullptr || (!battery.tx->canWrite() && !battery.tx->canWriteNoResponse())) {
         Serial.printf("[%s] FF02 write characteristic not found\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
@@ -529,12 +658,13 @@ static bool connectBattery(int index) {
     battery.connectedAtMs = millis();
     battery.requestInFlight = false;
     battery.requestDeadlineMs = 0;
-    // Backdate by one interval so first connected poll runs immediately.
     battery.lastRequestMs = millis() - REQUEST_INTERVAL_MS;
 
     if (battery.connected) {
         Serial.printf("[%s] ready: connected + notifications registered\n", batteryConfigs[index].name);
     }
+
+    logBatteryDebugState(index, "[DBG after connect]");
     return battery.connected;
 }
 
@@ -544,11 +674,21 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     if (!isBatteryConnected(index)) return;
 
     BatteryState& battery = batteries[index];
+
     if (battery.requestInFlight) {
         if (hasDeadlinePassed(battery.requestDeadlineMs)) {
+            Serial.printf("[DBG] [%s] request timeout now=%lu deadline=%lu packetLen=%d expected=%d packetError=%s\n",
+                          batteryConfigs[index].name,
+                          nowMs,
+                          battery.requestDeadlineMs,
+                          battery.packetLen,
+                          battery.expectedLen,
+                          battery.packetError ? "yes" : "no");
             battery.requestInFlight = false;
             battery.requestDeadlineMs = 0;
             battery.failedReads++;
+            battery.requestTimeouts++;
+            logBatteryDebugState(index, "[DBG timeout]");
         }
         return;
     }
@@ -557,14 +697,27 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 
     resetPacketAssembly(battery);
     battery.lastRequestMs = nowMs;
+    battery.lastRequestStartedMs = nowMs;
     battery.requestDeadlineMs = nowMs + RESPONSE_TIMEOUT_MS;
     battery.requestInFlight = true;
 
+    Serial.printf("[DBG] [%s] before writeValue reqAge=%lu heap=%u\n",
+                  batteryConfigs[index].name,
+                  nowMs - battery.lastRequestMs,
+                  ESP.getFreeHeap());
+
     bool ok = battery.tx->writeValue(cmd3, sizeof(cmd3), false);
+
+    Serial.printf("[DBG] [%s] after writeValue ok=%s\n",
+                  batteryConfigs[index].name,
+                  ok ? "yes" : "no");
+
     if (!ok) {
         battery.requestInFlight = false;
         battery.requestDeadlineMs = 0;
         battery.failedReads++;
+        Serial.printf("[DBG] [%s] writeValue failed immediately\n", batteryConfigs[index].name);
+        logBatteryDebugState(index, "[DBG write fail]");
     }
 }
 
@@ -572,6 +725,7 @@ static bool reconnectBattery(int index) {
     if (isBatteryConnected(index)) return true;
 
     Serial.printf("[%s] reconnect attempt\n", batteryConfigs[index].name);
+    logBatteryDebugState(index, "[DBG before reconnect]");
 
     if (batteries[index].advertisedDevice == nullptr) {
         if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
@@ -684,6 +838,12 @@ static void handleRoot() {
     unsigned long now = millis();
     AggregateSnapshot snap = buildAggregateSnapshot(now);
 
+    Serial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
+                  ESP.getFreeHeap(),
+                  connectedBatteryCount(),
+                  enabledBatteryCount(),
+                  wifiStatusToString(WiFi.status()));
+
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "text/html", "");
 
@@ -789,14 +949,18 @@ static void logBMSData() {
                              ? 0
                              : (now - battery.lastGoodDataMs) / 1000UL;
 
-        Serial.printf("[%s] connected=%s seen=%s ok=%lu fail=%lu drops=%lu age=%lus",
+        Serial.printf("[%s] connected=%s seen=%s ok=%lu fail=%lu timeouts=%lu drops=%lu age=%lus reqInFlight=%s pkt=%d/%d",
                       batteryConfigs[i].name,
                       isBatteryConnected(i) ? "yes" : "no",
                       battery.seen ? "yes" : "no",
                       battery.okReads,
                       battery.failedReads,
+                      battery.requestTimeouts,
                       battery.disconnectCount,
-                      ageSec);
+                      ageSec,
+                      battery.requestInFlight ? "yes" : "no",
+                      battery.packetLen,
+                      battery.expectedLen);
 
         if (battery.hasData) {
             Serial.printf("  %.2f V %.2f A SoC %u%%",
@@ -808,6 +972,7 @@ static void logBMSData() {
         Serial.println();
     }
 
+    logSystemDebugSummary("[DBG summary]");
     Serial.println("=================================");
 }
 
@@ -872,20 +1037,34 @@ void setup() {
     }
 
     aggregate = buildAggregateSnapshot(millis());
+    logSystemDebugSummary("[DBG setup complete]");
 }
 
 static unsigned long lastCAN = 0;
 static unsigned long lastLog = 0;
+static unsigned long lastHeartbeat = 0;
 
 void loop() {
+    unsigned long now = millis();
+
+    if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+        lastHeartbeat = now;
+        Serial.printf("[loop] heartbeat now=%lu heap=%u wifi=%s connected=%d/%d\n",
+                      now,
+                      ESP.getFreeHeap(),
+                      wifiStatusToString(WiFi.status()),
+                      connectedBatteryCount(),
+                      enabledBatteryCount());
+    }
+
     if (wifiReady) server.handleClient();
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
         if (!batteryConfigs[i].enabled) continue;
 
         if (isBatteryConnected(i)) {
-            serviceBatteryPolling(i, millis());
-        } else if (shouldAttemptReconnect(i, millis())) {
+            serviceBatteryPolling(i, now);
+        } else if (shouldAttemptReconnect(i, now)) {
             bool ok = reconnectBattery(i);
             Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
@@ -893,9 +1072,8 @@ void loop() {
         if (wifiReady) server.handleClient();
     }
 
-    aggregate = buildAggregateSnapshot(millis());
+    aggregate = buildAggregateSnapshot(now);
 
-    unsigned long now = millis();
     if (now - lastCAN >= CAN_INTERVAL_MS) {
         lastCAN = now;
         if (isAggregateUsable(aggregate, now)) {
