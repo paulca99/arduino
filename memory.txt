@@ -85,3 +85,8 @@ Project memory for BLE_BMS multi-battery work.
   - stable baseline at close of day was 1 battery (Growatt2) with CAN connected and inverter reporting CAN OK
   - responsive web page and at least ~20 minutes stable runtime were observed in that configuration
   - next likely future task is porting already-proven classic-BLE per-cell read capability into the current multi-battery production architecture without destabilizing the stable baseline
+- Additional battery hardware note captured after wrap-up:
+  - Growatt2 is a 14S battery
+  - most parallel groups are 18P
+  - groups 1 and 9 are 20P because those groups had been relatively weak
+  - cells are Boston Swing 5300
