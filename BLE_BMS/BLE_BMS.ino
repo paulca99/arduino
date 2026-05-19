@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <math.h>
+#include <new>
 #include <string.h>
 
 // -----------------------------------------------------------------------
@@ -42,6 +43,11 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BETWEEN_BATTERIES_MS         30
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
+#define PACKET03_MIN_LEN            24
+#define PACKET03_SOC_INDEX          23
+#define PACKET03_FET_INDEX          24
+#define PACKET03_TEMP_COUNT_IDX_A   26
+#define PACKET03_TEMP_COUNT_IDX_B   25
 
 struct BatteryConfig {
     const char* name;
@@ -158,6 +164,18 @@ static bool isBatteryConnected(int index) {
            battery.tx != nullptr;
 }
 
+static bool shouldAttemptReconnect(int index, unsigned long nowMs) {
+    if (!isBatteryEnabled(index)) return false;
+    if (isBatteryConnected(index)) return false;
+    if (batteries[index].nextReconnectMs == 0) return false;
+    return (int32_t)(nowMs - batteries[index].nextReconnectMs) >= 0;
+}
+
+static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs) {
+    if (snap.valid) return true;
+    return snap.lastFreshMs != 0 && (nowMs - snap.lastFreshMs < BLE_TIMEOUT_MS);
+}
+
 static int enabledBatteryCount() {
     int count = 0;
     for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -195,7 +213,7 @@ static uint16_t calcChecksum(const uint8_t* data, int length) {
     int dataLength = data[3];
     if (length < dataLength + 7) return 0;
 
-    int checksum = 0x10000;
+    uint32_t checksum = 0x10000UL;
     for (int i = 0; i < dataLength + 1; i++) checksum -= data[i + 3];
     return (uint16_t)checksum;
 }
@@ -211,7 +229,7 @@ static bool checksumValid(const uint8_t* data, int length) {
 }
 
 static void parsePacket03(BatteryState& battery) {
-    if (battery.packetLen <= 23) {
+    if (battery.packetLen < PACKET03_MIN_LEN) {
         battery.packetError = true;
         return;
     }
@@ -221,16 +239,23 @@ static void parsePacket03(BatteryState& battery) {
 
     battery.voltage = rawVolts / 100.0f;
     battery.current = rawCurrent / 100.0f;
-    battery.soc = battery.packetBuf[23];
+    battery.soc = battery.packetBuf[PACKET03_SOC_INDEX];
 
-    uint8_t mosStatus = battery.packetLen > 24 ? battery.packetBuf[24] : 0;
+    uint8_t mosStatus = battery.packetLen > PACKET03_FET_INDEX ? battery.packetBuf[PACKET03_FET_INDEX] : 0;
     battery.chargeMos = (mosStatus & 0x01U) != 0;
     battery.dischargeMos = (mosStatus & 0x02U) != 0;
 
     battery.hasTemperature = false;
     battery.temperature = 0.0f;
 
-    int tempCountIndex = battery.packetLen > 26 ? 26 : (battery.packetLen > 25 ? 25 : -1);
+    int tempCountIndex = -1;
+    // JBD variants seen in the field expose temperature-count at either byte 25
+    // or 26 depending on firmware payload layout.
+    if (battery.packetLen > PACKET03_TEMP_COUNT_IDX_A) {
+        tempCountIndex = PACKET03_TEMP_COUNT_IDX_A;
+    } else if (battery.packetLen > PACKET03_TEMP_COUNT_IDX_B) {
+        tempCountIndex = PACKET03_TEMP_COUNT_IDX_B;
+    }
     if (tempCountIndex >= 0) {
         uint8_t tempCount = battery.packetBuf[tempCountIndex];
         int tempStart = tempCountIndex + 1;
@@ -332,7 +357,7 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
             targetMac.toLowerCase();
             if (seenMac != targetMac) continue;
 
-            BLEAdvertisedDevice* discoveredDevice = new BLEAdvertisedDevice(advertisedDevice);
+            BLEAdvertisedDevice* discoveredDevice = new (std::nothrow) BLEAdvertisedDevice(advertisedDevice);
             if (discoveredDevice == nullptr) {
                 Serial.printf("[%s] discovery allocation failed\n", batteryConfigs[i].name);
                 return;
@@ -444,7 +469,10 @@ static bool connectBattery(int index) {
     if (isBatteryConnected(index)) return true;
 
     BatteryState& battery = batteries[index];
-    if (battery.advertisedDevice == nullptr) return false;
+    if (battery.advertisedDevice == nullptr) {
+        battery.nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+        return false;
+    }
 
     cleanupBatteryClient(index);
 
@@ -594,7 +622,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         snap.valid = true;
         snap.voltage = sumVoltage / (float)snap.contributingBatteries;
         snap.current = sumCurrent;
-        snap.soc = (uint8_t)((sumSoc / (float)snap.contributingBatteries) + 0.5f);
+        snap.soc = (uint8_t)roundf(sumSoc / (float)snap.contributingBatteries);
         if (tempCount > 0) {
             snap.hasTemperature = true;
             snap.temperature = sumTemp / (float)tempCount;
@@ -604,13 +632,30 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     return snap;
 }
 
+static String htmlEscape(const String& input) {
+    String out;
+    out.reserve(input.length() + 16);
+    for (size_t i = 0; i < input.length(); i++) {
+        char c = input.charAt(i);
+        switch (c) {
+            case '&': out += F("&amp;"); break;
+            case '<': out += F("&lt;"); break;
+            case '>': out += F("&gt;"); break;
+            case '"': out += F("&quot;"); break;
+            case '\'': out += F("&#39;"); break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
 static void sendCard(const String& label, const String& value, const char* cls = nullptr) {
-    String html = "<div class='card'><div class='label'>" + label + "</div><div class='value";
+    String html = "<div class='card'><div class='label'>" + htmlEscape(label) + "</div><div class='value";
     if (cls != nullptr && cls[0] != '\0') {
         html += " ";
         html += cls;
     }
-    html += "'>" + value + "</div></div>";
+    html += "'>" + htmlEscape(value) + "</div></div>";
     server.sendContent(html);
 }
 
@@ -664,7 +709,9 @@ static void handleRoot() {
                    ? "-"
                    : String((now - battery.lastGoodDataMs) / 1000UL);
 
-        String row = "<tr><td>" + String(cfg.name) + "</td><td class='mono'>" + String(cfg.mac) + "</td><td>" +
+        String row;
+        row.reserve(280);
+        row = "<tr><td>" + htmlEscape(String(cfg.name)) + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
                      String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
                      "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
                      "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
@@ -817,7 +864,7 @@ void loop() {
 
         if (isBatteryConnected(i)) {
             requestBatterySnapshot(i);
-        } else if (batteries[i].nextReconnectMs != 0 && hasDeadlinePassed(batteries[i].nextReconnectMs)) {
+        } else if (shouldAttemptReconnect(i, millis())) {
             bool ok = reconnectBattery(i);
             Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
@@ -831,7 +878,7 @@ void loop() {
     unsigned long now = millis();
     if (now - lastCAN >= CAN_INTERVAL_MS) {
         lastCAN = now;
-        if (aggregate.valid || (aggregate.lastFreshMs != 0 && (now - aggregate.lastFreshMs < BLE_TIMEOUT_MS))) {
+        if (isAggregateUsable(aggregate, now)) {
             sendCANFrames(aggregate.voltage,
                           aggregate.current,
                           aggregate.soc,

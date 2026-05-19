@@ -1,4 +1,5 @@
 #include "driver/twai.h"
+#include <math.h>
 
 // -----------------------------------------------------------------------
 // Pylontech CAN protocol for Solis S5-EH1P3.6K-L
@@ -201,7 +202,10 @@ static void can_send_soc(float packVoltage, uint8_t measuredSoc) {
     // Convert smoothed voltage to SoC — immune to BMS coulomb-counter resets.
     // voltageToSoc() clamps out-of-range inputs, so the -1 sentinel returns 0%.
     uint8_t socFromVoltage = voltageToSoc(filteredV);
-    uint8_t soc = measuredSoc > 0 ? (uint8_t)((socFromVoltage + measuredSoc) / 2) : socFromVoltage;
+    // Blend measured and voltage-derived SoC when measuredSoC is non-zero so CAN
+    // remains stable if one input briefly spikes; if measuredSoC is zero we keep
+    // the voltage-derived value to avoid false "empty" drops from transient resets.
+    uint8_t soc = measuredSoc > 0 ? (uint8_t)roundf((socFromVoltage + measuredSoc) / 2.0f) : socFromVoltage;
     uint8_t soh = 100; // JBD BMS doesn't report SoH — assume 100%
 
     twai_message_t msg;
