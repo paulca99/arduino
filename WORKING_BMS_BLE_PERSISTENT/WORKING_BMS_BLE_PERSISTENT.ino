@@ -12,9 +12,15 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define STARTUP_SCAN_TIMEOUT_MS   15000
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
 #define SCAN_SLICE_MS              1200
+#define MIN_SCAN_SLICE_MS           200
+#define BLE_SCAN_INTERVAL_UNITS    1349
+#define BLE_SCAN_WINDOW_UNITS       449
+#define MS_PER_SECOND              1000
 #define CONNECT_DELAY_MS            100
+#define DISCONNECT_CLEANUP_DELAY_MS  50
 #define REQUEST_DELAY_MS            300
 #define RESPONSE_TIMEOUT_MS        2500
+#define RESPONSE_POLL_MS             20
 #define BETWEEN_BATTERIES_MS        200
 #define BETWEEN_CYCLES_MS          1000
 #define LOG_INTERVAL_MS            5000
@@ -252,7 +258,7 @@ static void cleanupBatteryClient(BatteryState& battery) {
     if (battery.client != nullptr) {
         if (battery.client->isConnected()) {
             battery.client->disconnect();
-            delay(50);
+            delay(DISCONNECT_CLEANUP_DELAY_MS);
         }
         delete battery.client;
         battery.client = nullptr;
@@ -278,12 +284,13 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
     while (millis() < deadlineMs && seenBatteryCount() < enabledBatteryCount()) {
         unsigned long remainingMs = deadlineMs - millis();
         unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
-        if (sliceMs < 200) sliceMs = 200;
+        if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
         pBLEScan->setActiveScan(true);
-        pBLEScan->setInterval(1349);
-        pBLEScan->setWindow(449);
-        pBLEScan->start((uint32_t)((sliceMs + 999) / 1000), false);
+        // Reuse the interval/window values from the working classic BLE sketch.
+        pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
+        pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
+        pBLEScan->start((uint32_t)((sliceMs + (MS_PER_SECOND - 1)) / MS_PER_SECOND), false);
         pBLEScan->clearResults();
     }
 
@@ -301,12 +308,13 @@ static bool scanForBattery(BatteryState& battery, unsigned long timeoutMs) {
     while (millis() < deadlineMs && !battery.seen) {
         unsigned long remainingMs = deadlineMs - millis();
         unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
-        if (sliceMs < 200) sliceMs = 200;
+        if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
         pBLEScan->setActiveScan(true);
-        pBLEScan->setInterval(1349);
-        pBLEScan->setWindow(449);
-        pBLEScan->start((uint32_t)((sliceMs + 999) / 1000), false);
+        // Reuse the interval/window values from the working classic BLE sketch.
+        pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
+        pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
+        pBLEScan->start((uint32_t)((sliceMs + (MS_PER_SECOND - 1)) / MS_PER_SECOND), false);
         pBLEScan->clearResults();
     }
 
@@ -382,7 +390,7 @@ static bool requestBatterySnapshot(BatteryState& battery) {
             battery.okReads++;
             return true;
         }
-        delay(20);
+        delay(RESPONSE_POLL_MS);
     }
 
     battery.failedReads++;
