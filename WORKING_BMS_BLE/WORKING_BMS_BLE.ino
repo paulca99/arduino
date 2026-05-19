@@ -18,7 +18,6 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BMS3_NAME "SP14S004P14S40A"
 #define BMS3_MAC  "a5:c2:37:51:85:7f"
 
-// Timing
 #define PER_BATTERY_TIMEOUT_MS 5000
 #define SCAN_SLICE_MS          1200
 #define CONNECT_DELAY_MS        100
@@ -26,19 +25,17 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RESPONSE_TIMEOUT_MS    2500
 #define BETWEEN_BATTERIES_MS    200
 #define BETWEEN_CYCLES_MS      1000
-
 #define MAX_PACKET_LEN          128
 
 struct BatteryTarget {
     const char* name;
     const char* mac;
-    bool enabled;
 };
 
 BatteryTarget batteries[] = {
-    { BMS1_NAME, BMS1_MAC, true },
-    { BMS2_NAME, BMS2_MAC, true },
-    { BMS3_NAME, BMS3_MAC, true }
+    { BMS1_NAME, BMS1_MAC },
+    { BMS2_NAME, BMS2_MAC },
+    { BMS3_NAME, BMS3_MAC }
 };
 
 static const int BATTERY_COUNT = sizeof(batteries) / sizeof(batteries[0]);
@@ -55,8 +52,6 @@ static const char* currentTargetMac = nullptr;
 static bool targetSeen = false;
 static bool gotPacket03 = false;
 static float lastVoltage = 0.0f;
-static float lastCurrent = 0.0f;
-static uint8_t lastSoc = 0;
 
 static uint8_t packetBuf[MAX_PACKET_LEN];
 static int packetLen = 0;
@@ -73,8 +68,6 @@ void resetPacketAssembly() {
     packetError = false;
     gotPacket03 = false;
     lastVoltage = 0.0f;
-    lastCurrent = 0.0f;
-    lastSoc = 0;
 }
 
 uint16_t calcChecksum(const uint8_t* data) {
@@ -137,13 +130,8 @@ static void notifyCallback(
 
     if (!packetError && expectedLen > 0 && packetLen == expectedLen) {
         if (checksumValid(packetBuf) && packetBuf[1] == 0x03) {
-            uint16_t rawVolts   = ((uint16_t)packetBuf[4] << 8) | packetBuf[5];
-            int16_t  rawCurrent = ((int16_t)packetBuf[6] << 8) | packetBuf[7];
-            uint8_t  rawSoc     = packetBuf[23];
-
+            uint16_t rawVolts = ((uint16_t)packetBuf[4] << 8) | packetBuf[5];
             lastVoltage = rawVolts / 100.0f;
-            lastCurrent = rawCurrent / 100.0f;
-            lastSoc = rawSoc;
             gotPacket03 = true;
         }
     }
@@ -153,17 +141,15 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) override {
         if (currentTargetMac == nullptr) return;
 
+        String name = advertisedDevice.getName().c_str();
         String addr = advertisedDevice.getAddress().toString().c_str();
-        addr.toLowerCase();
 
-        String targetMac = currentTargetMac;
-        targetMac.toLowerCase();
-
-        bool addrOk = (addr == targetMac);
+        bool nameOk = (currentTargetName != nullptr && name == currentTargetName);
+        bool addrOk = (addr == currentTargetMac);
         bool svcOk  = advertisedDevice.haveServiceUUID() &&
                       advertisedDevice.isAdvertisingService(serviceUUID);
 
-        if (addrOk && svcOk) {
+        if ((nameOk || addrOk) && svcOk) {
             targetSeen = true;
 
             if (pRemoteDevice != nullptr) {
@@ -271,17 +257,13 @@ bool requestOneVoltageReadBeforeDeadline(unsigned long deadlineMs) {
     return false;
 }
 
-bool tryReadBattery(const char* name, const char* mac,
-                    float& voltageOut, float& currentOut, uint8_t& socOut,
-                    unsigned long& elapsedOut) {
+bool tryReadBattery(const char* name, const char* mac, float& voltageOut, unsigned long& elapsedOut) {
     unsigned long startMs = millis();
     unsigned long deadlineMs = startMs + PER_BATTERY_TIMEOUT_MS;
 
     currentTargetName = name;
     currentTargetMac = mac;
     voltageOut = 0.0f;
-    currentOut = 0.0f;
-    socOut = 0;
 
     cleanupConnection();
 
@@ -295,8 +277,6 @@ bool tryReadBattery(const char* name, const char* mac,
 
     if (ok) {
         voltageOut = lastVoltage;
-        currentOut = lastCurrent;
-        socOut = lastSoc;
     }
 
     cleanupConnection();
@@ -307,23 +287,11 @@ bool tryReadBattery(const char* name, const char* mac,
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.println();
-    Serial.println("=== 3-battery round-robin classic BLE test ===");
+    Serial.println("=== 3-battery round-robin with 5s timeout ===");
 
     BLEDevice::init("");
-    BLEDevice::setPower(ESP_PWR_LVL_P9);
-
     pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-
-    Serial.printf("Configured entries: %d\n", BATTERY_COUNT);
-    for (int i = 0; i < BATTERY_COUNT; i++) {
-        Serial.printf("  [%d] %s  %s  enabled=%s\n",
-                      i,
-                      batteries[i].name,
-                      batteries[i].mac,
-                      batteries[i].enabled ? "true" : "false");
-    }
 }
 
 void loop() {
@@ -331,43 +299,30 @@ void loop() {
     int cycleOk = 0;
     int cycleFail = 0;
 
-    Serial.printf("\n--- Cycle %lu ---\n", (unsigned long)cycleCount);
-
     for (int i = 0; i < BATTERY_COUNT; i++) {
-        if (!batteries[i].enabled) continue;
-
         float volts = 0.0f;
-        float amps = 0.0f;
-        uint8_t soc = 0;
         unsigned long elapsed = 0;
-
-        bool ok = tryReadBattery(
-            batteries[i].name,
-            batteries[i].mac,
-            volts,
-            amps,
-            soc,
-            elapsed
-        );
+        bool ok = tryReadBattery(batteries[i].name, batteries[i].mac, volts, elapsed);
 
         if (ok) {
             okCount++;
             cycleOk++;
-            Serial.printf("%s  OK   %.2f V  %.2f A  SoC %u%%  %lums\n",
-                          batteries[i].name, volts, amps, soc, elapsed);
+            Serial.printf("%s %.2fV %lums\n", batteries[i].name, volts, elapsed);
         } else {
             failCount++;
             cycleFail++;
-            Serial.printf("%s  FAIL %lums\n", batteries[i].name, elapsed);
+            Serial.printf("%s FAIL %lums\n", batteries[i].name, elapsed);
         }
 
         delay(BETWEEN_BATTERIES_MS);
     }
 
-    Serial.printf("Cycle summary: ok=%d fail=%d totals ok=%lu fail=%lu\n",
-                  cycleOk, cycleFail,
-                  (unsigned long)okCount,
-                  (unsigned long)failCount);
+    Serial.printf("Cycle %lu ok=%d fail=%d totals ok=%lu fail=%lu\n",
+        (unsigned long)cycleCount,
+        cycleOk,
+        cycleFail,
+        (unsigned long)okCount,
+        (unsigned long)failCount);
 
     delay(BETWEEN_CYCLES_MS);
 }
