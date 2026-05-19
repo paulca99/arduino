@@ -98,7 +98,7 @@ static bool isBatteryConnected(const BatteryState& battery) {
 }
 
 static bool hasDeadlinePassed(unsigned long deadlineMs) {
-    return (unsigned long)(millis() - deadlineMs) < 0x80000000UL;
+    return (int32_t)(millis() - deadlineMs) >= 0;
 }
 
 static uint32_t scanDurationSeconds(unsigned long durationMs) {
@@ -192,7 +192,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     }
 
     uint16_t rawVolts = ((uint16_t)battery.packetBuf[4] << 8) | battery.packetBuf[5];
-    int16_t rawCurrent = ((int16_t)battery.packetBuf[6] << 8) | battery.packetBuf[7];
+    int16_t rawCurrent = (int16_t)(((uint16_t)battery.packetBuf[6] << 8) | battery.packetBuf[7]);
 
     battery.voltage = rawVolts / 100.0f;
     battery.current = rawCurrent / 100.0f;
@@ -300,7 +300,7 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
 
     unsigned long deadlineMs = millis() + timeoutMs;
     while (millis() < deadlineMs && seenBatteryCount() < enabledBatteryCount()) {
-        unsigned long remainingMs = deadlineMs - millis();
+        unsigned long remainingMs = (millis() < deadlineMs) ? (deadlineMs - millis()) : 0;
         unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
         if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
@@ -324,7 +324,7 @@ static bool scanForBattery(BatteryState& battery, unsigned long timeoutMs) {
 
     unsigned long deadlineMs = millis() + timeoutMs;
     while (millis() < deadlineMs && !battery.seen) {
-        unsigned long remainingMs = deadlineMs - millis();
+        unsigned long remainingMs = (millis() < deadlineMs) ? (deadlineMs - millis()) : 0;
         unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
         if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
