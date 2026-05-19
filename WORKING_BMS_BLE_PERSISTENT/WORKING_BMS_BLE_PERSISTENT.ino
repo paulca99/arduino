@@ -280,16 +280,17 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
         }
     }
 
+    pBLEScan->setActiveScan(true);
+    // Reuse the interval/window values from the working classic BLE sketch.
+    pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
+    pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
+
     unsigned long deadlineMs = millis() + timeoutMs;
     while (millis() < deadlineMs && seenBatteryCount() < enabledBatteryCount()) {
         unsigned long remainingMs = deadlineMs - millis();
         unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
         if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
-        pBLEScan->setActiveScan(true);
-        // Reuse the interval/window values from the working classic BLE sketch.
-        pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
-        pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
         pBLEScan->start((uint32_t)((sliceMs + (MS_PER_SECOND - 1)) / MS_PER_SECOND), false);
         pBLEScan->clearResults();
     }
@@ -304,16 +305,17 @@ static bool scanForBattery(BatteryState& battery, unsigned long timeoutMs) {
         battery.advertisedDevice = nullptr;
     }
 
+    pBLEScan->setActiveScan(true);
+    // Reuse the interval/window values from the working classic BLE sketch.
+    pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
+    pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
+
     unsigned long deadlineMs = millis() + timeoutMs;
     while (millis() < deadlineMs && !battery.seen) {
         unsigned long remainingMs = deadlineMs - millis();
         unsigned long sliceMs = (remainingMs < SCAN_SLICE_MS) ? remainingMs : SCAN_SLICE_MS;
         if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
-        pBLEScan->setActiveScan(true);
-        // Reuse the interval/window values from the working classic BLE sketch.
-        pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
-        pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
         pBLEScan->start((uint32_t)((sliceMs + (MS_PER_SECOND - 1)) / MS_PER_SECOND), false);
         pBLEScan->clearResults();
     }
@@ -533,7 +535,8 @@ void loop() {
                 Serial.printf("[%s] FAIL waiting for 0x03 response\n",
                               battery.name);
             }
-        } else if (battery.nextReconnectMs != 0 && millis() >= battery.nextReconnectMs) {
+        } else if (battery.nextReconnectMs != 0 &&
+                   (long)(millis() - battery.nextReconnectMs) >= 0) {
             bool ok = reconnectBattery(battery);
             Serial.printf("[%s] reconnect %s\n",
                           battery.name,
