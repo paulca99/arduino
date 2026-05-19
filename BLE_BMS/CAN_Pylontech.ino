@@ -1,5 +1,4 @@
 #include "driver/twai.h"
-#include <bms2.h>
 
 // -----------------------------------------------------------------------
 // Pylontech CAN protocol for Solis S5-EH1P3.6K-L
@@ -171,12 +170,12 @@ static void can_send_limits() {
 // retained because the JBD BMS can report 0% SoC whenever an alarm fires.
 // See SOC_EMA_TAU_S above for smoothing details and tuning guidance.
 // -----------------------------------------------------------------------
-static void can_send_soc(OverkillSolarBms2& bms) {
+static void can_send_soc(float packVoltage, uint8_t measuredSoc) {
     // EMA state — persists across calls; filteredV < 0 means "not yet seeded".
     static float         filteredV = -1.0f;
     static unsigned long lastEmaMs = 0;
 
-    float        rawV  = bms.get_voltage();
+    float        rawV  = packVoltage;
     unsigned long nowMs = millis();
 
     if (rawV > 0.0f) {
@@ -201,7 +200,8 @@ static void can_send_soc(OverkillSolarBms2& bms) {
 
     // Convert smoothed voltage to SoC — immune to BMS coulomb-counter resets.
     // voltageToSoc() clamps out-of-range inputs, so the -1 sentinel returns 0%.
-    uint8_t soc = voltageToSoc(filteredV);
+    uint8_t socFromVoltage = voltageToSoc(filteredV);
+    uint8_t soc = measuredSoc > 0 ? (uint8_t)((socFromVoltage + measuredSoc) / 2) : socFromVoltage;
     uint8_t soh = 100; // JBD BMS doesn't report SoH — assume 100%
 
     twai_message_t msg;
@@ -218,10 +218,10 @@ static void can_send_soc(OverkillSolarBms2& bms) {
 // -----------------------------------------------------------------------
 // 0x356 — Voltage, current, temperature
 // -----------------------------------------------------------------------
-static void can_send_measurements(OverkillSolarBms2& bms) {
-    int16_t voltage = (int16_t)(bms.get_voltage() * 100.0f);  // e.g. 54.9V → 5490
-    int16_t current = (int16_t)(bms.get_current() * 10.0f);  // e.g. 12.3A → 123 (signed)
-    int16_t temp    = (int16_t)(bms.get_ntc_temperature(0) * 10.0f);
+static void can_send_measurements(float packVoltage, float packCurrent, float packTemp) {
+    int16_t voltage = (int16_t)(packVoltage * 100.0f);  // e.g. 54.9V → 5490
+    int16_t current = (int16_t)(packCurrent * 10.0f);  // e.g. 12.3A → 123 (signed)
+    int16_t temp    = (int16_t)(packTemp * 10.0f);
 
     twai_message_t msg;
     msg.identifier       = 0x356;
@@ -239,21 +239,14 @@ static void can_send_measurements(OverkillSolarBms2& bms) {
 // -----------------------------------------------------------------------
 // 0x359 — Protection & alarm flags
 // -----------------------------------------------------------------------
-static void can_send_alarms(OverkillSolarBms2& bms) {
-    // Calculate cell min/max for over/under voltage detection
-    uint8_t  numCells = bms.get_num_cells();
-    float minV = 9999, maxV = 0;
-    for (uint8_t c = 0; c < numCells; c++) {
-        float v = bms.get_cell_voltage(c);
-        if (v < minV) minV = v;
-        if (v > maxV) maxV = v;
-    }
-
+static void can_send_alarms(float packVoltage, float packTemp) {
+    const float maxPackV = (float)PACK_SERIES_CELLS * 4.20f;
+    const float minPackV = (float)PACK_SERIES_CELLS * 2.75f;
     uint8_t protection = 0;
-    if (maxV > 4.20f)  bitSet(protection, 1);  // cell overvoltage  — NMC max 4.20V
-    if (minV < 2.75f)  bitSet(protection, 2);  // cell undervoltage — NMC cutoff 2.75V
-    if (bms.get_ntc_temperature(0) > 55.0f) bitSet(protection, 3);  // high temp
-    if (bms.get_ntc_temperature(0) <  0.0f) bitSet(protection, 4);  // low temp
+    if (packVoltage > maxPackV) bitSet(protection, 1);   // pack overvoltage
+    if (packVoltage < minPackV) bitSet(protection, 2);   // pack undervoltage
+    if (packTemp > 55.0f) bitSet(protection, 3);         // high temp
+    if (packTemp < 0.0f) bitSet(protection, 4);          // low temp
 
     twai_message_t msg;
     msg.identifier       = 0x359;
@@ -272,10 +265,10 @@ static void can_send_alarms(OverkillSolarBms2& bms) {
 // -----------------------------------------------------------------------
 // 0x35C — Charge/discharge request flags
 // -----------------------------------------------------------------------
-static void can_send_request(OverkillSolarBms2& bms) {
+static void can_send_request(bool chargeAllowed, bool dischargeAllowed) {
     uint8_t flags = 0;
-    if (bms.get_charge_mosfet_status())    flags |= 0x80;
-    if (bms.get_discharge_mosfet_status()) flags |= 0x40;
+    if (chargeAllowed) flags |= 0x80;
+    if (dischargeAllowed) flags |= 0x40;
 
     twai_message_t msg;
     msg.identifier       = 0x35C;
@@ -328,12 +321,17 @@ static void can_send_alive() {
 // -----------------------------------------------------------------------
 // Send all Pylontech frames — call every 100ms from main loop
 // -----------------------------------------------------------------------
-void sendCANFrames(OverkillSolarBms2& bms) {
+void sendCANFrames(float voltage,
+                   float current,
+                   uint8_t soc,
+                   float temperature,
+                   bool chargeAllowed,
+                   bool dischargeAllowed) {
     can_send_limits();
-    can_send_soc(bms);
-    can_send_measurements(bms);
-    can_send_alarms(bms);
-    can_send_request(bms);
+    can_send_soc(voltage, soc);
+    can_send_measurements(voltage, current, temperature);
+    can_send_alarms(voltage, temperature);
+    can_send_request(chargeAllowed, dischargeAllowed);
     can_send_manufacturer();
     can_send_alive();
 }
