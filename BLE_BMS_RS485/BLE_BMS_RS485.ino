@@ -51,6 +51,7 @@
 
 // RS485 poll timing; tune here if inverter responses are slow/noisy.
 #define MODBUS_TIMEOUT_MS              180
+#define MODBUS_INTER_FRAME_MS           20
 #define POLL_INTERVAL_MS              1000
 #define INTER_REGISTER_DELAY_MS         15
 #define MONITOR_MUTEX_TIMEOUT_MS       100
@@ -471,13 +472,21 @@ static int readReply(uint8_t* buf, int maxLen, uint32_t timeoutMs) {
   int len = 0;
   uint32_t start = millis();
   uint32_t last = start;
-  // Use both an inter-character timeout (last) and an absolute deadline (start)
-  // so that continuous RS485 noise cannot hold this function open indefinitely.
-  while (millis() - last < timeoutMs && millis() - start < timeoutMs) {
+  bool gotByte = false;
+  // Phase 1: wait up to timeoutMs for any byte from the inverter.
+  // Phase 2: once a byte arrives, exit as soon as the inter-frame gap
+  //          (MODBUS_INTER_FRAME_MS) elapses with no new byte.
+  // The outer absolute-deadline caps total run time even when the RS485
+  // hardware outputs continuous noise (floating bus).
+  while (millis() - start < timeoutMs) {
     while (RS485.available()) {
       uint8_t b = RS485.read();
       if (len < maxLen) buf[len++] = b;
       last = millis();
+      gotByte = true;
+    }
+    if (gotByte && millis() - last >= MODBUS_INTER_FRAME_MS) {
+      break;
     }
     delay(1);
   }

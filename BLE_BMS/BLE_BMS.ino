@@ -36,6 +36,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
 #define SOLIS_MODBUS_TIMEOUT_MS     180
+#define SOLIS_MODBUS_INTER_FRAME_MS  20
 #define SOLIS_POLL_INTERVAL_MS     5000
 #define SOLIS_INTER_REGISTER_DELAY_MS 15
 #define SOLIS_MIN_POLL_WAIT_MS      100
@@ -1143,13 +1144,22 @@ static int readRS485Reply(uint8_t* buf, int maxLen, uint32_t timeoutMs) {
     int len = 0;
     uint32_t start = millis();
     uint32_t last = start;
-    // Use both an inter-character timeout (last) and an absolute deadline (start)
-    // so that continuous RS485 noise cannot hold this function open indefinitely.
-    while (millis() - last < timeoutMs && millis() - start < timeoutMs) {
+    bool gotByte = false;
+    // Phase 1: wait up to timeoutMs for any byte from the inverter.
+    // Phase 2: once a byte arrives, exit as soon as the inter-frame gap
+    //          (SOLIS_MODBUS_INTER_FRAME_MS) elapses with no new byte.
+    // The outer absolute-deadline (millis() - start) caps total run time even
+    // when RS485 hardware outputs continuous noise (floating bus), preventing
+    // the function from looping indefinitely.
+    while (millis() - start < timeoutMs) {
         while (RS485.available()) {
             uint8_t byteValue = RS485.read();
             if (len < maxLen) buf[len++] = byteValue;
             last = millis();
+            gotByte = true;
+        }
+        if (gotByte && millis() - last >= SOLIS_MODBUS_INTER_FRAME_MS) {
+            break;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
