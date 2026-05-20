@@ -44,11 +44,19 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RESPONSE_TIMEOUT_MS        1200
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
+#define MAX_CELLS                   24
 #define PACKET03_MIN_LEN            24
 #define PACKET03_SOC_INDEX          23
 #define PACKET03_FET_INDEX          24
 #define PACKET03_TEMP_COUNT_IDX_A   26
 #define PACKET03_TEMP_COUNT_IDX_B   25
+
+enum BatteryRequestStage : uint8_t {
+    REQUEST_STAGE_IDLE = 0,     // No outstanding request for this battery.
+    REQUEST_STAGE_WAIT_03,      // Waiting for the basic-info response.
+    REQUEST_STAGE_READY_04,     // 0x03 completed; send 0x04 on the next poll step.
+    REQUEST_STAGE_WAIT_04       // Waiting for the cell-voltage response.
+};
 
 struct BatteryConfig {
     const char* name;
@@ -97,12 +105,19 @@ struct BatteryState {
     float temperature = 0.0f;
     uint8_t soc = 0;
 
+    uint16_t cellMv[MAX_CELLS] = {0};
+    uint8_t cellCount = 0;
+    bool hasCellData = false;
+    unsigned long lastCellDataMs = 0;
+
     uint8_t packetBuf[MAX_PACKET_LEN] = {0};
     int packetLen = 0;
     int expectedLen = 0;
     bool packetError = false;
     bool gotPacket03 = false;
+    bool gotPacket04 = false;
     bool requestInFlight = false;
+    BatteryRequestStage requestStage = REQUEST_STAGE_IDLE;
 };
 
 struct AggregateSnapshot {
@@ -232,15 +247,16 @@ static void logBatteryDebugState(int index, const char* prefix) {
     long deadlineIn = battery.requestInFlight ? (long)(battery.requestDeadlineMs - now) : 0L;
 
     Serial.printf(
-        "%s [%s] enabled=%s seen=%s connected=%s hasData=%s reqInFlight=%s "
+        "%s [%s] enabled=%s seen=%s connected=%s hasData=%s hasCellData=%s reqInFlight=%s "
         "lastReqAge=%lu lastGoodAge=%lu deadlineIn=%ld packetLen=%d expectedLen=%d "
-        "packetError=%s gotPacket03=%s ok=%lu fail=%lu timeouts=%lu drops=%lu heap=%u wifi=%s\n",
+        "packetError=%s stage=%u gotPacket03=%s gotPacket04=%s ok=%lu fail=%lu timeouts=%lu drops=%lu heap=%u wifi=%s\n",
         prefix,
         batteryConfigs[index].name,
         batteryConfigs[index].enabled ? "yes" : "no",
         battery.seen ? "yes" : "no",
         isBatteryConnected(index) ? "yes" : "no",
         battery.hasData ? "yes" : "no",
+        battery.hasCellData ? "yes" : "no",
         battery.requestInFlight ? "yes" : "no",
         ageReq,
         ageGood,
@@ -248,7 +264,9 @@ static void logBatteryDebugState(int index, const char* prefix) {
         battery.packetLen,
         battery.expectedLen,
         battery.packetError ? "yes" : "no",
+        (unsigned)battery.requestStage,
         battery.gotPacket03 ? "yes" : "no",
+        battery.gotPacket04 ? "yes" : "no",
         battery.okReads,
         battery.failedReads,
         battery.requestTimeouts,
@@ -282,6 +300,14 @@ static void resetPacketAssembly(BatteryState& battery) {
     battery.expectedLen = 0;
     battery.packetError = false;
     battery.gotPacket03 = false;
+    battery.gotPacket04 = false;
+}
+
+static void clearCellData(BatteryState& battery) {
+    battery.hasCellData = false;
+    battery.cellCount = 0;
+    battery.lastCellDataMs = 0;
+    memset(battery.cellMv, 0, sizeof(battery.cellMv));
 }
 
 static uint16_t calcChecksum(const uint8_t* data, int length) {
@@ -346,6 +372,37 @@ static void parsePacket03(BatteryState& battery) {
     battery.lastGoodDataMs = millis();
 }
 
+static void parsePacket04(BatteryState& battery) {
+    if (battery.packetLen < 7) {
+        battery.packetError = true;
+        return;
+    }
+
+    int payloadLen = battery.packetBuf[3];
+    if (payloadLen <= 0 || (payloadLen % 2) != 0) {
+        battery.packetError = true;
+        return;
+    }
+
+    int count = payloadLen / 2;
+    if (count > MAX_CELLS) count = MAX_CELLS;
+
+    battery.cellCount = (uint8_t)count;
+    for (int i = 0; i < count; i++) {
+        int offset = 4 + (i * 2);
+        battery.cellMv[i] = ((uint16_t)battery.packetBuf[offset] << 8) |
+                            battery.packetBuf[offset + 1];
+    }
+
+    for (int i = count; i < MAX_CELLS; i++) {
+        battery.cellMv[i] = 0;
+    }
+
+    battery.hasCellData = count > 0;
+    battery.lastCellDataMs = battery.hasCellData ? millis() : 0;
+    battery.gotPacket04 = true;
+}
+
 static void notifyCallback(BLERemoteCharacteristic* characteristic,
                            uint8_t* pData,
                            size_t length,
@@ -385,8 +442,8 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         return;
     }
 
-    if (!checksumValid(battery.packetBuf, battery.packetLen) || battery.packetBuf[1] != 0x03) {
-        Serial.printf("[DBG] [%s] checksum/type fail type=0x%02X len=%d\n",
+    if (!checksumValid(battery.packetBuf, battery.packetLen)) {
+        Serial.printf("[DBG] [%s] checksum fail type=0x%02X len=%d\n",
                       batteryConfigs[index].name,
                       battery.packetBuf[1],
                       battery.packetLen);
@@ -394,19 +451,51 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         return;
     }
 
-    parsePacket03(battery);
+    uint8_t packetType = battery.packetBuf[1];
+    bool expect03 = battery.requestStage == REQUEST_STAGE_WAIT_03;
+    bool expect04 = battery.requestStage == REQUEST_STAGE_WAIT_04;
+    if ((packetType == 0x03 && !expect03) ||
+        (packetType == 0x04 && !expect04) ||
+        (packetType != 0x03 && packetType != 0x04)) {
+        Serial.printf("[DBG] [%s] unexpected packet type=0x%02X stage=%u len=%d\n",
+                      batteryConfigs[index].name,
+                      packetType,
+                      (unsigned)battery.requestStage,
+                      battery.packetLen);
+        battery.packetError = true;
+        return;
+    }
 
-    if (battery.requestInFlight && battery.gotPacket03) {
+    if (packetType == 0x03) {
+        parsePacket03(battery);
+    } else {
+        parsePacket04(battery);
+    }
+
+    if (battery.packetError) return;
+
+    if (battery.requestInFlight) {
         battery.requestInFlight = false;
         battery.requestDeadlineMs = 0;
         battery.lastRequestCompletedMs = millis();
-        battery.okReads++;
+        battery.requestStage = (packetType == 0x03) ? REQUEST_STAGE_READY_04 : REQUEST_STAGE_IDLE;
 
-        Serial.printf("[DBG] [%s] packet complete V=%.2f I=%.2f SoC=%u\n",
-                      batteryConfigs[index].name,
-                      battery.voltage,
-                      battery.current,
-                      battery.soc);
+        if (packetType == 0x04) {
+            // Count a successful full 0x03 -> 0x04 polling cycle once.
+            battery.okReads++;
+        }
+
+        if (packetType == 0x03) {
+            Serial.printf("[DBG] [%s] packet03 complete V=%.2f I=%.2f SoC=%u\n",
+                          batteryConfigs[index].name,
+                          battery.voltage,
+                          battery.current,
+                          battery.soc);
+        } else {
+            Serial.printf("[DBG] [%s] packet04 complete cells=%u\n",
+                          batteryConfigs[index].name,
+                          battery.cellCount);
+        }
     }
 }
 
@@ -434,6 +523,8 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.tx = nullptr;
         battery.requestInFlight = false;
         battery.requestDeadlineMs = 0;
+        battery.requestStage = REQUEST_STAGE_IDLE;
+        clearCellData(battery);
         battery.lastDisconnectMs = millis();
         battery.nextReconnectMs = battery.lastDisconnectMs + RECONNECT_INTERVAL_MS;
         battery.disconnectCount++;
@@ -511,6 +602,8 @@ static void cleanupBatteryClient(int index) {
     battery.tx = nullptr;
     battery.requestInFlight = false;
     battery.requestDeadlineMs = 0;
+    battery.requestStage = REQUEST_STAGE_IDLE;
+    clearCellData(battery);
     resetPacketAssembly(battery);
 
     logBatteryDebugState(index, "[DBG after cleanup]");
@@ -670,6 +763,7 @@ static bool connectBattery(int index) {
 
 static void serviceBatteryPolling(int index, unsigned long nowMs) {
     static uint8_t cmd3[7] = {0xDD, 0xA5, 0x03, 0x00, 0xFF, 0xFD, 0x77};
+    static uint8_t cmd4[7] = {0xDD, 0xA5, 0x04, 0x00, 0xFF, 0xFC, 0x77};
 
     if (!isBatteryConnected(index)) return;
 
@@ -686,37 +780,65 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
                           battery.packetError ? "yes" : "no");
             battery.requestInFlight = false;
             battery.requestDeadlineMs = 0;
+            if (battery.requestStage == REQUEST_STAGE_WAIT_04) {
+                clearCellData(battery);
+            }
+            battery.requestStage = REQUEST_STAGE_IDLE;
             battery.failedReads++;
             battery.requestTimeouts++;
+            resetPacketAssembly(battery);
             logBatteryDebugState(index, "[DBG timeout]");
         }
         return;
     }
 
-    if ((nowMs - battery.lastRequestMs) < REQUEST_INTERVAL_MS) return;
+    uint8_t* cmd = cmd3;
+    size_t cmdLen = sizeof(cmd3);
+    BatteryRequestStage nextStage = REQUEST_STAGE_WAIT_03;
+    bool partOfCurrentCycle = false;
+
+    if (battery.requestStage == REQUEST_STAGE_READY_04) {
+        cmd = cmd4;
+        cmdLen = sizeof(cmd4);
+        nextStage = REQUEST_STAGE_WAIT_04;
+        partOfCurrentCycle = true;
+    } else if ((nowMs - battery.lastRequestMs) < REQUEST_INTERVAL_MS) {
+        return;
+    } else {
+        // Keep interval timing anchored to the start of the 0x03 -> 0x04 cycle.
+        battery.lastRequestMs = nowMs;
+    }
 
     resetPacketAssembly(battery);
-    battery.lastRequestMs = nowMs;
     battery.lastRequestStartedMs = nowMs;
     battery.requestDeadlineMs = nowMs + RESPONSE_TIMEOUT_MS;
     battery.requestInFlight = true;
+    battery.requestStage = nextStage;
 
-    Serial.printf("[DBG] [%s] before writeValue reqAge=%lu heap=%u\n",
+    Serial.printf("[DBG] [%s] before writeValue cmd=0x%02X cycle=%s heap=%u\n",
                   batteryConfigs[index].name,
-                  nowMs - battery.lastRequestMs,
+                  cmd[2],
+                  partOfCurrentCycle ? "continue" : "start",
                   ESP.getFreeHeap());
 
-    bool ok = battery.tx->writeValue(cmd3, sizeof(cmd3), false);
+    bool ok = battery.tx->writeValue(cmd, cmdLen, false);
 
-    Serial.printf("[DBG] [%s] after writeValue ok=%s\n",
+    Serial.printf("[DBG] [%s] after writeValue cmd=0x%02X ok=%s\n",
                   batteryConfigs[index].name,
+                  cmd[2],
                   ok ? "yes" : "no");
 
     if (!ok) {
         battery.requestInFlight = false;
         battery.requestDeadlineMs = 0;
+        if (battery.requestStage == REQUEST_STAGE_WAIT_04) {
+            clearCellData(battery);
+        }
+        battery.requestStage = REQUEST_STAGE_IDLE;
         battery.failedReads++;
-        Serial.printf("[DBG] [%s] writeValue failed immediately\n", batteryConfigs[index].name);
+        Serial.printf("[DBG] [%s] writeValue failed immediately for cmd=0x%02X\n",
+                      batteryConfigs[index].name,
+                      cmd[2]);
         logBatteryDebugState(index, "[DBG write fail]");
     }
 }
@@ -824,6 +946,33 @@ static String htmlEscape(const String& input) {
     return out;
 }
 
+static bool getCellMinMax(const BatteryState& battery,
+                          uint8_t& minIndex,
+                          uint16_t& minMv,
+                          uint8_t& maxIndex,
+                          uint16_t& maxMv) {
+    if (!battery.hasCellData || battery.cellCount == 0) return false;
+
+    minIndex = 0;
+    maxIndex = 0;
+    minMv = battery.cellMv[0];
+    maxMv = battery.cellMv[0];
+
+    for (uint8_t i = 1; i < battery.cellCount; i++) {
+        uint16_t mv = battery.cellMv[i];
+        if (mv < minMv) {
+            minMv = mv;
+            minIndex = i;
+        }
+        if (mv > maxMv) {
+            maxMv = mv;
+            maxIndex = i;
+        }
+    }
+
+    return true;
+}
+
 static void sendCard(const String& label, const String& value, const char* cls = nullptr) {
     String html = "<div class='card'><div class='label'>" + htmlEscape(label) + "</div><div class='value";
     if (cls != nullptr && cls[0] != '\0') {
@@ -879,7 +1028,7 @@ static void handleRoot() {
     server.sendContent(F("</div>"));
 
     server.sendContent(F("<h2>Per-battery status</h2><table><tr>"
-                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Data age (s)</th><th>Drops</th>"
+                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
                          "</tr>"));
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -889,22 +1038,103 @@ static void handleRoot() {
         String age = battery.lastGoodDataMs == 0
                    ? "-"
                    : String((now - battery.lastGoodDataMs) / 1000UL);
+        uint8_t minCellIndex = 0;
+        uint8_t maxCellIndex = 0;
+        uint16_t minCellMv = 0;
+        uint16_t maxCellMv = 0;
+        bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
+        String batteryLink = "<a href='/battery?index=" + String(i) + "'>" + htmlEscape(String(cfg.name)) + "</a>";
 
         String row;
-        row.reserve(280);
-        row = "<tr><td>" + htmlEscape(String(cfg.name)) + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
+        row.reserve(512);
+        row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
                      String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
-                     "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
-                     "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
-                     "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
-                     "</td><td>" + (battery.hasTemperature ? String(battery.temperature, 1) : String("-")) +
-                     "</td><td>" + age +
-                     "</td><td>" + String(battery.disconnectCount) + "</td></tr>";
+                      "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
+                      "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
+                      "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
+                      "</td><td>" + (battery.hasTemperature ? String(battery.temperature, 1) : String("-")) +
+                      "</td><td>" + (hasCellStats ? String(minCellMv / 1000.0f, 3) : String("-")) +
+                      "</td><td>" + (hasCellStats ? String(minCellIndex + 1) : String("-")) +
+                      "</td><td>" + (hasCellStats ? String(maxCellMv / 1000.0f, 3) : String("-")) +
+                      "</td><td>" + (hasCellStats ? String(maxCellIndex + 1) : String("-")) +
+                      "</td><td>" + age +
+                      "</td><td>" + String(battery.disconnectCount) + "</td></tr>";
 
         server.sendContent(row);
     }
 
     server.sendContent(F("</table><p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
+    server.sendContent("");
+}
+
+static void handleBatteryDetail() {
+    if (!server.hasArg("index")) {
+        server.send(400, "text/plain", "Missing battery index");
+        return;
+    }
+
+    String indexArg = server.arg("index");
+    if (indexArg.length() == 0) {
+        server.send(400, "text/plain", "Missing battery index");
+        return;
+    }
+    for (size_t i = 0; i < indexArg.length(); i++) {
+        if (!isDigit(indexArg.charAt(i))) {
+            server.send(400, "text/plain", "Invalid battery index");
+            return;
+        }
+    }
+
+    int index = indexArg.toInt();
+    if (index < 0 || index >= BATTERY_COUNT) {
+        server.send(404, "text/plain", "Battery not found");
+        return;
+    }
+
+    const BatteryConfig& cfg = batteryConfigs[index];
+    const BatteryState& battery = batteries[index];
+    unsigned long now = millis();
+    String cellDataAge = (battery.hasCellData && battery.lastCellDataMs != 0)
+                       ? (String((now - battery.lastCellDataMs) / 1000UL) + " s")
+                       : String("n/a");
+
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html", "");
+
+    server.sendContent(F("<!DOCTYPE html><html><head>"
+                         "<meta charset='UTF-8'>"
+                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                         "<meta http-equiv='refresh' content='5'>"
+                         "<title>Battery Cell Detail</title>"
+                         "<style>"
+                         "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
+                         "h1{color:#e0c97f;margin-bottom:4px}a{color:#8ec5ff}table{width:100%;border-collapse:collapse;margin-top:16px}"
+                         "th,td{padding:8px 10px;text-align:center;border-bottom:1px solid #2a2a4a}"
+                         "th{background:#16213e;color:#a0b4cc}.card{background:#16213e;border-radius:8px;padding:12px;margin:12px 0}"
+                         ".mono{font-family:monospace}.muted{color:#a0b4cc}"
+                         "</style></head><body>"));
+
+    server.sendContent(F("<p><a href='/'>Back to summary</a></p>"));
+    server.sendContent(String("<h1>Battery detail: ") + htmlEscape(String(cfg.name)) + "</h1>");
+    server.sendContent(String("<div class='card'><div>MAC: <span class='mono'>") +
+                       htmlEscape(String(cfg.mac)) +
+                       "</span></div>");
+    server.sendContent(String("<div>Connected: ") + (isBatteryConnected(index) ? "yes" : "no") + "</div>");
+    server.sendContent(String("<div>Cell data age: ") + cellDataAge + "</div></div>");
+
+    if (!battery.hasCellData || battery.cellCount == 0) {
+        server.sendContent(F("<p class='muted'>No valid cell data available yet.</p></body></html>"));
+        server.sendContent("");
+        return;
+    }
+
+    server.sendContent("<h2>Cell voltages (" + String(battery.cellCount) + ")</h2>");
+    server.sendContent(F("<table><tr><th>Cell</th><th>Voltage (V)</th></tr>"));
+    for (uint8_t i = 0; i < battery.cellCount; i++) {
+        String row = "<tr><td>" + String(i + 1) + "</td><td>" + String(battery.cellMv[i] / 1000.0f, 3) + "</td></tr>";
+        server.sendContent(row);
+    }
+    server.sendContent(F("</table></body></html>"));
     server.sendContent("");
 }
 
@@ -994,6 +1224,7 @@ void setup() {
     if (wifiOk) {
         Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
+        server.on("/battery", handleBatteryDetail);
         server.begin();
         Serial.println("Web server started on port 80");
         wifiReady = true;
