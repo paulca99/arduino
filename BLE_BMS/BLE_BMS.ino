@@ -1184,8 +1184,8 @@ static bool readSolisDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) 
 static void solisPollTask(void* pv) {
     (void)pv;
 
-    uint32_t noSuccessStreak = 0;
-    uint32_t noSuccessPasses = 0;
+    unsigned long noSuccessStreak = 0;
+    unsigned long noSuccessPasses = 0;
     unsigned long lastNoSuccessLogMs = 0;
 
     for (;;) {
@@ -1213,7 +1213,8 @@ static void solisPollTask(void* pv) {
                 errorsThisPass++;
                 consecutiveRegFails++;
                 // Only trigger burst-cutoff when *all* reads in this pass are failing.
-                // Once we have at least one success, keep polling the full register set.
+                // Once we have at least one success, keep polling the full register set,
+                // so healthy communication still refreshes the complete snapshot.
                 if (!anySuccess && consecutiveRegFails >= SOLIS_OFFLINE_FAIL_BURST_LIMIT) {
                     break;
                 }
