@@ -6,6 +6,7 @@
 #include <BLERemoteService.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HardwareSerial.h>
 #include <math.h>
 #include <new>
 #include <string.h>
@@ -31,6 +32,14 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define WIFI_PASSWORD_UPPER "DEADBEEF"
 #define WIFI_PASSWORD_LOWER "deadbeef"
 #define WIFI_CONNECT_TIMEOUT_MS  10000
+
+#define RS485_RX_PIN                 16
+#define RS485_TX_PIN                 17
+#define SOLIS_MODBUS_TIMEOUT_MS     180
+#define SOLIS_POLL_INTERVAL_MS     5000
+#define SOLIS_INTER_REGISTER_DELAY_MS 15
+#define SOLIS_MUTEX_TIMEOUT_MS      100
+#define SOLIS_SLAVE_ID                1
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
@@ -133,6 +142,81 @@ struct AggregateSnapshot {
     unsigned long lastFreshMs = 0;
 };
 
+struct RegisterSpec {
+    uint16_t reg;
+};
+
+static const RegisterSpec SOLIS_REGISTER_SPECS[] = {
+    {33050}, {33051}, {33052}, {33053}, {33059}, {33072}, {33074},
+    {33080}, {33081}, {33085}, {33095}, {33129}, {33130}, {33131},
+    {33132}, {33134}, {33135}, {33136}, {33137}, {33140}, {33142},
+};
+
+static const size_t SOLIS_REGISTER_COUNT = sizeof(SOLIS_REGISTER_SPECS) / sizeof(SOLIS_REGISTER_SPECS[0]);
+static const uint16_t SOLIS_REG_BATTERY_DIRECTION = 33136;
+static const uint16_t SOLIS_REG_BATTERY_CURRENT = 33135;
+static const uint16_t SOLIS_REG_BATTERY_SOC = 33140;
+static const uint16_t SOLIS_REG_BATTERY_VOLTAGE = 33142;
+static const uint16_t SOLIS_REG_GRID_POWER = 33132;
+static const uint16_t SOLIS_REG_GRID_VOLTAGE = 33074;
+static const uint16_t SOLIS_REG_GRID_FREQUENCY = 33095;
+static const uint16_t SOLIS_REG_PV1_VOLTAGE = 33050;
+static const uint16_t SOLIS_REG_PV1_CURRENT = 33051;
+static const uint16_t SOLIS_REG_PV2_VOLTAGE = 33052;
+static const uint16_t SOLIS_REG_PV2_CURRENT = 33053;
+
+struct RegisterValue {
+    uint16_t raw;
+    bool valid;
+};
+
+struct SolisState {
+    RegisterValue values[SOLIS_REGISTER_COUNT];
+    uint32_t lastPollMs;
+    uint32_t lastSuccessMs;
+    uint32_t pollCount;
+    uint32_t readErrors;
+    uint32_t lockTimeouts;
+};
+
+struct SolisRegisterInfo {
+    uint16_t reg;
+    const char* label;
+    float divisor;
+    uint8_t decimals;
+    const char* unit;
+    bool signedValue;
+    bool rawOnly;
+    const char* note;
+};
+
+static const SolisRegisterInfo SOLIS_REGISTER_INFOS[] = {
+    {33050, "PV string 1 voltage", 10.0f, 1, "V", false, false, "Confirmed. 0.1 V scale."},
+    {33051, "PV string 1 current", 10.0f, 1, "A", false, false, "Confirmed. 0.1 A scale."},
+    {33052, "PV string 2 voltage", 10.0f, 1, "V", false, false, "Confirmed. 0.1 V scale."},
+    {33053, "PV string 2 current", 10.0f, 1, "A", false, false, "Confirmed. 0.1 A scale."},
+    {33059, "Battery / power-related candidate", 1.0f, 0, "", false, true, "Raw candidate register."},
+    {33072, "Register 33072", 1.0f, 0, "", false, true, "Unknown candidate register."},
+    {33074, "Grid voltage", 10.0f, 1, "V", false, false, "Confirmed. 0.1 V scale."},
+    {33080, "Register 33080", 1.0f, 0, "", false, true, "Unknown candidate register."},
+    {33081, "Register 33081", 1.0f, 0, "", false, true, "Unknown candidate register."},
+    {33085, "Register 33085", 1.0f, 0, "", false, true, "Unknown candidate register."},
+    {33095, "Grid frequency", 100.0f, 2, "Hz", false, false, "Confirmed. 0.01 Hz scale."},
+    {33129, "Register 33129", 1.0f, 0, "", false, true, "AC-side candidate register."},
+    {33130, "Register 33130", 1.0f, 0, "", false, true, "Unknown AC-side candidate."},
+    {33131, "Register 33131", 1.0f, 0, "", false, true, "Unknown mode-related candidate."},
+    {33132, "Grid power", 1.0f, 0, "W", true, false, "Signed watts. Negative=import, positive=export."},
+    {33134, "Register 33134", 1.0f, 0, "", false, true, "Battery / power-related candidate."},
+    {33135, "Battery current", 10.0f, 1, "A", false, false, "Strong candidate. 0.1 A scale."},
+    {33136, "Battery direction", 1.0f, 0, "", false, true, "0=charging, 1=discharging (candidate)."},
+    {33137, "Register 33137", 1.0f, 0, "", false, true, "PV-related candidate register."},
+    {33140, "Battery SOC", 1.0f, 0, "%", false, false, "Confirmed. SOC percent."},
+    {33142, "Battery voltage", 100.0f, 2, "V", false, false, "Confirmed. 0.01 V scale."},
+};
+
+static SolisState solisState = {};
+static SemaphoreHandle_t solisMutex = nullptr;
+
 static BatteryState batteries[BATTERY_COUNT];
 static AggregateSnapshot aggregate;
 
@@ -140,6 +224,21 @@ static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
 
 WebServer server(80);
+HardwareSerial RS485(2);
+
+// Explicit prototypes avoid Arduino auto-generated prototypes being emitted
+// before the custom type definitions above.
+static RegisterValue getSolisRegisterValue(const SolisState& state, uint16_t docReg);
+static const SolisRegisterInfo* findSolisRegisterInfo(uint16_t docReg);
+static bool isSolisBatteryDischarging(bool valid, uint16_t raw);
+static bool tryGetSolisScaledValue(const SolisState& state, uint16_t docReg, float divisor, bool signedValue, float& value);
+static bool tryBuildSignedSolisBatteryPowerW(const SolisState& state, float& powerW);
+static bool tryBuildSolisPvPowerW(const SolisState& state, uint16_t voltageReg, uint16_t currentReg, float& powerW);
+static bool copySolisSnapshot(SolisState& snapshot);
+static String buildInverterJson();
+static void handleInverter();
+static void handleInverterApi();
+static void solisPollTask(void* pv);
 
 // CAN API from CAN_Pylontech.ino
 void setupCAN();
@@ -929,6 +1028,202 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     return snap;
 }
 
+static String jsonBool(bool value) {
+    return value ? "true" : "false";
+}
+
+static RegisterValue getSolisRegisterValue(const SolisState& state, uint16_t docReg) {
+    for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
+        if (SOLIS_REGISTER_SPECS[i].reg == docReg) return state.values[i];
+    }
+    return {0, false};
+}
+
+static const SolisRegisterInfo* findSolisRegisterInfo(uint16_t docReg) {
+    for (size_t i = 0; i < sizeof(SOLIS_REGISTER_INFOS) / sizeof(SOLIS_REGISTER_INFOS[0]); i++) {
+        if (SOLIS_REGISTER_INFOS[i].reg == docReg) return &SOLIS_REGISTER_INFOS[i];
+    }
+    return nullptr;
+}
+
+static bool isSolisBatteryDischarging(bool valid, uint16_t raw) {
+    return valid && raw == 1;
+}
+
+static bool tryGetSolisScaledValue(const SolisState& state,
+                                   uint16_t docReg,
+                                   float divisor,
+                                   bool signedValue,
+                                   float& value) {
+    RegisterValue regValue = getSolisRegisterValue(state, docReg);
+    if (!regValue.valid || divisor == 0.0f) return false;
+
+    value = signedValue ? (float)((int16_t)regValue.raw) / divisor
+                        : (float)regValue.raw / divisor;
+    return true;
+}
+
+static bool tryBuildSignedSolisBatteryPowerW(const SolisState& state, float& powerW) {
+    float currentAmps = 0.0f;
+    float voltageVolts = 0.0f;
+    if (!tryGetSolisScaledValue(state, SOLIS_REG_BATTERY_CURRENT, 10.0f, false, currentAmps) ||
+        !tryGetSolisScaledValue(state, SOLIS_REG_BATTERY_VOLTAGE, 100.0f, false, voltageVolts)) {
+        return false;
+    }
+
+    RegisterValue direction = getSolisRegisterValue(state, SOLIS_REG_BATTERY_DIRECTION);
+    powerW = voltageVolts * currentAmps;
+    if (isSolisBatteryDischarging(direction.valid, direction.raw)) powerW = -powerW;
+    return true;
+}
+
+static bool tryBuildSolisPvPowerW(const SolisState& state,
+                                  uint16_t voltageReg,
+                                  uint16_t currentReg,
+                                  float& powerW) {
+    float voltageVolts = 0.0f;
+    float currentAmps = 0.0f;
+    if (!tryGetSolisScaledValue(state, voltageReg, 10.0f, false, voltageVolts) ||
+        !tryGetSolisScaledValue(state, currentReg, 10.0f, false, currentAmps)) {
+        return false;
+    }
+
+    powerW = voltageVolts * currentAmps;
+    return true;
+}
+
+static bool copySolisSnapshot(SolisState& snapshot) {
+    if (solisMutex == nullptr) {
+        snapshot = {};
+        return false;
+    }
+
+    if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        snapshot = {};
+        return false;
+    }
+
+    snapshot = solisState;
+    xSemaphoreGive(solisMutex);
+    return true;
+}
+
+static uint16_t modbusCRC(const uint8_t* buf, int len) {
+    uint16_t crc = 0xFFFF;
+    for (int pos = 0; pos < len; pos++) {
+        crc ^= buf[pos];
+        for (int i = 0; i < 8; i++) {
+            crc = (crc & 1U) ? (crc >> 1) ^ 0xA001U : (crc >> 1);
+        }
+    }
+    return crc;
+}
+
+static void flushRS485Input() {
+    while (RS485.available()) {
+        RS485.read();
+    }
+}
+
+static int readRS485Reply(uint8_t* buf, int maxLen, uint32_t timeoutMs) {
+    int len = 0;
+    uint32_t last = millis();
+    while (millis() - last < timeoutMs) {
+        while (RS485.available()) {
+            uint8_t byteValue = RS485.read();
+            if (len < maxLen) buf[len++] = byteValue;
+            last = millis();
+        }
+        delay(1);
+    }
+    return len;
+}
+
+static bool validModbusCRC(const uint8_t* buf, int len) {
+    if (len < 4) return false;
+    uint16_t rxCRC = buf[len - 2] | (uint16_t(buf[len - 1]) << 8);
+    return rxCRC == modbusCRC(buf, len - 2);
+}
+
+static void sendReadInput(uint8_t slave, uint16_t rawAddr, uint16_t count) {
+    uint8_t frame[8];
+    frame[0] = slave;
+    frame[1] = 0x04;
+    frame[2] = rawAddr >> 8;
+    frame[3] = rawAddr & 0xFF;
+    frame[4] = count >> 8;
+    frame[5] = count & 0xFF;
+    uint16_t crc = modbusCRC(frame, 6);
+    frame[6] = crc & 0xFF;
+    frame[7] = crc >> 8;
+    RS485.write(frame, sizeof(frame));
+    RS485.flush();
+}
+
+static bool readSolisDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) {
+    uint8_t buf[32];
+    const uint16_t rawAddr = docReg - 1;
+
+    flushRS485Input();
+    sendReadInput(slave, rawAddr, 1);
+
+    const int len = readRS485Reply(buf, sizeof(buf), SOLIS_MODBUS_TIMEOUT_MS);
+    if (len < 7) return false;
+    if (!validModbusCRC(buf, len)) return false;
+    if (buf[0] != slave || buf[1] != 0x04 || buf[2] != 2) return false;
+
+    value = (uint16_t(buf[3]) << 8) | buf[4];
+    return true;
+}
+
+static void solisPollTask(void* pv) {
+    (void)pv;
+
+    for (;;) {
+        uint32_t pollStartMs = millis();
+        uint32_t errorsThisPass = 0;
+        uint32_t lockTimeoutsThisPass = 0;
+        bool anySuccess = false;
+
+        for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
+            uint16_t raw = 0;
+            if (readSolisDocRegU16(SOLIS_SLAVE_ID, SOLIS_REGISTER_SPECS[i].reg, raw)) {
+                uint32_t now = millis();
+                if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+                    solisState.values[i].raw = raw;
+                    solisState.values[i].valid = true;
+                    solisState.lastSuccessMs = now;
+                    xSemaphoreGive(solisMutex);
+                    anySuccess = true;
+                } else {
+                    lockTimeoutsThisPass++;
+                }
+            } else {
+                errorsThisPass++;
+            }
+            vTaskDelay(pdMS_TO_TICKS(SOLIS_INTER_REGISTER_DELAY_MS));
+        }
+
+        if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+            solisState.lastPollMs = millis();
+            solisState.pollCount++;
+            solisState.readErrors += errorsThisPass;
+            solisState.lockTimeouts += lockTimeoutsThisPass;
+            xSemaphoreGive(solisMutex);
+        }
+
+        if (!anySuccess) {
+            Serial.println("Solis poll pass had no successful reads");
+        }
+
+        uint32_t elapsedMs = millis() - pollStartMs;
+        uint32_t waitMs = elapsedMs >= SOLIS_POLL_INTERVAL_MS
+                        ? 100U
+                        : (SOLIS_POLL_INTERVAL_MS - elapsedMs);
+        vTaskDelay(pdMS_TO_TICKS(waitMs));
+    }
+}
+
 static String htmlEscape(const String& input) {
     String out;
     out.reserve(input.length() + 16);
@@ -981,6 +1276,193 @@ static void sendCard(const String& label, const String& value, const char* cls =
     }
     html += "'>" + htmlEscape(value) + "</div></div>";
     server.sendContent(html);
+}
+
+static String formatSolisRegisterDisplay(uint16_t docReg, const RegisterValue& regValue) {
+    if (!regValue.valid) return String("--");
+
+    const SolisRegisterInfo* info = findSolisRegisterInfo(docReg);
+    if (info == nullptr || info->rawOnly) return String(regValue.raw);
+
+    float scaled = info->signedValue ? (float)((int16_t)regValue.raw) / info->divisor
+                                     : (float)regValue.raw / info->divisor;
+    String text = String(scaled, info->decimals);
+    if (info->unit != nullptr && info->unit[0] != '\0') {
+        text += " ";
+        text += info->unit;
+    }
+    return text;
+}
+
+static String formatSolisCardValue(const SolisState& snapshot,
+                                   uint16_t docReg,
+                                   float divisor,
+                                   bool signedValue,
+                                   uint8_t decimals,
+                                   const char* unit) {
+    float value = 0.0f;
+    if (!tryGetSolisScaledValue(snapshot, docReg, divisor, signedValue, value)) return String("--");
+
+    String text = String(value, decimals);
+    if (unit != nullptr && unit[0] != '\0') {
+        text += " ";
+        text += unit;
+    }
+    return text;
+}
+
+static String buildInverterJson() {
+    SolisState snapshot = {};
+    copySolisSnapshot(snapshot);
+
+    String json;
+    json.reserve(1700);
+    json += "{";
+    json += "\"uptimeMs\":";
+    json += String(millis());
+    json += ",\"lastPollMs\":";
+    json += String(snapshot.lastPollMs);
+    json += ",\"lastSuccessMs\":";
+    json += String(snapshot.lastSuccessMs);
+    json += ",\"pollCount\":";
+    json += String(snapshot.pollCount);
+    json += ",\"readErrors\":";
+    json += String(snapshot.readErrors);
+    json += ",\"lockTimeouts\":";
+    json += String(snapshot.lockTimeouts);
+
+    RegisterValue direction = getSolisRegisterValue(snapshot, SOLIS_REG_BATTERY_DIRECTION);
+    json += ",\"batteryDirection\":";
+    if (direction.valid) {
+        json += "\"";
+        json += isSolisBatteryDischarging(direction.valid, direction.raw) ? "discharging" : "charging";
+        json += "\"";
+    } else {
+        json += "null";
+    }
+
+    float derivedValue = 0.0f;
+    json += ",\"batteryPowerW\":";
+    json += tryBuildSignedSolisBatteryPowerW(snapshot, derivedValue) ? String(derivedValue, 1) : String("null");
+    json += ",\"pv1PowerW\":";
+    json += tryBuildSolisPvPowerW(snapshot, SOLIS_REG_PV1_VOLTAGE, SOLIS_REG_PV1_CURRENT, derivedValue) ? String(derivedValue, 1) : String("null");
+    json += ",\"pv2PowerW\":";
+    json += tryBuildSolisPvPowerW(snapshot, SOLIS_REG_PV2_VOLTAGE, SOLIS_REG_PV2_CURRENT, derivedValue) ? String(derivedValue, 1) : String("null");
+
+    float pv1Power = 0.0f;
+    float pv2Power = 0.0f;
+    json += ",\"pvTotalPowerW\":";
+    if (tryBuildSolisPvPowerW(snapshot, SOLIS_REG_PV1_VOLTAGE, SOLIS_REG_PV1_CURRENT, pv1Power) &&
+        tryBuildSolisPvPowerW(snapshot, SOLIS_REG_PV2_VOLTAGE, SOLIS_REG_PV2_CURRENT, pv2Power)) {
+        json += String(pv1Power + pv2Power, 1);
+    } else {
+        json += "null";
+    }
+
+    for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
+        json += ",\"";
+        json += String(SOLIS_REGISTER_SPECS[i].reg);
+        json += "\":{";
+        json += "\"valid\":";
+        json += jsonBool(snapshot.values[i].valid);
+        json += ",\"raw\":";
+        json += String(snapshot.values[i].raw);
+        json += ",\"signed\":";
+        json += String((int16_t)snapshot.values[i].raw);
+        json += "}";
+    }
+    json += "}";
+    return json;
+}
+
+static void handleInverterApi() {
+    server.send(200, "application/json", buildInverterJson());
+}
+
+static void handleInverter() {
+    unsigned long now = millis();
+    SolisState snapshot = {};
+    copySolisSnapshot(snapshot);
+
+    unsigned long ageMs = snapshot.lastSuccessMs == 0 ? 0 : (now - snapshot.lastSuccessMs);
+    bool stale = snapshot.lastSuccessMs == 0 || ageMs > (SOLIS_POLL_INTERVAL_MS * 2UL);
+
+    String batteryDirection = "unknown";
+    RegisterValue direction = getSolisRegisterValue(snapshot, SOLIS_REG_BATTERY_DIRECTION);
+    if (direction.valid) {
+        batteryDirection = isSolisBatteryDischarging(direction.valid, direction.raw) ? "discharging" : "charging";
+    }
+
+    float batteryPowerW = 0.0f;
+    float pv1PowerW = 0.0f;
+    float pv2PowerW = 0.0f;
+    bool haveBatteryPower = tryBuildSignedSolisBatteryPowerW(snapshot, batteryPowerW);
+    bool havePv1Power = tryBuildSolisPvPowerW(snapshot, SOLIS_REG_PV1_VOLTAGE, SOLIS_REG_PV1_CURRENT, pv1PowerW);
+    bool havePv2Power = tryBuildSolisPvPowerW(snapshot, SOLIS_REG_PV2_VOLTAGE, SOLIS_REG_PV2_CURRENT, pv2PowerW);
+
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html", "");
+
+    server.sendContent(F("<!DOCTYPE html><html><head>"
+                         "<meta charset='UTF-8'>"
+                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                         "<meta http-equiv='refresh' content='5'>"
+                         "<title>Solis inverter monitor</title>"
+                         "<style>"
+                         "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
+                         "h1{color:#e0c97f;margin-bottom:4px}h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px}"
+                         "a{color:#8ec5ff}table{width:100%;border-collapse:collapse;margin-top:10px}"
+                         "th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #2a2a4a;vertical-align:top}"
+                         "th{background:#16213e;color:#a0b4cc}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-bottom:16px}"
+                         ".card{background:#16213e;border-radius:8px;padding:12px;text-align:center}.card .label{font-size:0.75em;color:#8899aa;margin-bottom:4px}"
+                         ".card .value{font-size:1.25em;font-weight:bold}.green{color:#4caf50}.amber{color:#ff9800}.mono{font-family:monospace}"
+                         "</style></head><body>"));
+    server.sendContent(F("<p><a href='/'>Back to summary</a></p>"));
+    server.sendContent(F("<h1>Solis inverter monitor</h1>"));
+    server.sendContent(F("<p>Cached RS485 data only. Modbus polling runs in a dedicated FreeRTOS task every ~5 seconds so BLE/CAN/web work stays responsive.</p>"));
+
+    server.sendContent(F("<div class='grid'>"));
+    sendCard("Last good poll",
+             snapshot.lastSuccessMs == 0 ? String("Never") : String(ageMs / 1000UL) + " s ago",
+             stale ? "amber" : "green");
+    sendCard("Poll count", String(snapshot.pollCount));
+    sendCard("Read errors", String(snapshot.readErrors));
+    sendCard("Lock timeouts", String(snapshot.lockTimeouts));
+    sendCard("Grid power", formatSolisCardValue(snapshot, SOLIS_REG_GRID_POWER, 1.0f, true, 0, "W"));
+    sendCard("Grid voltage", formatSolisCardValue(snapshot, SOLIS_REG_GRID_VOLTAGE, 10.0f, false, 1, "V"));
+    sendCard("Grid frequency", formatSolisCardValue(snapshot, SOLIS_REG_GRID_FREQUENCY, 100.0f, false, 2, "Hz"));
+    sendCard("Battery SoC", formatSolisCardValue(snapshot, SOLIS_REG_BATTERY_SOC, 1.0f, false, 0, "%"));
+    sendCard("Battery voltage", formatSolisCardValue(snapshot, SOLIS_REG_BATTERY_VOLTAGE, 100.0f, false, 2, "V"));
+    sendCard("Battery current", formatSolisCardValue(snapshot, SOLIS_REG_BATTERY_CURRENT, 10.0f, false, 1, "A"));
+    sendCard("Battery direction", batteryDirection);
+    sendCard("Battery power", haveBatteryPower ? String(batteryPowerW, 1) + " W" : String("--"));
+    sendCard("PV1 power", havePv1Power ? String(pv1PowerW, 1) + " W" : String("--"));
+    sendCard("PV2 power", havePv2Power ? String(pv2PowerW, 1) + " W" : String("--"));
+    sendCard("PV total power",
+             (havePv1Power && havePv2Power) ? (String(pv1PowerW + pv2PowerW, 1) + " W") : String("--"));
+    server.sendContent(F("</div>"));
+
+    server.sendContent(F("<h2>Register snapshot</h2><table><tr>"
+                         "<th>Label</th><th>Register</th><th>Display</th><th>Raw</th><th>Signed</th><th>Notes</th>"
+                         "</tr>"));
+    for (size_t i = 0; i < sizeof(SOLIS_REGISTER_INFOS) / sizeof(SOLIS_REGISTER_INFOS[0]); i++) {
+        const SolisRegisterInfo& info = SOLIS_REGISTER_INFOS[i];
+        RegisterValue regValue = getSolisRegisterValue(snapshot, info.reg);
+
+        String row;
+        row.reserve(320);
+        row = "<tr><td>" + htmlEscape(String(info.label)) +
+              "</td><td class='mono'>" + String(info.reg) +
+              "</td><td>" + htmlEscape(formatSolisRegisterDisplay(info.reg, regValue)) +
+              "</td><td>" + (regValue.valid ? String(regValue.raw) : String("--")) +
+              "</td><td>" + (regValue.valid ? String((int16_t)regValue.raw) : String("--")) +
+              "</td><td>" + htmlEscape(String(info.note)) + "</td></tr>";
+        server.sendContent(row);
+    }
+    server.sendContent(F("</table>"));
+    server.sendContent(F("<p>JSON endpoints: <a href='/api/inverter'>/api/inverter</a> · <a href='/api/solis'>/api/solis</a></p>"));
+    server.sendContent(F("</body></html>"));
+    server.sendContent("");
 }
 
 static void handleRoot() {
@@ -1063,7 +1545,8 @@ static void handleRoot() {
         server.sendContent(row);
     }
 
-    server.sendContent(F("</table><p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
+    server.sendContent(F("</table><p><a href='/inverter'>Solis inverter monitor</a> · <a href='/api/inverter'>Inverter JSON</a></p>"
+                         "<p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
     server.sendContent("");
 }
 
@@ -1214,6 +1697,26 @@ void setup() {
 
     setupCAN();
 
+    solisMutex = xSemaphoreCreateMutex();
+    if (solisMutex == nullptr) {
+        Serial.println("Failed to create Solis mutex; inverter polling disabled");
+    } else {
+        RS485.begin(9600, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
+        BaseType_t pollTaskOk = xTaskCreatePinnedToCore(
+            solisPollTask,
+            "SolisPoll",
+            4096,
+            nullptr,
+            1,
+            nullptr,
+            1);
+        if (pollTaskOk != pdPASS) {
+            Serial.println("Failed to start Solis poll task; inverter polling disabled");
+        } else {
+            Serial.printf("Solis RS485 poll task started on RX=%d TX=%d\n", RS485_RX_PIN, RS485_TX_PIN);
+        }
+    }
+
     WiFi.mode(WIFI_STA);
     bool wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
     if (!wifiOk) {
@@ -1225,6 +1728,9 @@ void setup() {
         Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
         server.on("/battery", handleBatteryDetail);
+        server.on("/inverter", handleInverter);
+        server.on("/api/inverter", handleInverterApi);
+        server.on("/api/solis", handleInverterApi);
         server.begin();
         Serial.println("Web server started on port 80");
         wifiReady = true;
