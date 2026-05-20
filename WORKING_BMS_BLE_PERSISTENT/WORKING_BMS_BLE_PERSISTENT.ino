@@ -11,7 +11,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 
 #define BMS1_NAME "Growatt"
 #define BMS1_MAC  "a5:c2:37:49:c7:a2"
-#define BMS1_ENABLED true
+#define BMS1_ENABLED false
 
 #define BMS2_NAME "Solax"
 #define BMS2_MAC  "a4:c1:37:20:4e:3b"
@@ -19,13 +19,12 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 
 #define BMS3_NAME "SP14S004P14S40A"
 #define BMS3_MAC  "a5:c2:37:51:85:7f"
-#define BMS3_ENABLED true
+#define BMS3_ENABLED false
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
 #define SCAN_SLICE_MS              1200
 #define MIN_SCAN_SLICE_MS           200
-// Matches the scan settings used in WORKING_BMS_BLE/WORKING_BMS_BLE.ino.
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
 #define MS_PER_SECOND              1000
@@ -39,9 +38,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define LOG_INTERVAL_MS            5000
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
+#define MAX_CELLS                   24
 
-// Per-battery persistent BLE connection, telemetry, reconnect timing, and
-// in-flight JBD packet assembly state.
 struct BatteryState {
     const char* name;
     const char* mac;
@@ -69,11 +67,15 @@ struct BatteryState {
     float current = 0.0f;
     uint8_t soc = 0;
 
+    uint16_t cellMv[MAX_CELLS] = {0};
+    uint8_t cellCount = 0;
+
     uint8_t packetBuf[MAX_PACKET_LEN] = {0};
     int packetLen = 0;
     int expectedLen = 0;
     bool packetError = false;
     bool gotPacket03 = false;
+    bool gotPacket04 = false;
 };
 
 static BatteryState batteries[] = {
@@ -140,12 +142,12 @@ static void resetPacketAssembly(BatteryState& battery) {
     battery.expectedLen = 0;
     battery.packetError = false;
     battery.gotPacket03 = false;
+    battery.gotPacket04 = false;
 }
 
 static uint16_t calcChecksum(const uint8_t* data, int length) {
     if (data == nullptr || length < 7) return 0;
 
-    // JBD checksum starts at 0x10000 and subtracts the length byte plus payload.
     int checksum = 0x10000;
     int dataLength = data[3];
     if (length < dataLength + 7) return 0;
@@ -163,6 +165,49 @@ static bool checksumValid(const uint8_t* data, int length) {
     return calcChecksum(data, length) == got;
 }
 
+static bool parsePacket03(BatteryState& battery) {
+    if (battery.packetLen <= 23) {
+        battery.packetError = true;
+        return false;
+    }
+
+    uint16_t rawVolts = ((uint16_t)battery.packetBuf[4] << 8) | battery.packetBuf[5];
+    int16_t rawCurrent = (int16_t)(((uint16_t)battery.packetBuf[6] << 8) | battery.packetBuf[7]);
+
+    battery.voltage = rawVolts / 100.0f;
+    battery.current = rawCurrent / 100.0f;
+    battery.soc = battery.packetBuf[23];
+    battery.gotPacket03 = true;
+    battery.lastGoodDataMs = millis();
+    return true;
+}
+
+static bool parsePacket04(BatteryState& battery) {
+    if (battery.packetLen < 7) {
+        battery.packetError = true;
+        return false;
+    }
+
+    int payloadLen = battery.packetBuf[3];
+    if (payloadLen <= 0 || (payloadLen % 2) != 0) {
+        battery.packetError = true;
+        return false;
+    }
+
+    int count = payloadLen / 2;
+    if (count > MAX_CELLS) count = MAX_CELLS;
+
+    battery.cellCount = count;
+    for (int i = 0; i < count; i++) {
+        int offset = 4 + (i * 2);
+        battery.cellMv[i] = ((uint16_t)battery.packetBuf[offset] << 8) |
+                             battery.packetBuf[offset + 1];
+    }
+
+    battery.gotPacket04 = true;
+    return true;
+}
+
 static void notifyCallback(BLERemoteCharacteristic* characteristic,
                            uint8_t* pData,
                            size_t length,
@@ -176,7 +221,6 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     if (battery.packetError) return;
 
     if (battery.packetLen == 0) {
-        // 0xDD is the JBD packet start marker and byte 2 == 0x00 means success.
         if (length == 0 || pData[0] != 0xDD) return;
         battery.packetError = (pData[2] != 0x00);
         battery.expectedLen = pData[3] + 7;
@@ -196,26 +240,28 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         return;
     }
 
-    if (!checksumValid(battery.packetBuf, battery.packetLen) ||
-        // 0x03 is the JBD "basic info" response packet.
-        battery.packetBuf[1] != 0x03) {
+    if (!checksumValid(battery.packetBuf, battery.packetLen)) {
         battery.packetError = true;
         return;
     }
 
-    if (battery.packetLen <= 23) {
-        battery.packetError = true;
+    uint8_t packetType = battery.packetBuf[1];
+
+    if (packetType == 0x03) {
+        if (!parsePacket03(battery)) {
+            battery.packetError = true;
+        }
         return;
     }
 
-    uint16_t rawVolts = ((uint16_t)battery.packetBuf[4] << 8) | battery.packetBuf[5];
-    int16_t rawCurrent = (int16_t)(((uint16_t)battery.packetBuf[6] << 8) | battery.packetBuf[7]);
+    if (packetType == 0x04) {
+        if (!parsePacket04(battery)) {
+            battery.packetError = true;
+        }
+        return;
+    }
 
-    battery.voltage = rawVolts / 100.0f;
-    battery.current = rawCurrent / 100.0f;
-    battery.soc = battery.packetBuf[23];
-    battery.gotPacket03 = true;
-    battery.lastGoodDataMs = millis();
+    battery.packetError = true;
 }
 
 class ClientCallbacks : public BLEClientCallbacks {
@@ -419,7 +465,6 @@ static bool connectBattery(BatteryState& battery) {
 }
 
 static bool requestBatterySnapshot(BatteryState& battery) {
-    // JBD read-basic-info command: DD A5 03 00 FF FD 77.
     static uint8_t cmd3[7] = {0xDD, 0xA5, 0x03, 0x00, 0xFF, 0xFD, 0x77};
 
     if (!isBatteryConnected(battery)) return false;
@@ -432,14 +477,42 @@ static bool requestBatterySnapshot(BatteryState& battery) {
     while (!hasDeadlinePassed(deadlineMs)) {
         if (!isBatteryConnected(battery)) break;
         if (battery.gotPacket03) {
-            battery.okReads++;
             return true;
         }
         delay(RESPONSE_POLL_MS);
     }
 
-    battery.failedReads++;
     return false;
+}
+
+static bool requestCellVoltages(BatteryState& battery) {
+    static uint8_t cmd4[7] = {0xDD, 0xA5, 0x04, 0x00, 0xFF, 0xFC, 0x77};
+
+    if (!isBatteryConnected(battery)) return false;
+
+    resetPacketAssembly(battery);
+    battery.lastRequestMs = millis();
+    battery.tx->writeValue(cmd4, sizeof(cmd4), false);
+
+    unsigned long deadlineMs = millis() + RESPONSE_TIMEOUT_MS;
+    while (!hasDeadlinePassed(deadlineMs)) {
+        if (!isBatteryConnected(battery)) break;
+        if (battery.gotPacket04) {
+            return true;
+        }
+        delay(RESPONSE_POLL_MS);
+    }
+
+    return false;
+}
+
+static void printCellVoltages(const BatteryState& battery) {
+    Serial.printf("[%s] cells (%u): ", battery.name, battery.cellCount);
+    for (uint8_t i = 0; i < battery.cellCount; i++) {
+        Serial.printf("%u=%.3fV", i + 1, battery.cellMv[i] / 1000.0f);
+        if (i + 1 < battery.cellCount) Serial.print("  ");
+    }
+    Serial.println();
 }
 
 static bool reconnectBattery(BatteryState& battery) {
@@ -498,6 +571,9 @@ static void printSummary() {
                           battery.current,
                           battery.soc);
         }
+        if (battery.cellCount > 0) {
+            Serial.printf("  cells=%u", battery.cellCount);
+        }
         Serial.println();
     }
 
@@ -511,7 +587,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println();
-    Serial.println("=== Experimental classic BLE persistent 3-battery test ===");
+    Serial.println("=== Experimental classic BLE persistent 3-battery test with cell voltages ===");
 
     BLEDevice::init("");
     BLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -567,14 +643,24 @@ void loop() {
         if (!battery.enabled) continue;
 
         if (isBatteryConnected(battery)) {
-            bool ok = requestBatterySnapshot(battery);
-            if (ok) {
-                Serial.printf("[%s] OK   %.2f V  %.2f A  SoC %u%%\n",
-                              battery.name,
-                              battery.voltage,
-                              battery.current,
-                              battery.soc);
+            bool ok03 = requestBatterySnapshot(battery);
+            if (ok03) {
+                bool ok04 = requestCellVoltages(battery);
+                if (ok04) {
+                    battery.okReads++;
+                    Serial.printf("[%s] OK   %.2f V  %.2f A  SoC %u%%\n",
+                                  battery.name,
+                                  battery.voltage,
+                                  battery.current,
+                                  battery.soc);
+                    printCellVoltages(battery);
+                } else {
+                    battery.failedReads++;
+                    Serial.printf("[%s] FAIL waiting for 0x04 cell-voltage response\n",
+                                  battery.name);
+                }
             } else {
+                battery.failedReads++;
                 Serial.printf("[%s] FAIL waiting for 0x03 response\n",
                               battery.name);
             }
