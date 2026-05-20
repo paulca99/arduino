@@ -110,10 +110,22 @@ static uint8_t voltageToSoc(float packV) {
 // -----------------------------------------------------------------------
 // Helper — transmit one CAN frame, print warning if it fails
 // -----------------------------------------------------------------------
-static void canSend(twai_message_t& msg) {
-    if (twai_transmit(&msg, pdMS_TO_TICKS(10)) != ESP_OK) {
-        Serial.printf("⚠️  CAN TX failed for ID 0x%03X\n", msg.identifier);
+static bool canSend(twai_message_t& msg) {
+    static uint32_t txFailCount = 0;
+    static unsigned long lastFailLogMs = 0;
+
+    if (twai_transmit(&msg, 0) != ESP_OK) {
+        txFailCount++;
+        unsigned long nowMs = millis();
+        if (lastFailLogMs == 0 || (nowMs - lastFailLogMs) >= 2000UL) {
+            Serial.printf("⚠️  CAN TX failed (count=%lu, last ID=0x%03X)\n",
+                          (unsigned long)txFailCount,
+                          msg.identifier);
+            lastFailLogMs = nowMs;
+        }
+        return false;
     }
+    return true;
 }
 
 // -----------------------------------------------------------------------
@@ -148,7 +160,7 @@ void setupCAN() {
 // -----------------------------------------------------------------------
 // 0x351 — Charge voltage & current limits
 // -----------------------------------------------------------------------
-static void can_send_limits() {
+static bool can_send_limits() {
     twai_message_t msg;
     msg.identifier      = 0x351;
     msg.flags           = TWAI_MSG_FLAG_NONE;
@@ -159,7 +171,7 @@ static void can_send_limits() {
     msg.data[3] = (MAX_CHARGE_CURRENT    >> 8) & 0xFF;
     msg.data[4] = (MAX_DISCHARGE_CURRENT & 0xFF);
     msg.data[5] = (MAX_DISCHARGE_CURRENT >> 8) & 0xFF;
-    canSend(msg);
+    return canSend(msg);
 }
 
 // -----------------------------------------------------------------------
@@ -171,7 +183,7 @@ static void can_send_limits() {
 // retained because the JBD BMS can report 0% SoC whenever an alarm fires.
 // See SOC_EMA_TAU_S above for smoothing details and tuning guidance.
 // -----------------------------------------------------------------------
-static void can_send_soc(float packVoltage, uint8_t measuredSoc) {
+static bool can_send_soc(float packVoltage, uint8_t measuredSoc) {
     // EMA state — persists across calls; filteredV < 0 means "not yet seeded".
     static float         filteredV = -1.0f;
     static unsigned long lastEmaMs = 0;
@@ -216,13 +228,13 @@ static void can_send_soc(float packVoltage, uint8_t measuredSoc) {
     msg.data[1] = 0x00;
     msg.data[2] = soh;
     msg.data[3] = 0x00;
-    canSend(msg);
+    return canSend(msg);
 }
 
 // -----------------------------------------------------------------------
 // 0x356 — Voltage, current, temperature
 // -----------------------------------------------------------------------
-static void can_send_measurements(float packVoltage, float packCurrent, float packTemp) {
+static bool can_send_measurements(float packVoltage, float packCurrent, float packTemp) {
     int16_t voltage = (int16_t)(packVoltage * 100.0f);  // e.g. 54.9V → 5490
     int16_t current = (int16_t)(packCurrent * 10.0f);  // e.g. 12.3A → 123 (signed)
     int16_t temp    = (int16_t)(packTemp * 10.0f);
@@ -237,13 +249,13 @@ static void can_send_measurements(float packVoltage, float packCurrent, float pa
     msg.data[3] = (current >> 8)  & 0xFF;
     msg.data[4] =  temp           & 0xFF;
     msg.data[5] = (temp    >> 8)  & 0xFF;
-    canSend(msg);
+    return canSend(msg);
 }
 
 // -----------------------------------------------------------------------
 // 0x359 — Protection & alarm flags
 // -----------------------------------------------------------------------
-static void can_send_alarms(float packVoltage, float packTemp) {
+static bool can_send_alarms(float packVoltage, float packTemp) {
     const float maxPackV = (float)PACK_SERIES_CELLS * 4.20f;
     const float minPackV = (float)PACK_SERIES_CELLS * 2.75f;
     uint8_t protection = 0;
@@ -263,13 +275,13 @@ static void can_send_alarms(float packVoltage, float packTemp) {
     msg.data[4] = 0x01;
     msg.data[5] = 0x50;        // 'P'
     msg.data[6] = 0x4E;        // 'N'
-    canSend(msg);
+    return canSend(msg);
 }
 
 // -----------------------------------------------------------------------
 // 0x35C — Charge/discharge request flags
 // -----------------------------------------------------------------------
-static void can_send_request(bool chargeAllowed, bool dischargeAllowed) {
+static bool can_send_request(bool chargeAllowed, bool dischargeAllowed) {
     uint8_t flags = 0;
     if (chargeAllowed) flags |= 0x80;
     if (dischargeAllowed) flags |= 0x40;
@@ -280,13 +292,13 @@ static void can_send_request(bool chargeAllowed, bool dischargeAllowed) {
     msg.data_length_code = 2;
     msg.data[0] = flags;
     msg.data[1] = 0x00;
-    canSend(msg);
+    return canSend(msg);
 }
 
 // -----------------------------------------------------------------------
 // 0x35E — Manufacturer name "PYLONTEC"
 // -----------------------------------------------------------------------
-static void can_send_manufacturer() {
+static bool can_send_manufacturer() {
     twai_message_t msg;
     msg.identifier       = 0x35E;
     msg.flags            = TWAI_MSG_FLAG_NONE;
@@ -299,13 +311,13 @@ static void can_send_manufacturer() {
     msg.data[5] = 'T';
     msg.data[6] = 'E';
     msg.data[7] = 'C';
-    canSend(msg);
+    return canSend(msg);
 }
 
 // -----------------------------------------------------------------------
 // 0x305 — Network alive / keep-alive counter
 // -----------------------------------------------------------------------
-static void can_send_alive() {
+static bool can_send_alive() {
     aliveCounter++;
     twai_message_t msg;
     msg.identifier       = 0x305;
@@ -319,7 +331,7 @@ static void can_send_alive() {
     msg.data[5] = 0x00;
     msg.data[6] = 0x00;
     msg.data[7] = 0x00;
-    canSend(msg);
+    return canSend(msg);
 }
 
 // -----------------------------------------------------------------------
@@ -331,11 +343,12 @@ void sendCANFrames(float voltage,
                    float temperature,
                    bool chargeAllowed,
                    bool dischargeAllowed) {
-    can_send_limits();
-    can_send_soc(voltage, soc);
-    can_send_measurements(voltage, current, temperature);
-    can_send_alarms(voltage, temperature);
-    can_send_request(chargeAllowed, dischargeAllowed);
-    can_send_manufacturer();
+    // Keep loop responsiveness under CAN fault: stop this cycle on first TX error.
+    if (!can_send_limits()) return;
+    if (!can_send_soc(voltage, soc)) return;
+    if (!can_send_measurements(voltage, current, temperature)) return;
+    if (!can_send_alarms(voltage, temperature)) return;
+    if (!can_send_request(chargeAllowed, dischargeAllowed)) return;
+    if (!can_send_manufacturer()) return;
     can_send_alive();
 }

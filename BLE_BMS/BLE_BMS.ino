@@ -957,19 +957,11 @@ static bool reconnectBattery(int index) {
     logBatteryDebugState(index, "[DBG before reconnect]");
 
     if (batteries[index].advertisedDevice == nullptr) {
-        if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
+        if (!scanForBattery(index, MIN_SCAN_SLICE_MS)) {
             Serial.printf("[%s] not seen during reconnect scan\n", batteryConfigs[index].name);
             batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
             return false;
         }
-    }
-
-    if (connectBattery(index)) return true;
-
-    if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
-        Serial.printf("[%s] rediscovery failed\n", batteryConfigs[index].name);
-        batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
-        return false;
     }
 
     bool ok = connectBattery(index);
