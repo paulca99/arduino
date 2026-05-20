@@ -69,6 +69,7 @@ static uint32_t aliveCounter = 0;
 // behaviour is stable even if loop timing varies.
 // -----------------------------------------------------------------------
 #define SOC_EMA_TAU_S   120.0f   // EMA time constant ≈ 2-minute smoothing window
+#define CAN_TX_FAIL_LOG_INTERVAL_MS 2000UL
 
 // -----------------------------------------------------------------------
 // voltageToSoc — NMC discharge curve lookup + linear interpolation
@@ -114,10 +115,12 @@ static bool canSend(twai_message_t& msg) {
     static uint32_t txFailCount = 0;
     static unsigned long lastFailLogMs = 0;
 
+    // Non-blocking TX keeps the main loop responsive when the CAN bus is
+    // disconnected or faulted, instead of stalling repeatedly on transmit.
     if (twai_transmit(&msg, 0) != ESP_OK) {
         txFailCount++;
         unsigned long nowMs = millis();
-        if (lastFailLogMs == 0 || (nowMs - lastFailLogMs) >= 2000UL) {
+        if (lastFailLogMs == 0 || (nowMs - lastFailLogMs) >= CAN_TX_FAIL_LOG_INTERVAL_MS) {
             Serial.printf("⚠️  CAN TX failed (count=%lu, last ID=0x%03X)\n",
                           (unsigned long)txFailCount,
                           msg.identifier);
