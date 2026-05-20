@@ -52,10 +52,10 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define PACKET03_TEMP_COUNT_IDX_B   25
 
 enum BatteryRequestStage : uint8_t {
-    REQUEST_STAGE_IDLE = 0,
-    REQUEST_STAGE_WAIT_03,
-    REQUEST_STAGE_READY_04,
-    REQUEST_STAGE_WAIT_04
+    REQUEST_STAGE_IDLE = 0,     // No outstanding request for this battery.
+    REQUEST_STAGE_WAIT_03,      // Waiting for the basic-info response.
+    REQUEST_STAGE_READY_04,     // 0x03 completed; send 0x04 on the next poll step.
+    REQUEST_STAGE_WAIT_04       // Waiting for the cell-voltage response.
 };
 
 struct BatteryConfig {
@@ -481,6 +481,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         battery.requestStage = (packetType == 0x03) ? REQUEST_STAGE_READY_04 : REQUEST_STAGE_IDLE;
 
         if (packetType == 0x04) {
+            // Count a successful full 0x03 -> 0x04 polling cycle once.
             battery.okReads++;
         }
 
@@ -804,6 +805,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     } else if ((nowMs - battery.lastRequestMs) < REQUEST_INTERVAL_MS) {
         return;
     } else {
+        // Keep interval timing anchored to the start of the 0x03 -> 0x04 cycle.
         battery.lastRequestMs = nowMs;
     }
 
