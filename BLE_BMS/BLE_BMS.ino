@@ -1295,7 +1295,7 @@ static String formatSolisRegisterDisplay(uint16_t docReg, const RegisterValue& r
 
     float scaled = info->signedValue ? static_cast<float>(static_cast<int16_t>(regValue.raw)) / info->divisor
                                      : static_cast<float>(regValue.raw) / info->divisor;
-    String text = String(scaled, info->decimals);
+    String text = String(scaled, static_cast<unsigned int>(info->decimals));
     if (info->unit != nullptr && info->unit[0] != '\0') {
         text += " ";
         text += info->unit;
@@ -1312,7 +1312,7 @@ static String formatSolisCardValue(const SolisState& snapshot,
     float value = 0.0f;
     if (!tryGetSolisScaledValue(snapshot, docReg, divisor, signedValue, value)) return String("--");
 
-    String text = String(value, decimals);
+    String text = String(value, static_cast<unsigned int>(decimals));
     if (unit != nullptr && unit[0] != '\0') {
         text += " ";
         text += unit;
