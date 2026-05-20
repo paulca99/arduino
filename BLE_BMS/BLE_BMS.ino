@@ -5,7 +5,8 @@
 #include <BLERemoteCharacteristic.h>
 #include <BLERemoteService.h>
 #include <WiFi.h>
-#include <WebServer.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <math.h>
 #include <new>
@@ -38,6 +39,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define SCAN_SLICE_MS              1200
 #define MIN_SCAN_SLICE_MS           200
 #define USER_SCAN_TIMEOUT_MS      10000
+#define USER_SCAN_SLICE_MS         900
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
 #define CONNECT_DELAY_MS            100
@@ -83,6 +85,23 @@ static ScanResult scanResults[MAX_SCAN_RESULTS];
 static int scanResultCount = 0;
 static bool userScanActive = false;
 static bool scanDone = false;
+static bool scanRequested = false;
+static bool scanInProgress = false;
+static unsigned long userScanDeadlineMs = 0;
+
+enum PendingWebActionType : uint8_t {
+    WEB_ACTION_NONE = 0,
+    WEB_ACTION_ADD,
+    WEB_ACTION_REMOVE
+};
+
+static volatile PendingWebActionType pendingWebAction = WEB_ACTION_NONE;
+static char pendingActionMac[MAX_MAC_LEN] = {0};
+static char pendingActionName[MAX_NAME_LEN] = {0};
+static int pendingRemoveIndex = -1;
+static bool lastActionOk = true;
+static char lastActionMessage[80] = "idle";
+static unsigned long lastActionMs = 0;
 
 struct BatteryState {
     BLEAdvertisedDevice* advertisedDevice = nullptr;
@@ -148,9 +167,8 @@ static BatteryState batteries[MAX_BATTERIES];
 static AggregateSnapshot aggregate;
 
 static BLEScan* pBLEScan = nullptr;
-static bool wifiReady = false;
 
-WebServer server(80);
+AsyncWebServer server(80);
 
 // CAN API from CAN_Pylontech.ino
 void setupCAN();
@@ -161,11 +179,19 @@ void sendCANFrames(float voltage,
                    bool chargeAllowed,
                    bool dischargeAllowed);
 
-// Battery management web handlers (defined later)
-static void handleBatteriesPage();
-static void handleBatteriesScan();
-static void handleBatteriesAdd();
-static void handleBatteriesRemove();
+// Async web handlers / background services (defined later)
+static void handleRoot(AsyncWebServerRequest* request);
+static void handleBatteryDetail(AsyncWebServerRequest* request);
+static void handleBatteriesPage(AsyncWebServerRequest* request);
+static void handleApiSummary(AsyncWebServerRequest* request);
+static void handleApiBatteryDetail(AsyncWebServerRequest* request);
+static void handleApiBatteries(AsyncWebServerRequest* request);
+static void handleApiBatteriesScan(AsyncWebServerRequest* request);
+static void handleApiBatteriesAdd(AsyncWebServerRequest* request);
+static void handleApiBatteriesRemove(AsyncWebServerRequest* request);
+static void servicePendingWebAction();
+static void serviceUserScan(unsigned long nowMs);
+static bool isAllDigits(const String& s);
 
 static const char* wifiStatusToString(wl_status_t status) {
     switch (status) {
@@ -683,8 +709,6 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
 
         pBLEScan->start(scanDurationSeconds(sliceMs), false);
         pBLEScan->clearResults();
-
-        if (wifiReady) server.handleClient();
     }
 
     return seenBatteryCount() == enabledBatteryCount();
@@ -715,8 +739,6 @@ static bool scanForBattery(int index, unsigned long timeoutMs) {
 
         pBLEScan->start(scanDurationSeconds(sliceMs), false);
         pBLEScan->clearResults();
-
-        if (wifiReady) server.handleClient();
     }
 
     return battery.seen;
@@ -978,23 +1000,6 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     return snap;
 }
 
-static String htmlEscape(const String& input) {
-    String out;
-    out.reserve(input.length() + 16);
-    for (size_t i = 0; i < input.length(); i++) {
-        char c = input.charAt(i);
-        switch (c) {
-            case '&': out += F("&amp;"); break;
-            case '<': out += F("&lt;"); break;
-            case '>': out += F("&gt;"); break;
-            case '"': out += F("&quot;"); break;
-            case '\'': out += F("&#39;"); break;
-            default: out += c; break;
-        }
-    }
-    return out;
-}
-
 static bool getCellMinMax(const BatteryState& battery,
                           uint8_t& minIndex,
                           uint16_t& minMv,
@@ -1022,165 +1027,377 @@ static bool getCellMinMax(const BatteryState& battery,
     return true;
 }
 
-static void sendCard(const String& label, const String& value, const char* cls = nullptr) {
-    String html = "<div class='card'><div class='label'>" + htmlEscape(label) + "</div><div class='value";
-    if (cls != nullptr && cls[0] != '\0') {
-        html += " ";
-        html += cls;
+static String jsonEscape(const String& input) {
+    String out;
+    out.reserve(input.length() + 16);
+    for (size_t i = 0; i < input.length(); i++) {
+        char c = input.charAt(i);
+        switch (c) {
+            case '\\': out += F("\\\\"); break;
+            case '"': out += F("\\\""); break;
+            case '\n': out += F("\\n"); break;
+            case '\r': out += F("\\r"); break;
+            case '\t': out += F("\\t"); break;
+            default:
+                if ((uint8_t)c < 0x20) {
+                    out += '?';
+                } else {
+                    out += c;
+                }
+                break;
+        }
     }
-    html += "'>" + htmlEscape(value) + "</div></div>";
-    server.sendContent(html);
+    return out;
 }
 
-static void handleRoot() {
-    unsigned long now = millis();
-    AggregateSnapshot snap = buildAggregateSnapshot(now);
+static String jsonBool(bool v) {
+    return v ? String(F("true")) : String(F("false"));
+}
 
+static void sendJsonResponse(AsyncWebServerRequest* request, int status, const String& json) {
+    AsyncWebServerResponse* response = request->beginResponse(status, "application/json", json);
+    response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    request->send(response);
+}
+
+static void sendJsonError(AsyncWebServerRequest* request, int status, const char* message) {
+    sendJsonResponse(request,
+                     status,
+                     String(F("{\"ok\":false,\"error\":\"")) + jsonEscape(String(message)) + F("\"}"));
+}
+
+static bool tryGetRequestInt(AsyncWebServerRequest* request, const char* name, int& value) {
+    if (!request->hasParam(name)) return false;
+    String arg = request->getParam(name)->value();
+    if (!isAllDigits(arg)) return false;
+    value = arg.toInt();
+    return true;
+}
+
+static String buildSummaryJson() {
+    const unsigned long now = millis();
+    const AggregateSnapshot snap = buildAggregateSnapshot(now);
+
+    String json;
+    json.reserve(4096);
+    json += F("{\"ok\":true");
+    json += F(",\"uptimeMs\":") + String(now);
+    json += F(",\"wifi\":\"") + jsonEscape(String(wifiStatusToString(WiFi.status()))) + '"';
+    json += F(",\"enabledCount\":") + String(enabledBatteryCount());
+    json += F(",\"connectedCount\":") + String(connectedBatteryCount());
+    json += F(",\"aggregate\":{");
+    json += F("\"valid\":") + jsonBool(snap.valid);
+    json += F(",\"contributingBatteries\":") + String(snap.contributingBatteries);
+    json += F(",\"voltage\":") + String(snap.voltage, 2);
+    json += F(",\"current\":") + String(snap.current, 2);
+    json += F(",\"soc\":") + String(snap.soc);
+    json += F(",\"hasTemperature\":") + jsonBool(snap.hasTemperature);
+    json += F(",\"temperature\":") + String(snap.temperature, 1);
+    json += F(",\"chargeAllowed\":") + jsonBool(snap.chargeAllowed);
+    json += F(",\"dischargeAllowed\":") + jsonBool(snap.dischargeAllowed);
+    json += F(",\"lastFreshMs\":") + String(snap.lastFreshMs);
+    json += F(",\"ageSec\":");
+    json += (snap.lastFreshMs == 0) ? String(-1) : String((now - snap.lastFreshMs) / 1000UL);
+    json += F("},\"batteries\":[");
+
+    for (int i = 0; i < batteryCount; i++) {
+        if (i > 0) json += ',';
+        const BatteryConfig& cfg = batteryConfigs[i];
+        const BatteryState& battery = batteries[i];
+        uint8_t minCellIndex = 0;
+        uint8_t maxCellIndex = 0;
+        uint16_t minCellMv = 0;
+        uint16_t maxCellMv = 0;
+        const bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
+
+        json += '{';
+        json += F("\"index\":") + String(i);
+        json += F(",\"name\":\"") + jsonEscape(String(cfg.name)) + '"';
+        json += F(",\"mac\":\"") + jsonEscape(String(cfg.mac)) + '"';
+        json += F(",\"enabled\":") + jsonBool(cfg.enabled);
+        json += F(",\"connected\":") + jsonBool(isBatteryConnected(i));
+        json += F(",\"hasData\":") + jsonBool(battery.hasData);
+        json += F(",\"hasTemperature\":") + jsonBool(battery.hasTemperature);
+        json += F(",\"voltage\":") + String(battery.voltage, 2);
+        json += F(",\"current\":") + String(battery.current, 2);
+        json += F(",\"soc\":") + String(battery.soc);
+        json += F(",\"temperature\":") + String(battery.temperature, 1);
+        json += F(",\"dataAgeSec\":");
+        json += (battery.lastGoodDataMs == 0) ? String(-1) : String((now - battery.lastGoodDataMs) / 1000UL);
+        json += F(",\"disconnectCount\":") + String(battery.disconnectCount);
+        json += F(",\"hasCellStats\":") + jsonBool(hasCellStats);
+        json += F(",\"minCellV\":") + String(hasCellStats ? (minCellMv / 1000.0f) : 0.0f, 3);
+        json += F(",\"maxCellV\":") + String(hasCellStats ? (maxCellMv / 1000.0f) : 0.0f, 3);
+        json += F(",\"minCellIndex\":") + String(hasCellStats ? (minCellIndex + 1) : 0);
+        json += F(",\"maxCellIndex\":") + String(hasCellStats ? (maxCellIndex + 1) : 0);
+        json += '}';
+    }
+
+    json += F("]}");
+    return json;
+}
+
+static String buildBatteryDetailJson(int index) {
+    const unsigned long now = millis();
+    const BatteryConfig& cfg = batteryConfigs[index];
+    const BatteryState& battery = batteries[index];
+
+    String json;
+    json.reserve(2048 + (size_t)battery.cellCount * 12);
+    json += F("{\"ok\":true");
+    json += F(",\"index\":") + String(index);
+    json += F(",\"name\":\"") + jsonEscape(String(cfg.name)) + '"';
+    json += F(",\"mac\":\"") + jsonEscape(String(cfg.mac)) + '"';
+    json += F(",\"connected\":") + jsonBool(isBatteryConnected(index));
+    json += F(",\"hasData\":") + jsonBool(battery.hasData);
+    json += F(",\"hasTemperature\":") + jsonBool(battery.hasTemperature);
+    json += F(",\"hasCellData\":") + jsonBool(battery.hasCellData && battery.cellCount > 0);
+    json += F(",\"voltage\":") + String(battery.voltage, 2);
+    json += F(",\"current\":") + String(battery.current, 2);
+    json += F(",\"soc\":") + String(battery.soc);
+    json += F(",\"temperature\":") + String(battery.temperature, 1);
+    json += F(",\"cellDataAgeSec\":");
+    json += (battery.hasCellData && battery.lastCellDataMs != 0) ? String((now - battery.lastCellDataMs) / 1000UL) : String(-1);
+    json += F(",\"cells\":[");
+    for (uint8_t i = 0; i < battery.cellCount; i++) {
+        if (i > 0) json += ',';
+        json += String(battery.cellMv[i] / 1000.0f, 3);
+    }
+    json += F("]}");
+    return json;
+}
+
+static String buildBatteriesJson() {
+    String json;
+    json.reserve(4096);
+    json += F("{\"ok\":true");
+    json += F(",\"batteryCount\":") + String(batteryCount);
+    json += F(",\"maxBatteries\":") + String(MAX_BATTERIES);
+    json += F(",\"scan\":{");
+    json += F("\"requested\":") + jsonBool(scanRequested);
+    json += F(",\"inProgress\":") + jsonBool(scanInProgress);
+    json += F(",\"done\":") + jsonBool(scanDone);
+    json += F(",\"resultCount\":") + String(scanResultCount);
+    json += F(",\"deadlineMs\":") + String(userScanDeadlineMs);
+    json += F("},\"action\":{");
+    json += F("\"pending\":") + jsonBool(pendingWebAction != WEB_ACTION_NONE);
+    json += F(",\"ok\":") + jsonBool(lastActionOk);
+    json += F(",\"message\":\"") + jsonEscape(String(lastActionMessage)) + '"';
+    json += F(",\"atMs\":") + String(lastActionMs);
+    json += F("},\"configured\":[");
+
+    for (int i = 0; i < batteryCount; i++) {
+        if (i > 0) json += ',';
+        json += '{';
+        json += F("\"index\":") + String(i);
+        json += F(",\"name\":\"") + jsonEscape(String(batteryConfigs[i].name)) + '"';
+        json += F(",\"mac\":\"") + jsonEscape(String(batteryConfigs[i].mac)) + '"';
+        json += F(",\"connected\":") + jsonBool(isBatteryConnected(i));
+        json += F(",\"seen\":") + jsonBool(batteries[i].seen);
+        json += F(",\"hasData\":") + jsonBool(batteries[i].hasData);
+        json += '}';
+    }
+
+    json += F("],\"candidates\":[");
+    for (int i = 0; i < scanResultCount; i++) {
+        if (i > 0) json += ',';
+        json += '{';
+        json += F("\"index\":") + String(i);
+        json += F(",\"mac\":\"") + jsonEscape(String(scanResults[i].mac)) + '"';
+        json += F(",\"name\":\"") + jsonEscape(String(scanResults[i].name)) + '"';
+        json += '}';
+    }
+    json += F("]}");
+    return json;
+}
+
+static const char ROOT_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BMS Multi-Battery Monitor</title>
+<style>
+body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}
+h1{color:#e0c97f;margin-bottom:4px}h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px}
+table{width:100%;border-collapse:collapse}th,td{padding:8px 10px;text-align:center;border-bottom:1px solid #2a2a4a}
+th{background:#16213e;color:#a0b4cc}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}
+.card{background:#16213e;border-radius:8px;padding:12px;text-align:center}.card .label{font-size:.75em;color:#8899aa;margin-bottom:4px}
+.card .value{font-size:1.4em;font-weight:bold}.green{color:#4caf50}.amber{color:#ff9800}.red{color:#f44336}.mono{font-family:monospace}
+.btn-mgr{display:inline-block;padding:7px 18px;background:#2a6ea6;color:#fff;border-radius:5px;text-decoration:none;font-size:.95em;margin-bottom:12px}
+.note{color:#8899aa;font-size:.9em}
+</style>
+</head>
+<body>
+<h1>Battery BMS (Persistent BLE)</h1>
+<p><a class="btn-mgr" href="/batteries">&#9881; Manage Batteries</a></p>
+<div class="grid" id="cards"></div>
+<h2>Per-battery status</h2>
+<table>
+<thead><tr><th>Name</th><th>MAC</th><th>Enabled</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th></tr></thead>
+<tbody id="batteryRows"><tr><td colspan="14">Loading…</td></tr></tbody>
+</table>
+<p class="note" id="summaryStatus">Loading summary…</p>
+<script>
+const cardsEl = document.getElementById('cards');
+const rowsEl = document.getElementById('batteryRows');
+const statusEl = document.getElementById('summaryStatus');
+function fmt(v, dp=0){ return (v == null || Number.isNaN(v)) ? '--' : Number(v).toFixed(dp); }
+function esc(v){ return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function card(label, value, cls=''){ return `<div class="card"><div class="label">${esc(label)}</div><div class="value ${cls}">${esc(value)}</div></div>`; }
+function renderSummary(data){
+  const a = data.aggregate || {};
+  const cards = [
+    card('Enabled Batteries', data.enabledCount ?? '--'),
+    card('Connected Batteries', data.connectedCount ?? '--')
+  ];
+  if (a.valid) {
+    cards.push(card('Aggregate Voltage', `${fmt(a.voltage,2)} V`));
+    cards.push(card('Aggregate Current', `${fmt(a.current,2)} A`));
+    cards.push(card('Aggregate SoC', `${a.soc ?? '--'} %`));
+    cards.push(card('Aggregate Temp', a.hasTemperature ? `${fmt(a.temperature,1)} C` : 'n/a'));
+    cards.push(card('Fresh Batteries', a.contributingBatteries ?? 0));
+    cards.push(card('Last Fresh Data', a.ageSec >= 0 ? `${a.ageSec} s ago` : 'n/a'));
+  } else {
+    cards.push(card('Aggregate', 'No fresh data', 'amber'));
+  }
+  cardsEl.innerHTML = cards.join('');
+
+  const rows = (data.batteries || []).map(b => `<tr>
+    <td><a href="/battery?index=${b.index}">${esc(b.name)}</a></td>
+    <td class="mono">${esc(b.mac)}</td>
+    <td>${b.enabled ? 'yes' : 'no'}</td>
+    <td class="${b.connected ? 'green' : 'red'}">${b.connected ? 'yes' : 'no'}</td>
+    <td>${b.hasData ? fmt(b.voltage,2) : '-'}</td>
+    <td>${b.hasData ? fmt(b.current,2) : '-'}</td>
+    <td>${b.hasData ? b.soc : '-'}</td>
+    <td>${b.hasTemperature ? fmt(b.temperature,1) : '-'}</td>
+    <td>${b.hasCellStats ? fmt(b.minCellV,3) : '-'}</td>
+    <td>${b.hasCellStats ? b.minCellIndex : '-'}</td>
+    <td>${b.hasCellStats ? fmt(b.maxCellV,3) : '-'}</td>
+    <td>${b.hasCellStats ? b.maxCellIndex : '-'}</td>
+    <td>${b.dataAgeSec >= 0 ? b.dataAgeSec : '-'}</td>
+    <td>${b.disconnectCount}</td>
+  </tr>`).join('');
+  rowsEl.innerHTML = rows || '<tr><td colspan="14">No configured batteries.</td></tr>';
+  statusEl.textContent = `WiFi ${data.wifi}, last refresh ${new Date().toLocaleTimeString()}`;
+}
+async function refreshSummary(){
+  try {
+    const res = await fetch('/api/summary', { cache:'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderSummary(data);
+  } catch (err) {
+    console.warn('summary fetch failed', err);
+    statusEl.textContent = `Summary refresh failed: ${err.message}`;
+  }
+}
+refreshSummary();
+setInterval(refreshSummary, 2000);
+</script>
+</body>
+</html>
+)HTML";
+
+static const char BATTERY_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Battery Cell Detail</title>
+<style>
+body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}
+h1{color:#e0c97f;margin-bottom:4px}a{color:#8ec5ff}table{width:100%;border-collapse:collapse;margin-top:16px}
+th,td{padding:8px 10px;text-align:center;border-bottom:1px solid #2a2a4a}
+th{background:#16213e;color:#a0b4cc}.card{background:#16213e;border-radius:8px;padding:12px;margin:12px 0}.mono{font-family:monospace}.muted{color:#a0b4cc}
+</style>
+</head>
+<body>
+<p><a href="/">Back to summary</a></p>
+<h1 id="title">Battery detail</h1>
+<div class="card">
+  <div>MAC: <span class="mono" id="mac">--</span></div>
+  <div>Connected: <span id="connected">--</span></div>
+  <div>Voltage / Current / SoC: <span id="basic">--</span></div>
+  <div>Cell data age: <span id="age">n/a</span></div>
+</div>
+<div id="cellsBlock"><p class="muted">Loading cell data…</p></div>
+<script>
+const params = new URLSearchParams(location.search);
+const index = params.get('index');
+const titleEl = document.getElementById('title');
+const macEl = document.getElementById('mac');
+const connEl = document.getElementById('connected');
+const basicEl = document.getElementById('basic');
+const ageEl = document.getElementById('age');
+const cellsBlock = document.getElementById('cellsBlock');
+function fmt(v, dp=0){ return (v == null || Number.isNaN(v)) ? '--' : Number(v).toFixed(dp); }
+function esc(v){ return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function renderBattery(data){
+  titleEl.textContent = `Battery detail: ${data.name}`;
+  macEl.textContent = data.mac;
+  connEl.textContent = data.connected ? 'yes' : 'no';
+  basicEl.textContent = data.hasData ? `${fmt(data.voltage,2)} V / ${fmt(data.current,2)} A / ${data.soc}%` : 'No recent battery data';
+  ageEl.textContent = data.cellDataAgeSec >= 0 ? `${data.cellDataAgeSec} s` : 'n/a';
+  if (!data.hasCellData || !(data.cells || []).length) {
+    cellsBlock.innerHTML = '<p class="muted">No valid cell data available yet.</p>';
+    return;
+  }
+  const rows = data.cells.map((v, idx) => `<tr><td>${idx + 1}</td><td>${fmt(v,3)}</td></tr>`).join('');
+  cellsBlock.innerHTML = `<h2>Cell voltages (${data.cells.length})</h2><table><tr><th>Cell</th><th>Voltage (V)</th></tr>${rows}</table>`;
+}
+async function refreshBattery(){
+  if (index == null) { cellsBlock.innerHTML = '<p class="muted">Missing battery index.</p>'; return; }
+  try {
+    const res = await fetch(`/api/battery?index=${encodeURIComponent(index)}`, { cache:'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderBattery(await res.json());
+  } catch (err) {
+    cellsBlock.innerHTML = `<p class="muted">Failed to load battery detail: ${esc(err.message)}</p>`;
+  }
+}
+refreshBattery();
+setInterval(refreshBattery, 3000);
+</script>
+</body>
+</html>
+)HTML";
+
+static void handleRoot(AsyncWebServerRequest* request) {
     Serial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
                   ESP.getFreeHeap(),
                   connectedBatteryCount(),
                   enabledBatteryCount(),
                   wifiStatusToString(WiFi.status()));
-
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    server.send(200, "text/html", "");
-
-    server.sendContent(F("<!DOCTYPE html><html><head>"
-                         "<meta charset='UTF-8'>"
-                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                         "<meta http-equiv='refresh' content='5'>"
-                         "<title>BMS Multi-Battery Monitor</title>"
-                         "<style>"
-                         "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
-                         "h1{color:#e0c97f;margin-bottom:4px}h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px}"
-                         "table{width:100%;border-collapse:collapse}th,td{padding:8px 10px;text-align:center;border-bottom:1px solid #2a2a4a}"
-                         "th{background:#16213e;color:#a0b4cc}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}"
-                         ".card{background:#16213e;border-radius:8px;padding:12px;text-align:center}.card .label{font-size:0.75em;color:#8899aa;margin-bottom:4px}"
-                         ".card .value{font-size:1.4em;font-weight:bold}.green{color:#4caf50}.amber{color:#ff9800}.red{color:#f44336}.mono{font-family:monospace}"
-                         ".btn-mgr{display:inline-block;padding:7px 18px;background:#2a6ea6;color:#fff;border-radius:5px;text-decoration:none;font-size:0.95em;margin-bottom:12px}"
-                         "</style></head><body><h1>Battery BMS (Persistent BLE)</h1>"
-                         "<p><a class='btn-mgr' href='/batteries'>&#9881; Manage Batteries</a></p>"));
-
-    server.sendContent(F("<div class='grid'>"));
-    sendCard("Enabled Batteries", String(enabledBatteryCount()));
-    sendCard("Connected Batteries", String(connectedBatteryCount()));
-
-    if (snap.valid) {
-        sendCard("Aggregate Voltage", String(snap.voltage, 2) + " V");
-        sendCard("Aggregate Current", String(snap.current, 2) + " A");
-        sendCard("Aggregate SoC", String(snap.soc) + " %");
-        sendCard("Aggregate Temp", snap.hasTemperature ? (String(snap.temperature, 1) + " C") : String("n/a"));
-        sendCard("Fresh Batteries", String(snap.contributingBatteries));
-        sendCard("Last Fresh Data", String((now - snap.lastFreshMs) / 1000UL) + " s ago");
-    } else {
-        sendCard("Aggregate", "No fresh data", "amber");
-    }
-
-    server.sendContent(F("</div>"));
-
-    server.sendContent(F("<h2>Per-battery status</h2><table><tr>"
-                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
-                         "</tr>"));
-
-    for (int i = 0; i < batteryCount; i++) {
-        const BatteryConfig& cfg = batteryConfigs[i];
-        const BatteryState& battery = batteries[i];
-
-        String age = battery.lastGoodDataMs == 0
-                   ? "-"
-                   : String((now - battery.lastGoodDataMs) / 1000UL);
-        uint8_t minCellIndex = 0;
-        uint8_t maxCellIndex = 0;
-        uint16_t minCellMv = 0;
-        uint16_t maxCellMv = 0;
-        bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
-        String batteryLink = "<a href='/battery?index=" + String(i) + "'>" + htmlEscape(String(cfg.name)) + "</a>";
-
-        String row;
-        row.reserve(512);
-        row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
-                     String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
-                      "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
-                      "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
-                      "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
-                      "</td><td>" + (battery.hasTemperature ? String(battery.temperature, 1) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(minCellMv / 1000.0f, 3) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(minCellIndex + 1) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(maxCellMv / 1000.0f, 3) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(maxCellIndex + 1) : String("-")) +
-                      "</td><td>" + age +
-                      "</td><td>" + String(battery.disconnectCount) + "</td></tr>";
-
-        server.sendContent(row);
-    }
-
-    server.sendContent(F("</table><p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
-    server.sendContent("");
+    AsyncWebServerResponse* response = request->beginResponse_P(200, "text/html", ROOT_HTML);
+    response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    request->send(response);
 }
 
-static void handleBatteryDetail() {
-    if (!server.hasArg("index")) {
-        server.send(400, "text/plain", "Missing battery index");
+static void handleBatteryDetail(AsyncWebServerRequest* request) {
+    AsyncWebServerResponse* response = request->beginResponse_P(200, "text/html", BATTERY_HTML);
+    response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    request->send(response);
+}
+
+static void handleApiSummary(AsyncWebServerRequest* request) {
+    sendJsonResponse(request, 200, buildSummaryJson());
+}
+
+static void handleApiBatteryDetail(AsyncWebServerRequest* request) {
+    int index = -1;
+    if (!tryGetRequestInt(request, "index", index)) {
+        sendJsonError(request, 400, "Missing or invalid battery index");
         return;
     }
-
-    String indexArg = server.arg("index");
-    if (!isAllDigits(indexArg)) {
-        server.send(400, "text/plain", "Invalid battery index");
-        return;
-    }
-
-    int index = indexArg.toInt();
     if (index < 0 || index >= batteryCount) {
-        server.send(404, "text/plain", "Battery not found");
+        sendJsonError(request, 404, "Battery not found");
         return;
     }
-
-    const BatteryConfig& cfg = batteryConfigs[index];
-    const BatteryState& battery = batteries[index];
-    unsigned long now = millis();
-    String cellDataAge = (battery.hasCellData && battery.lastCellDataMs != 0)
-                       ? (String((now - battery.lastCellDataMs) / 1000UL) + " s")
-                       : String("n/a");
-
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    server.send(200, "text/html", "");
-
-    server.sendContent(F("<!DOCTYPE html><html><head>"
-                         "<meta charset='UTF-8'>"
-                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                         "<meta http-equiv='refresh' content='5'>"
-                         "<title>Battery Cell Detail</title>"
-                         "<style>"
-                         "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
-                         "h1{color:#e0c97f;margin-bottom:4px}a{color:#8ec5ff}table{width:100%;border-collapse:collapse;margin-top:16px}"
-                         "th,td{padding:8px 10px;text-align:center;border-bottom:1px solid #2a2a4a}"
-                         "th{background:#16213e;color:#a0b4cc}.card{background:#16213e;border-radius:8px;padding:12px;margin:12px 0}"
-                         ".mono{font-family:monospace}.muted{color:#a0b4cc}"
-                         "</style></head><body>"));
-
-    server.sendContent(F("<p><a href='/'>Back to summary</a></p>"));
-    server.sendContent(String("<h1>Battery detail: ") + htmlEscape(String(cfg.name)) + "</h1>");
-    server.sendContent(String("<div class='card'><div>MAC: <span class='mono'>") +
-                       htmlEscape(String(cfg.mac)) +
-                       "</span></div>");
-    server.sendContent(String("<div>Connected: ") + (isBatteryConnected(index) ? "yes" : "no") + "</div>");
-    server.sendContent(String("<div>Cell data age: ") + cellDataAge + "</div></div>");
-
-    if (!battery.hasCellData || battery.cellCount == 0) {
-        server.sendContent(F("<p class='muted'>No valid cell data available yet.</p></body></html>"));
-        server.sendContent("");
-        return;
-    }
-
-    server.sendContent("<h2>Cell voltages (" + String(battery.cellCount) + ")</h2>");
-    server.sendContent(F("<table><tr><th>Cell</th><th>Voltage (V)</th></tr>"));
-    for (uint8_t i = 0; i < battery.cellCount; i++) {
-        String row = "<tr><td>" + String(i + 1) + "</td><td>" + String(battery.cellMv[i] / 1000.0f, 3) + "</td></tr>";
-        server.sendContent(row);
-    }
-    server.sendContent(F("</table></body></html>"));
-    server.sendContent("");
+    sendJsonResponse(request, 200, buildBatteryDetailJson(index));
 }
 
 static bool tryConnectWiFi(const char* ssid, const char* password) {
@@ -1368,231 +1585,403 @@ static void removeBattery(int index) {
 }
 
 // -----------------------------------------------------------------------
-// Web handlers: /batteries
+// Async batteries UI + API
 // -----------------------------------------------------------------------
 
-static const char BATTERIES_CSS[] PROGMEM =
-    "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
-    "h1{color:#e0c97f;margin-bottom:6px}"
-    "h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px;font-size:1.05em}"
-    "table{width:100%;border-collapse:collapse;margin-bottom:12px}"
-    "th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #2a2a4a}"
-    "th{background:#16213e;color:#a0b4cc}"
-    "a,button{text-decoration:none}"
-    ".mono{font-family:monospace;font-size:0.9em}"
-    ".btn{display:inline-block;padding:6px 16px;border-radius:4px;border:none;"
-         "cursor:pointer;font-size:0.9em;color:#fff}"
-    ".btn-back{background:#37474f}"
-    ".btn-scan{background:#2a6ea6}"
-    ".btn-add{background:#2e7d32;font-weight:bold;padding:8px 22px;font-size:1em}"
-    ".btn-remove{background:#c62828}"
-    ".note{color:#8899aa;font-size:0.85em;margin:4px 0}"
-    "input[type=radio]{accent-color:#2a6ea6;width:18px;height:18px;cursor:pointer}"
-    "input[type=text]{background:#16213e;color:#eee;border:1px solid #444;"
-                     "border-radius:3px;padding:3px 6px;width:130px}"
-    "tr.selected{background:#1e3a5f}";
+static void setLastActionStatus(bool ok, const String& message) {
+    lastActionOk = ok;
+    strncpy(lastActionMessage, message.c_str(), sizeof(lastActionMessage) - 1);
+    lastActionMessage[sizeof(lastActionMessage) - 1] = '\0';
+    lastActionMs = millis();
+}
 
-static void handleBatteriesPage() {
-    Serial.printf("[WEB] GET /batteries heap=%u\n", ESP.getFreeHeap());
+static void removeScanResultAt(int index) {
+    if (index < 0 || index >= scanResultCount) return;
+    for (int i = index; i < scanResultCount - 1; i++) {
+        scanResults[i] = scanResults[i + 1];
+    }
+    if (scanResultCount > 0) {
+        memset(&scanResults[scanResultCount - 1], 0, sizeof(ScanResult));
+        scanResultCount--;
+    }
+}
 
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    server.send(200, "text/html", "");
+static void removeScanResultByMac(const char* mac) {
+    if (mac == nullptr) return;
+    String target = mac;
+    target.toLowerCase();
+    for (int i = 0; i < scanResultCount; i++) {
+        String seen = scanResults[i].mac;
+        seen.toLowerCase();
+        if (seen == target) {
+            removeScanResultAt(i);
+            break;
+        }
+    }
+}
 
-    server.sendContent(F("<!DOCTYPE html><html><head>"
-                         "<meta charset='UTF-8'>"
-                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                         "<title>Manage Batteries</title><style>"));
-    server.sendContent(BATTERIES_CSS);
-    server.sendContent(F("</style></head><body>"
-                         "<h1>&#9889; Manage Batteries</h1>"
-                         "<p><a class='btn btn-back' href='/'>&#8592; Back to Summary</a></p>"));
+static void servicePendingWebAction() {
+    PendingWebActionType action = pendingWebAction;
+    if (action == WEB_ACTION_NONE) return;
 
-    // ---- Configured / active batteries ----
-    server.sendContent("<h2>Active batteries (" + String(batteryCount) +
-                       "/" + String(MAX_BATTERIES) + ")</h2>");
+    pendingWebAction = WEB_ACTION_NONE;
 
-    if (batteryCount == 0) {
-        server.sendContent(F("<p class='note'>No batteries configured. "
-                             "Use Scan below to discover and add batteries.</p>"));
-    } else {
-        server.sendContent(F("<table><tr><th>Name</th><th>MAC</th>"
-                             "<th>Connected</th><th>Remove</th></tr>"));
+    if (action == WEB_ACTION_ADD) {
+        String mac = pendingActionMac;
+        mac.toLowerCase();
+        mac.trim();
+        String name = pendingActionName;
+        name.trim();
+        pendingActionMac[0] = '\0';
+        pendingActionName[0] = '\0';
+
+        if (!isValidMac(mac.c_str())) {
+            setLastActionStatus(false, F("Queued add failed: invalid MAC"));
+            return;
+        }
+        if (name.length() == 0) name = mac;
+        if (name.length() >= MAX_NAME_LEN) name = name.substring(0, MAX_NAME_LEN - 1);
+        if (batteryCount >= MAX_BATTERIES) {
+            setLastActionStatus(false, F("Maximum configured battery count reached"));
+            return;
+        }
         for (int i = 0; i < batteryCount; i++) {
-            String row = "<tr><td>" + htmlEscape(String(batteryConfigs[i].name)) +
-                         "</td><td class='mono'>" + htmlEscape(String(batteryConfigs[i].mac)) +
-                         "</td><td>" + (isBatteryConnected(i) ? "<span style='color:#4caf50'>yes</span>"
-                                                               : "<span style='color:#f44336'>no</span>") +
-                         "</td><td><a class='btn btn-remove' href='/batteries/remove?index=" + String(i) +
-                         "' onclick=\"return confirm('Remove " +
-                         htmlEscape(String(batteryConfigs[i].name)) + "?')\">Remove</a></td></tr>";
-            server.sendContent(row);
-        }
-        server.sendContent(F("</table>"));
-    }
-
-    // ---- Scan button ----
-    server.sendContent(F("<h2>Discover new batteries</h2>"
-                         "<form method='get' action='/batteries/scan'>"
-                         "<button class='btn btn-scan' type='submit'>"
-                         "&#128269; Scan for BMS Devices</button>"
-                         "</form>"
-                         "<p class='note'>Scan takes ~10 seconds. "
-                         "Only BLE devices advertising the BMS service UUID are listed.</p>"));
-
-    // ---- Candidate list with radio-select + single ADD button ----
-    if (scanDone) {
-        if (scanResultCount == 0) {
-            server.sendContent(F("<p class='note'>No new BMS devices found. "
-                                 "Try scanning again.</p>"));
-        } else {
-            server.sendContent("<h2>Candidates found (" + String(scanResultCount) + ")</h2>");
-            server.sendContent(F("<form method='get' action='/batteries/add'>"
-                                 "<table>"
-                                 "<tr><th>Select</th><th>MAC</th>"
-                                 "<th>Advertised Name</th><th>Display Name</th></tr>"));
-            for (int i = 0; i < scanResultCount; i++) {
-                String defaultName = (strlen(scanResults[i].name) > 0)
-                                   ? String(scanResults[i].name)
-                                   : String(scanResults[i].mac);
-                String row =
-                    "<tr>"
-                    "<td><input type='radio' name='idx' value='" + String(i) + "'"
-                    + (i == 0 ? " checked" : "") + "></td>"
-                    "<td class='mono'>" + htmlEscape(String(scanResults[i].mac)) + "</td>"
-                    "<td>" + htmlEscape(String(scanResults[i].name)) + "</td>"
-                    "<td><input type='text' name='name_" + String(i) +
-                    "' value='" + htmlEscape(defaultName) + "' maxlength='19'></td>"
-                    "</tr>";
-                server.sendContent(row);
+            String cfgMac = batteryConfigs[i].mac;
+            cfgMac.toLowerCase();
+            if (cfgMac == mac) {
+                setLastActionStatus(false, F("Battery already active"));
+                return;
             }
-            server.sendContent(F("</table>"
-                                 "<p><button class='btn btn-add' type='submit'>"
-                                 "&#43; ADD TO ACTIVE LIST</button></p>"
-                                 "</form>"));
         }
-    }
 
-    server.sendContent(F("</body></html>"));
-    server.sendContent("");
-}
-
-static void handleBatteriesScan() {
-    // Guard against re-entrant scan
-    if (userScanActive) {
-        server.sendHeader("Location", "/batteries");
-        server.send(302, "text/plain", "");
+        addBattery(mac.c_str(), name.c_str());
+        removeScanResultByMac(mac.c_str());
+        setLastActionStatus(true, String(F("Added ")) + name);
         return;
     }
 
-    Serial.printf("[WEB] /batteries/scan starting\n");
+    if (action == WEB_ACTION_REMOVE) {
+        const int index = pendingRemoveIndex;
+        pendingRemoveIndex = -1;
+        if (index < 0 || index >= batteryCount) {
+            setLastActionStatus(false, F("Queued remove failed: battery not found"));
+            return;
+        }
+        const String removedName = batteryConfigs[index].name;
+        removeBattery(index);
+        setLastActionStatus(true, String(F("Removed ")) + removedName);
+    }
+}
 
-    scanResultCount = 0;
-    memset(scanResults, 0, sizeof(scanResults));
-    scanDone = false;
-    userScanActive = true;
+static void serviceUserScan(unsigned long nowMs) {
+    if (scanRequested && !scanInProgress) {
+        scanRequested = false;
+        scanInProgress = true;
+        scanDone = false;
+        userScanActive = true;
+        userScanDeadlineMs = nowMs + USER_SCAN_TIMEOUT_MS;
+        scanResultCount = 0;
+        memset(scanResults, 0, sizeof(scanResults));
+        pBLEScan->setActiveScan(true);
+        pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
+        pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
+        setLastActionStatus(true, F("Battery scan started"));
+        Serial.printf("[WEB] queued battery scan start deadline=%lu\n", userScanDeadlineMs);
+    }
 
-    pBLEScan->setActiveScan(true);
-    pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
-    pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
+    if (!scanInProgress) return;
 
-    unsigned long deadline = millis() + USER_SCAN_TIMEOUT_MS;
-    // Cast to int32_t so the comparison handles millis() wraparound (~49-day rollover)
-    while ((int32_t)(deadline - millis()) > 0) {
-        int32_t remaining = (int32_t)(deadline - millis());
-        if (remaining <= 0) break;
-        unsigned long sliceMs = ((unsigned long)remaining < SCAN_SLICE_MS)
-                              ? (unsigned long)remaining : SCAN_SLICE_MS;
-        if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
-        pBLEScan->start(scanDurationSeconds(sliceMs), false);
+    if (scanResultCount >= MAX_SCAN_RESULTS || hasDeadlinePassed(userScanDeadlineMs)) {
+        scanInProgress = false;
+        userScanActive = false;
+        scanDone = true;
+        userScanDeadlineMs = 0;
+        pBLEScan->stop();
         pBLEScan->clearResults();
-        if (wifiReady) server.handleClient();
+        setLastActionStatus(true,
+                            scanResultCount > 0 ? String(F("Scan complete"))
+                                                : String(F("Scan complete - no candidates")));
+        Serial.printf("[WEB] battery scan complete results=%d\n", scanResultCount);
+        return;
     }
 
-    userScanActive = false;
-    scanDone = true;
-    Serial.printf("[WEB] scan complete: %d candidate(s) found\n", scanResultCount);
+    unsigned long remainingMs = userScanDeadlineMs - nowMs;
+    unsigned long sliceMs = remainingMs < USER_SCAN_SLICE_MS ? remainingMs : USER_SCAN_SLICE_MS;
+    if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
-    server.sendHeader("Location", "/batteries");
-    server.send(302, "text/plain", "");
+    pBLEScan->start(scanDurationSeconds(sliceMs), false);
+    pBLEScan->clearResults();
+
+    if (scanResultCount >= MAX_SCAN_RESULTS || hasDeadlinePassed(userScanDeadlineMs)) {
+        scanInProgress = false;
+        userScanActive = false;
+        scanDone = true;
+        userScanDeadlineMs = 0;
+        pBLEScan->stop();
+        pBLEScan->clearResults();
+        setLastActionStatus(true,
+                            scanResultCount > 0 ? String(F("Scan complete"))
+                                                : String(F("Scan complete - no candidates")));
+        Serial.printf("[WEB] battery scan complete results=%d\n", scanResultCount);
+    }
 }
 
-static void handleBatteriesAdd() {
-    if (!server.hasArg("idx")) {
-        server.send(400, "text/plain", "No candidate selected");
-        return;
-    }
+static const char BATTERIES_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Manage Batteries</title>
+<style>
+body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}
+h1{color:#e0c97f;margin-bottom:6px}h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px;font-size:1.05em}
+table{width:100%;border-collapse:collapse;margin-bottom:12px}th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #2a2a4a}
+th{background:#16213e;color:#a0b4cc}.mono{font-family:monospace;font-size:.9em}
+.btn{display:inline-block;padding:6px 16px;border-radius:4px;border:none;cursor:pointer;font-size:.95em;color:#fff;text-decoration:none}
+.btn-back{background:#37474f}.btn-scan{background:#2a6ea6}.btn-add{background:#2e7d32;font-weight:bold;padding:8px 22px;font-size:1em}.btn-remove{background:#c62828}
+.note{color:#8899aa;font-size:.9em;margin:4px 0}.ok{color:#4caf50}.bad{color:#f44336}.warn{color:#ff9800}
+input[type=radio]{accent-color:#2a6ea6;width:18px;height:18px;cursor:pointer}input[type=text]{background:#16213e;color:#eee;border:1px solid #444;border-radius:3px;padding:3px 6px;width:140px}
+button:disabled{opacity:.6;cursor:not-allowed}
+</style>
+</head>
+<body>
+<h1>&#9889; Manage Batteries</h1>
+<p><a class="btn btn-back" href="/">&#8592; Back to Summary</a></p>
+<p class="note" id="pageStatus">Loading batteries…</p>
+<h2 id="activeTitle">Active batteries</h2>
+<div id="activeBlock"><p class="note">Loading…</p></div>
+<h2>Discover new batteries</h2>
+<p><button class="btn btn-scan" id="scanBtn" type="button">&#128269; Scan for BMS Devices</button></p>
+<p class="note">Scan runs in the background. Only BLE devices advertising the BMS service UUID are listed.</p>
+<div id="scanInfo" class="note">Scan idle.</div>
+<h2>Candidates</h2>
+<div id="candidateBlock"><p class="note">No scan results yet.</p></div>
+<p><button class="btn btn-add" id="addBtn" type="button">&#43; ADD TO ACTIVE LIST</button></p>
+<script>
+let batteriesState = null;
+let selectedCandidate = null;
+const candidateNames = {};
+const pageStatus = document.getElementById('pageStatus');
+const activeTitle = document.getElementById('activeTitle');
+const activeBlock = document.getElementById('activeBlock');
+const scanInfo = document.getElementById('scanInfo');
+const candidateBlock = document.getElementById('candidateBlock');
+const scanBtn = document.getElementById('scanBtn');
+const addBtn = document.getElementById('addBtn');
+function esc(v){ return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function candidateDefaultName(c){
+  const key = String(c.index);
+  if (!(key in candidateNames)) candidateNames[key] = c.name || c.mac;
+  return candidateNames[key];
+}
+function updateCandidateName(index, value){ candidateNames[String(index)] = value; }
+function renderActive(configured){
+  activeTitle.textContent = `Active batteries (${configured.length}/${batteriesState.maxBatteries})`;
+  if (!configured.length) {
+    activeBlock.innerHTML = '<p class="note">No batteries configured. Use Scan below to discover and add batteries.</p>';
+    return;
+  }
+  activeBlock.innerHTML = `<table><tr><th>Name</th><th>MAC</th><th>Connected</th><th>Remove</th></tr>${configured.map(b => `
+    <tr>
+      <td>${esc(b.name)}</td>
+      <td class="mono">${esc(b.mac)}</td>
+      <td class="${b.connected ? 'ok' : 'bad'}">${b.connected ? 'yes' : 'no'}</td>
+      <td><button class="btn btn-remove remove-btn" type="button" data-index="${b.index}" data-name="${esc(b.name)}">Remove</button></td>
+    </tr>`).join('')}</table>`;
+  activeBlock.querySelectorAll('.remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => removeBattery(Number(btn.dataset.index), btn.dataset.name || 'battery'));
+  });
+}
+function renderCandidates(candidates){
+  if (!candidates.length) {
+    candidateBlock.innerHTML = '<p class="note">No candidates available. Start a scan.</p>';
+    addBtn.disabled = true;
+    selectedCandidate = null;
+    return;
+  }
+  if (!candidates.some(c => c.index === selectedCandidate)) selectedCandidate = candidates[0].index;
+  candidateBlock.innerHTML = `<table><tr><th>Select</th><th>MAC</th><th>Advertised Name</th><th>Display Name</th></tr>${candidates.map(c => `
+    <tr>
+      <td><input type="radio" name="candidate" ${c.index === selectedCandidate ? 'checked' : ''} onchange="selectedCandidate=${c.index}"></td>
+      <td class="mono">${esc(c.mac)}</td>
+      <td>${esc(c.name)}</td>
+      <td><input id="cand-name-${c.index}" type="text" maxlength="19" value="${esc(candidateDefaultName(c))}" oninput="updateCandidateName(${c.index}, this.value)"></td>
+    </tr>`).join('')}</table>`;
+  addBtn.disabled = false;
+}
+function renderState(data){
+  batteriesState = data;
+  const pending = data.action && data.action.pending;
+  const actionCls = data.action && data.action.ok ? 'ok' : 'warn';
+  pageStatus.className = `note ${actionCls}`;
+  pageStatus.textContent = data.action ? data.action.message : 'Ready';
+  renderActive(data.configured || []);
+  renderCandidates(data.candidates || []);
 
-    String idxArg = server.arg("idx");
-    if (!isAllDigits(idxArg)) {
-        server.send(400, "text/plain", "Invalid idx");
+  if (data.scan?.inProgress) {
+    scanInfo.className = 'note warn';
+    scanInfo.textContent = `Background scan running… ${data.scan.resultCount} candidate(s) found so far.`;
+  } else if (data.scan?.done) {
+    scanInfo.className = 'note';
+    scanInfo.textContent = data.scan.resultCount ? `Scan complete: ${data.scan.resultCount} candidate(s) available.` : 'Scan complete: no new supported batteries found.';
+  } else if (data.scan?.requested) {
+    scanInfo.className = 'note warn';
+    scanInfo.textContent = 'Scan queued…';
+  } else {
+    scanInfo.className = 'note';
+    scanInfo.textContent = 'Scan idle.';
+  }
+
+  scanBtn.disabled = !!(data.scan?.requested || data.scan?.inProgress || pending);
+  addBtn.disabled = !((data.candidates || []).length) || pending || data.batteryCount >= data.maxBatteries;
+}
+async function refreshBatteries(){
+  try {
+    const res = await fetch('/api/batteries', { cache:'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderState(await res.json());
+  } catch (err) {
+    console.warn('batteries fetch failed', err);
+    pageStatus.className = 'note bad';
+    pageStatus.textContent = `Failed to refresh batteries: ${err.message}`;
+  }
+}
+async function callApi(url){
+  const res = await fetch(url, { cache:'no-store' });
+  let body = {};
+  try { body = await res.json(); } catch (_) {}
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  renderState(body);
+}
+async function removeBattery(index, name){
+  if (!confirm(`Remove ${name}?`)) return;
+  try {
+    await callApi(`/api/batteries/remove?index=${encodeURIComponent(index)}`);
+  } catch (err) {
+    pageStatus.className = 'note bad';
+    pageStatus.textContent = `Remove failed: ${err.message}`;
+  }
+}
+scanBtn.addEventListener('click', async () => {
+  try {
+    await callApi('/api/batteries/scan');
+  } catch (err) {
+    pageStatus.className = 'note bad';
+    pageStatus.textContent = `Scan request failed: ${err.message}`;
+  }
+});
+addBtn.addEventListener('click', async () => {
+  if (selectedCandidate == null) return;
+  const input = document.getElementById(`cand-name-${selectedCandidate}`);
+  const chosenName = (input && input.value.trim()) || '';
+  try {
+    await callApi(`/api/batteries/add?idx=${encodeURIComponent(selectedCandidate)}&name=${encodeURIComponent(chosenName)}`);
+  } catch (err) {
+    pageStatus.className = 'note bad';
+    pageStatus.textContent = `Add failed: ${err.message}`;
+  }
+});
+refreshBatteries();
+setInterval(refreshBatteries, 1500);
+window.removeBattery = removeBattery;
+window.updateCandidateName = updateCandidateName;
+</script>
+</body>
+</html>
+)HTML";
+
+static void handleBatteriesPage(AsyncWebServerRequest* request) {
+    Serial.printf("[WEB] GET /batteries heap=%u\n", ESP.getFreeHeap());
+    AsyncWebServerResponse* response = request->beginResponse_P(200, "text/html", BATTERIES_HTML);
+    response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    request->send(response);
+}
+
+static void handleApiBatteries(AsyncWebServerRequest* request) {
+    sendJsonResponse(request, 200, buildBatteriesJson());
+}
+
+static void handleApiBatteriesScan(AsyncWebServerRequest* request) {
+    if (scanRequested || scanInProgress) {
+        sendJsonResponse(request, 200, buildBatteriesJson());
         return;
     }
-    int idx = idxArg.toInt();
+    scanRequested = true;
+    scanDone = false;
+    userScanDeadlineMs = 0;
+    setLastActionStatus(true, F("Battery scan queued"));
+    sendJsonResponse(request, 202, buildBatteriesJson());
+}
+
+static void handleApiBatteriesAdd(AsyncWebServerRequest* request) {
+    int idx = -1;
+    if (!tryGetRequestInt(request, "idx", idx)) {
+        sendJsonError(request, 400, "Missing or invalid candidate index");
+        return;
+    }
     if (idx < 0 || idx >= scanResultCount) {
-        server.send(400, "text/plain", "Invalid candidate index");
+        sendJsonError(request, 400, "Candidate index out of range");
+        return;
+    }
+    if (pendingWebAction != WEB_ACTION_NONE) {
+        sendJsonError(request, 409, "Another battery action is already pending");
+        return;
+    }
+    if (batteryCount >= MAX_BATTERIES) {
+        sendJsonError(request, 400, "Maximum battery count reached");
         return;
     }
 
-    String mac = String(scanResults[idx].mac);
+    String mac = scanResults[idx].mac;
     mac.toLowerCase();
     mac.trim();
-
     if (!isValidMac(mac.c_str())) {
-        server.send(400, "text/plain", "Invalid MAC address");
+        sendJsonError(request, 400, "Invalid candidate MAC address");
         return;
     }
-
-    // Duplicate check
     for (int i = 0; i < batteryCount; i++) {
-        String cfgMac = String(batteryConfigs[i].mac);
+        String cfgMac = batteryConfigs[i].mac;
         cfgMac.toLowerCase();
         if (cfgMac == mac) {
-            server.sendHeader("Location", "/batteries");
-            server.send(302, "text/plain", "");
+            sendJsonError(request, 409, "Battery is already active");
             return;
         }
     }
 
-    if (batteryCount >= MAX_BATTERIES) {
-        server.send(400, "text/plain", "Maximum battery count reached");
-        return;
-    }
-
-    // Retrieve the user-edited display name for this candidate
-    String nameKey = "name_" + String(idx);
-    String name = server.hasArg(nameKey) ? server.arg(nameKey) : mac;
+    String name = request->hasParam("name") ? request->getParam("name")->value() : mac;
     name.trim();
     if (name.length() == 0) name = mac;
     if (name.length() >= MAX_NAME_LEN) name = name.substring(0, MAX_NAME_LEN - 1);
 
-    addBattery(mac.c_str(), name.c_str());
-
-    server.sendHeader("Location", "/batteries");
-    server.send(302, "text/plain", "");
+    strncpy(pendingActionMac, mac.c_str(), MAX_MAC_LEN - 1);
+    pendingActionMac[MAX_MAC_LEN - 1] = '\0';
+    strncpy(pendingActionName, name.c_str(), MAX_NAME_LEN - 1);
+    pendingActionName[MAX_NAME_LEN - 1] = '\0';
+    pendingWebAction = WEB_ACTION_ADD;
+    setLastActionStatus(true, String(F("Queued add for ")) + name);
+    sendJsonResponse(request, 202, buildBatteriesJson());
 }
 
-static void handleBatteriesRemove() {
-    if (!server.hasArg("index")) {
-        server.send(400, "text/plain", "Missing index");
+static void handleApiBatteriesRemove(AsyncWebServerRequest* request) {
+    int index = -1;
+    if (!tryGetRequestInt(request, "index", index)) {
+        sendJsonError(request, 400, "Missing or invalid battery index");
         return;
     }
-
-    String indexArg = server.arg("index");
-    if (!isAllDigits(indexArg)) {
-        server.send(400, "text/plain", "Invalid index");
-        return;
-    }
-
-    int index = indexArg.toInt();
     if (index < 0 || index >= batteryCount) {
-        server.send(400, "text/plain", "Index out of range");
+        sendJsonError(request, 400, "Battery index out of range");
+        return;
+    }
+    if (pendingWebAction != WEB_ACTION_NONE) {
+        sendJsonError(request, 409, "Another battery action is already pending");
         return;
     }
 
-    removeBattery(index);
-
-    server.sendHeader("Location", "/batteries");
-    server.send(302, "text/plain", "");
+    pendingRemoveIndex = index;
+    pendingWebAction = WEB_ACTION_REMOVE;
+    setLastActionStatus(true, String(F("Queued remove for ")) + batteryConfigs[index].name);
+    sendJsonResponse(request, 202, buildBatteriesJson());
 }
 
 void setup() {
@@ -1615,15 +2004,17 @@ void setup() {
     }
     if (wifiOk) {
         Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
-        server.on("/", handleRoot);
-        server.on("/battery", handleBatteryDetail);
-        server.on("/batteries", handleBatteriesPage);
-        server.on("/batteries/scan", handleBatteriesScan);
-        server.on("/batteries/add", handleBatteriesAdd);
-        server.on("/batteries/remove", handleBatteriesRemove);
+        server.on("/", HTTP_GET, handleRoot);
+        server.on("/battery", HTTP_GET, handleBatteryDetail);
+        server.on("/batteries", HTTP_GET, handleBatteriesPage);
+        server.on("/api/summary", HTTP_GET, handleApiSummary);
+        server.on("/api/battery", HTTP_GET, handleApiBatteryDetail);
+        server.on("/api/batteries", HTTP_GET, handleApiBatteries);
+        server.on("/api/batteries/scan", HTTP_GET, handleApiBatteriesScan);
+        server.on("/api/batteries/add", HTTP_GET, handleApiBatteriesAdd);
+        server.on("/api/batteries/remove", HTTP_GET, handleApiBatteriesRemove);
         server.begin();
         Serial.println("Web server started on port 80");
-        wifiReady = true;
     } else {
         Serial.println("WiFi failed - continuing without web server");
     }
@@ -1684,19 +2075,19 @@ void loop() {
                       enabledBatteryCount());
     }
 
-    if (wifiReady) server.handleClient();
+    servicePendingWebAction();
+    serviceUserScan(now);
+    now = millis();
 
     for (int i = 0; i < batteryCount; i++) {
         if (!batteryConfigs[i].enabled) continue;
 
         if (isBatteryConnected(i)) {
             serviceBatteryPolling(i, now);
-        } else if (shouldAttemptReconnect(i, now)) {
+        } else if (!scanInProgress && !scanRequested && shouldAttemptReconnect(i, now)) {
             bool ok = reconnectBattery(i);
             Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
-
-        if (wifiReady) server.handleClient();
     }
 
     aggregate = buildAggregateSnapshot(now);
