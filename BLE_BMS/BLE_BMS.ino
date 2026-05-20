@@ -54,6 +54,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 enum BatteryRequestStage : uint8_t {
     REQUEST_STAGE_IDLE = 0,
     REQUEST_STAGE_WAIT_03,
+    REQUEST_STAGE_READY_04,
     REQUEST_STAGE_WAIT_04
 };
 
@@ -477,7 +478,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         battery.requestInFlight = false;
         battery.requestDeadlineMs = 0;
         battery.lastRequestCompletedMs = millis();
-        battery.requestStage = (packetType == 0x03) ? REQUEST_STAGE_WAIT_04 : REQUEST_STAGE_IDLE;
+        battery.requestStage = (packetType == 0x03) ? REQUEST_STAGE_READY_04 : REQUEST_STAGE_IDLE;
 
         if (packetType == 0x04) {
             battery.okReads++;
@@ -795,7 +796,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     BatteryRequestStage nextStage = REQUEST_STAGE_WAIT_03;
     bool partOfCurrentCycle = false;
 
-    if (battery.requestStage == REQUEST_STAGE_WAIT_04) {
+    if (battery.requestStage == REQUEST_STAGE_READY_04) {
         cmd = cmd4;
         cmdLen = sizeof(cmd4);
         nextStage = REQUEST_STAGE_WAIT_04;
@@ -1043,7 +1044,7 @@ static void handleRoot() {
         String batteryLink = "<a href='/battery?index=" + String(i) + "'>" + htmlEscape(String(cfg.name)) + "</a>";
 
         String row;
-        row.reserve(420);
+        row.reserve(512);
         row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
                      String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
                       "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
