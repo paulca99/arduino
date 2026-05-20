@@ -6,6 +6,7 @@
 #include <BLERemoteService.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Preferences.h>
 #include <math.h>
 #include <new>
 #include <string.h>
@@ -36,6 +37,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
 #define SCAN_SLICE_MS              1200
 #define MIN_SCAN_SLICE_MS           200
+#define USER_SCAN_TIMEOUT_MS      10000
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
 #define CONNECT_DELAY_MS            100
@@ -58,20 +60,29 @@ enum BatteryRequestStage : uint8_t {
     REQUEST_STAGE_WAIT_04       // Waiting for the cell-voltage response.
 };
 
+#define MAX_BATTERIES     6
+#define MAX_NAME_LEN     20
+#define MAX_MAC_LEN      18
+#define MAX_SCAN_RESULTS 10
+
 struct BatteryConfig {
-    const char* name;
-    const char* mac;
+    char name[MAX_NAME_LEN];
+    char mac[MAX_MAC_LEN];
     bool enabled;
 };
 
-static BatteryConfig batteryConfigs[] = {
-    {"Growatt", "a5:c2:37:49:c7:a2", false},
-    {"Solax", "a4:c1:37:20:4e:3b", false},
-    {"SP14S004P14S40A", "a5:c2:37:51:85:7f", false},
-    {"Growatt2", "a5:c2:37:51:85:89", true}
+static BatteryConfig batteryConfigs[MAX_BATTERIES];
+static int batteryCount = 0;
+
+struct ScanResult {
+    char mac[MAX_MAC_LEN];
+    char name[MAX_NAME_LEN];
 };
 
-static const int BATTERY_COUNT = sizeof(batteryConfigs) / sizeof(batteryConfigs[0]);
+static ScanResult scanResults[MAX_SCAN_RESULTS];
+static int scanResultCount = 0;
+static bool userScanActive = false;
+static bool scanDone = false;
 
 struct BatteryState {
     BLEAdvertisedDevice* advertisedDevice = nullptr;
@@ -133,7 +144,7 @@ struct AggregateSnapshot {
     unsigned long lastFreshMs = 0;
 };
 
-static BatteryState batteries[BATTERY_COUNT];
+static BatteryState batteries[MAX_BATTERIES];
 static AggregateSnapshot aggregate;
 
 static BLEScan* pBLEScan = nullptr;
@@ -150,6 +161,12 @@ void sendCANFrames(float voltage,
                    bool chargeAllowed,
                    bool dischargeAllowed);
 
+// Battery management web handlers (defined later)
+static void handleBatteriesPage();
+static void handleBatteriesScan();
+static void handleBatteriesAdd();
+static void handleBatteriesRemove();
+
 static const char* wifiStatusToString(wl_status_t status) {
     switch (status) {
         case WL_NO_SHIELD: return "NO_SHIELD";
@@ -165,14 +182,14 @@ static const char* wifiStatusToString(wl_status_t status) {
 }
 
 static int findBatteryByClient(BLEClient* client) {
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (batteries[i].client == client) return i;
     }
     return -1;
 }
 
 static int findBatteryByRx(BLERemoteCharacteristic* characteristic) {
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (batteries[i].rx == characteristic) return i;
     }
     return -1;
@@ -187,7 +204,7 @@ static uint32_t scanDurationSeconds(unsigned long durationMs) {
 }
 
 static bool isBatteryEnabled(int index) {
-    return index >= 0 && index < BATTERY_COUNT && batteryConfigs[index].enabled;
+    return index >= 0 && index < batteryCount && batteryConfigs[index].enabled;
 }
 
 static bool isBatteryConnected(int index) {
@@ -215,7 +232,7 @@ static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs
 
 static int enabledBatteryCount() {
     int count = 0;
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (batteryConfigs[i].enabled) count++;
     }
     return count;
@@ -223,7 +240,7 @@ static int enabledBatteryCount() {
 
 static int seenBatteryCount() {
     int count = 0;
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (batteryConfigs[i].enabled && batteries[i].seen) count++;
     }
     return count;
@@ -231,14 +248,14 @@ static int seenBatteryCount() {
 
 static int connectedBatteryCount() {
     int count = 0;
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (isBatteryConnected(i)) count++;
     }
     return count;
 }
 
 static void logBatteryDebugState(int index, const char* prefix) {
-    if (index < 0 || index >= BATTERY_COUNT) return;
+    if (index < 0 || index >= batteryCount) return;
 
     BatteryState& battery = batteries[index];
     unsigned long now = millis();
@@ -285,11 +302,11 @@ static void logSystemDebugSummary(const char* prefix) {
         ESP.getFreeHeap(),
         wifiStatusToString(WiFi.status()),
         connectedBatteryCount(),
-        BATTERY_COUNT,
+        batteryCount,
         enabledBatteryCount()
     );
 
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (!batteryConfigs[i].enabled) continue;
         logBatteryDebugState(i, "  state");
     }
@@ -546,7 +563,38 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
         String seenMac = advertisedDevice.getAddress().toString().c_str();
         seenMac.toLowerCase();
 
-        for (int i = 0; i < BATTERY_COUNT; i++) {
+        // During user-triggered scan: collect BMS candidates not already configured
+        if (userScanActive && scanResultCount < MAX_SCAN_RESULTS) {
+            bool alreadyKnown = false;
+            for (int i = 0; i < batteryCount; i++) {
+                String cfgMac = batteryConfigs[i].mac;
+                cfgMac.toLowerCase();
+                if (seenMac == cfgMac) { alreadyKnown = true; break; }
+            }
+            if (!alreadyKnown) {
+                bool alreadyInResults = false;
+                for (int j = 0; j < scanResultCount; j++) {
+                    String rMac = scanResults[j].mac;
+                    rMac.toLowerCase();
+                    if (seenMac == rMac) { alreadyInResults = true; break; }
+                }
+                if (!alreadyInResults) {
+                    strncpy(scanResults[scanResultCount].mac, seenMac.c_str(), MAX_MAC_LEN - 1);
+                    scanResults[scanResultCount].mac[MAX_MAC_LEN - 1] = '\0';
+                    String advName = advertisedDevice.haveName()
+                                   ? advertisedDevice.getName().c_str()
+                                   : "";
+                    strncpy(scanResults[scanResultCount].name, advName.c_str(), MAX_NAME_LEN - 1);
+                    scanResults[scanResultCount].name[MAX_NAME_LEN - 1] = '\0';
+                    scanResultCount++;
+                    Serial.printf("[SCAN] BMS candidate: %s (%s)\n",
+                                  seenMac.c_str(), advName.c_str());
+                }
+            }
+        }
+
+        // Normal operation: match against configured batteries
+        for (int i = 0; i < batteryCount; i++) {
             if (!batteryConfigs[i].enabled) continue;
 
             String targetMac = batteryConfigs[i].mac;
@@ -569,7 +617,8 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
                           batteryConfigs[i].name,
                           batteryConfigs[i].mac);
 
-            if (seenBatteryCount() >= enabledBatteryCount()) {
+            // Only stop early during normal (non-user) scans
+            if (!userScanActive && seenBatteryCount() >= enabledBatteryCount()) {
                 BLEDevice::getScan()->stop();
             }
             return;
@@ -610,7 +659,7 @@ static void cleanupBatteryClient(int index) {
 }
 
 static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         batteries[i].seen = false;
         if (batteries[i].advertisedDevice != nullptr) {
             delete batteries[i].advertisedDevice;
@@ -881,7 +930,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     bool chargeAllowedInit = false;
     bool dischargeAllowedInit = false;
 
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (!batteryConfigs[i].enabled) continue;
 
         const BatteryState& battery = batteries[i];
@@ -1008,7 +1057,9 @@ static void handleRoot() {
                          "th{background:#16213e;color:#a0b4cc}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}"
                          ".card{background:#16213e;border-radius:8px;padding:12px;text-align:center}.card .label{font-size:0.75em;color:#8899aa;margin-bottom:4px}"
                          ".card .value{font-size:1.4em;font-weight:bold}.green{color:#4caf50}.amber{color:#ff9800}.red{color:#f44336}.mono{font-family:monospace}"
-                         "</style></head><body><h1>Battery BMS (Persistent BLE)</h1>"));
+                         ".btn-mgr{display:inline-block;padding:7px 18px;background:#2a6ea6;color:#fff;border-radius:5px;text-decoration:none;font-size:0.95em;margin-bottom:12px}"
+                         "</style></head><body><h1>Battery BMS (Persistent BLE)</h1>"
+                         "<p><a class='btn-mgr' href='/batteries'>&#9881; Manage Batteries</a></p>"));
 
     server.sendContent(F("<div class='grid'>"));
     sendCard("Enabled Batteries", String(enabledBatteryCount()));
@@ -1031,7 +1082,7 @@ static void handleRoot() {
                          "<th>Name</th><th>MAC</th><th>Enabled</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
                          "</tr>"));
 
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         const BatteryConfig& cfg = batteryConfigs[i];
         const BatteryState& battery = batteries[i];
 
@@ -1074,19 +1125,13 @@ static void handleBatteryDetail() {
     }
 
     String indexArg = server.arg("index");
-    if (indexArg.length() == 0) {
-        server.send(400, "text/plain", "Missing battery index");
+    if (!isAllDigits(indexArg)) {
+        server.send(400, "text/plain", "Invalid battery index");
         return;
-    }
-    for (size_t i = 0; i < indexArg.length(); i++) {
-        if (!isDigit(indexArg.charAt(i))) {
-            server.send(400, "text/plain", "Invalid battery index");
-            return;
-        }
     }
 
     int index = indexArg.toInt();
-    if (index < 0 || index >= BATTERY_COUNT) {
+    if (index < 0 || index >= batteryCount) {
         server.send(404, "text/plain", "Battery not found");
         return;
     }
@@ -1171,7 +1216,7 @@ static void logBMSData() {
         Serial.println("Aggregate: no fresh data");
     }
 
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (!batteryConfigs[i].enabled) continue;
 
         BatteryState& battery = batteries[i];
@@ -1206,6 +1251,350 @@ static void logBMSData() {
     Serial.println("=================================");
 }
 
+// -----------------------------------------------------------------------
+// NVS persistence (Preferences)
+// -----------------------------------------------------------------------
+
+static Preferences prefs;
+
+static void saveNVSConfig() {
+    prefs.begin("bms_cfg", false);
+    prefs.putInt("count", batteryCount);
+    for (int i = 0; i < batteryCount; i++) {
+        char key[12];
+        snprintf(key, sizeof(key), "name_%d", i);
+        prefs.putString(key, batteryConfigs[i].name);
+        snprintf(key, sizeof(key), "mac_%d", i);
+        prefs.putString(key, batteryConfigs[i].mac);
+    }
+    prefs.end();
+    Serial.printf("[NVS] saved %d batteries\n", batteryCount);
+}
+
+static void loadNVSConfig() {
+    memset(batteryConfigs, 0, sizeof(batteryConfigs));
+    batteryCount = 0;
+
+    prefs.begin("bms_cfg", true);
+    int count = prefs.getInt("count", 0);
+    if (count < 0) count = 0;
+    if (count > MAX_BATTERIES) count = MAX_BATTERIES;
+
+    for (int i = 0; i < count; i++) {
+        char key[12];
+        snprintf(key, sizeof(key), "name_%d", i);
+        String name = prefs.getString(key, "");
+        snprintf(key, sizeof(key), "mac_%d", i);
+        String mac = prefs.getString(key, "");
+        if (mac.length() == 0) continue;
+        if (name.length() == 0) name = mac;
+        strncpy(batteryConfigs[batteryCount].name, name.c_str(), MAX_NAME_LEN - 1);
+        batteryConfigs[batteryCount].name[MAX_NAME_LEN - 1] = '\0';
+        strncpy(batteryConfigs[batteryCount].mac, mac.c_str(), MAX_MAC_LEN - 1);
+        batteryConfigs[batteryCount].mac[MAX_MAC_LEN - 1] = '\0';
+        batteryConfigs[batteryCount].enabled = true;
+        batteryCount++;
+    }
+    prefs.end();
+    Serial.printf("[NVS] loaded %d batteries\n", batteryCount);
+}
+
+// -----------------------------------------------------------------------
+// Battery management helpers
+// -----------------------------------------------------------------------
+
+// Returns true if s is a non-empty string of decimal digits.
+static bool isAllDigits(const String& s) {
+    if (s.length() == 0) return false;
+    for (size_t i = 0; i < s.length(); i++) {
+        if (!isDigit(s.charAt(i))) return false;
+    }
+    return true;
+}
+
+static bool isValidMac(const char* mac) {
+    if (mac == nullptr || strlen(mac) != 17) return false;
+    for (int i = 0; i < 17; i++) {
+        if (i % 3 == 2) {
+            if (mac[i] != ':') return false;
+        } else {
+            if (!isxdigit((unsigned char)mac[i])) return false;
+        }
+    }
+    return true;
+}
+
+static void addBattery(const char* mac, const char* name) {
+    if (batteryCount >= MAX_BATTERIES) return;
+    int idx = batteryCount;
+    strncpy(batteryConfigs[idx].name, name, MAX_NAME_LEN - 1);
+    batteryConfigs[idx].name[MAX_NAME_LEN - 1] = '\0';
+    strncpy(batteryConfigs[idx].mac, mac, MAX_MAC_LEN - 1);
+    batteryConfigs[idx].mac[MAX_MAC_LEN - 1] = '\0';
+    batteryConfigs[idx].enabled = true;
+    batteries[idx] = BatteryState();
+    batteries[idx].nextReconnectMs = millis() + 2000UL;
+    batteryCount++;
+    saveNVSConfig();
+    Serial.printf("[MGR] added [%s] %s total=%d\n", name, mac, batteryCount);
+}
+
+static void removeBattery(int index) {
+    if (index < 0 || index >= batteryCount) return;
+    Serial.printf("[MGR] removing [%s] %s\n",
+                  batteryConfigs[index].name, batteryConfigs[index].mac);
+
+    cleanupBatteryClient(index);
+    if (batteries[index].advertisedDevice != nullptr) {
+        delete batteries[index].advertisedDevice;
+        batteries[index].advertisedDevice = nullptr;
+    }
+    batteries[index].seen = false;
+    batteries[index].nextReconnectMs = 0;
+
+    // Shift entries down to fill the gap
+    for (int i = index; i < batteryCount - 1; i++) {
+        batteryConfigs[i] = batteryConfigs[i + 1];
+        batteries[i] = batteries[i + 1];
+    }
+
+    // Clear the vacated last slot
+    memset(&batteryConfigs[batteryCount - 1], 0, sizeof(BatteryConfig));
+    batteries[batteryCount - 1] = BatteryState();
+
+    batteryCount--;
+    saveNVSConfig();
+    Serial.printf("[MGR] removed. total=%d\n", batteryCount);
+}
+
+// -----------------------------------------------------------------------
+// Web handlers: /batteries
+// -----------------------------------------------------------------------
+
+static const char BATTERIES_CSS[] PROGMEM =
+    "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
+    "h1{color:#e0c97f;margin-bottom:6px}"
+    "h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px;font-size:1.05em}"
+    "table{width:100%;border-collapse:collapse;margin-bottom:12px}"
+    "th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #2a2a4a}"
+    "th{background:#16213e;color:#a0b4cc}"
+    "a,button{text-decoration:none}"
+    ".mono{font-family:monospace;font-size:0.9em}"
+    ".btn{display:inline-block;padding:6px 16px;border-radius:4px;border:none;"
+         "cursor:pointer;font-size:0.9em;color:#fff}"
+    ".btn-back{background:#37474f}"
+    ".btn-scan{background:#2a6ea6}"
+    ".btn-add{background:#2e7d32;font-weight:bold;padding:8px 22px;font-size:1em}"
+    ".btn-remove{background:#c62828}"
+    ".note{color:#8899aa;font-size:0.85em;margin:4px 0}"
+    "input[type=radio]{accent-color:#2a6ea6;width:18px;height:18px;cursor:pointer}"
+    "input[type=text]{background:#16213e;color:#eee;border:1px solid #444;"
+                     "border-radius:3px;padding:3px 6px;width:130px}"
+    "tr.selected{background:#1e3a5f}";
+
+static void handleBatteriesPage() {
+    Serial.printf("[WEB] GET /batteries heap=%u\n", ESP.getFreeHeap());
+
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html", "");
+
+    server.sendContent(F("<!DOCTYPE html><html><head>"
+                         "<meta charset='UTF-8'>"
+                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                         "<title>Manage Batteries</title><style>"));
+    server.sendContent(BATTERIES_CSS);
+    server.sendContent(F("</style></head><body>"
+                         "<h1>&#9889; Manage Batteries</h1>"
+                         "<p><a class='btn btn-back' href='/'>&#8592; Back to Summary</a></p>"));
+
+    // ---- Configured / active batteries ----
+    server.sendContent("<h2>Active batteries (" + String(batteryCount) +
+                       "/" + String(MAX_BATTERIES) + ")</h2>");
+
+    if (batteryCount == 0) {
+        server.sendContent(F("<p class='note'>No batteries configured. "
+                             "Use Scan below to discover and add batteries.</p>"));
+    } else {
+        server.sendContent(F("<table><tr><th>Name</th><th>MAC</th>"
+                             "<th>Connected</th><th>Remove</th></tr>"));
+        for (int i = 0; i < batteryCount; i++) {
+            String row = "<tr><td>" + htmlEscape(String(batteryConfigs[i].name)) +
+                         "</td><td class='mono'>" + htmlEscape(String(batteryConfigs[i].mac)) +
+                         "</td><td>" + (isBatteryConnected(i) ? "<span style='color:#4caf50'>yes</span>"
+                                                               : "<span style='color:#f44336'>no</span>") +
+                         "</td><td><a class='btn btn-remove' href='/batteries/remove?index=" + String(i) +
+                         "' onclick=\"return confirm('Remove " +
+                         htmlEscape(String(batteryConfigs[i].name)) + "?')\">Remove</a></td></tr>";
+            server.sendContent(row);
+        }
+        server.sendContent(F("</table>"));
+    }
+
+    // ---- Scan button ----
+    server.sendContent(F("<h2>Discover new batteries</h2>"
+                         "<form method='get' action='/batteries/scan'>"
+                         "<button class='btn btn-scan' type='submit'>"
+                         "&#128269; Scan for BMS Devices</button>"
+                         "</form>"
+                         "<p class='note'>Scan takes ~10 seconds. "
+                         "Only BLE devices advertising the BMS service UUID are listed.</p>"));
+
+    // ---- Candidate list with radio-select + single ADD button ----
+    if (scanDone) {
+        if (scanResultCount == 0) {
+            server.sendContent(F("<p class='note'>No new BMS devices found. "
+                                 "Try scanning again.</p>"));
+        } else {
+            server.sendContent("<h2>Candidates found (" + String(scanResultCount) + ")</h2>");
+            server.sendContent(F("<form method='get' action='/batteries/add'>"
+                                 "<table>"
+                                 "<tr><th>Select</th><th>MAC</th>"
+                                 "<th>Advertised Name</th><th>Display Name</th></tr>"));
+            for (int i = 0; i < scanResultCount; i++) {
+                String defaultName = (strlen(scanResults[i].name) > 0)
+                                   ? String(scanResults[i].name)
+                                   : String(scanResults[i].mac);
+                String row =
+                    "<tr>"
+                    "<td><input type='radio' name='idx' value='" + String(i) + "'"
+                    + (i == 0 ? " checked" : "") + "></td>"
+                    "<td class='mono'>" + htmlEscape(String(scanResults[i].mac)) + "</td>"
+                    "<td>" + htmlEscape(String(scanResults[i].name)) + "</td>"
+                    "<td><input type='text' name='name_" + String(i) +
+                    "' value='" + htmlEscape(defaultName) + "' maxlength='19'></td>"
+                    "</tr>";
+                server.sendContent(row);
+            }
+            server.sendContent(F("</table>"
+                                 "<p><button class='btn btn-add' type='submit'>"
+                                 "&#43; ADD TO ACTIVE LIST</button></p>"
+                                 "</form>"));
+        }
+    }
+
+    server.sendContent(F("</body></html>"));
+    server.sendContent("");
+}
+
+static void handleBatteriesScan() {
+    // Guard against re-entrant scan
+    if (userScanActive) {
+        server.sendHeader("Location", "/batteries");
+        server.send(302, "text/plain", "");
+        return;
+    }
+
+    Serial.printf("[WEB] /batteries/scan starting\n");
+
+    scanResultCount = 0;
+    memset(scanResults, 0, sizeof(scanResults));
+    scanDone = false;
+    userScanActive = true;
+
+    pBLEScan->setActiveScan(true);
+    pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
+    pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
+
+    unsigned long deadline = millis() + USER_SCAN_TIMEOUT_MS;
+    // Cast to int32_t so the comparison handles millis() wraparound (~49-day rollover)
+    while ((int32_t)(deadline - millis()) > 0) {
+        int32_t remaining = (int32_t)(deadline - millis());
+        if (remaining <= 0) break;
+        unsigned long sliceMs = ((unsigned long)remaining < SCAN_SLICE_MS)
+                              ? (unsigned long)remaining : SCAN_SLICE_MS;
+        if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
+        pBLEScan->start(scanDurationSeconds(sliceMs), false);
+        pBLEScan->clearResults();
+        if (wifiReady) server.handleClient();
+    }
+
+    userScanActive = false;
+    scanDone = true;
+    Serial.printf("[WEB] scan complete: %d candidate(s) found\n", scanResultCount);
+
+    server.sendHeader("Location", "/batteries");
+    server.send(302, "text/plain", "");
+}
+
+static void handleBatteriesAdd() {
+    if (!server.hasArg("idx")) {
+        server.send(400, "text/plain", "No candidate selected");
+        return;
+    }
+
+    String idxArg = server.arg("idx");
+    if (!isAllDigits(idxArg)) {
+        server.send(400, "text/plain", "Invalid idx");
+        return;
+    }
+    int idx = idxArg.toInt();
+    if (idx < 0 || idx >= scanResultCount) {
+        server.send(400, "text/plain", "Invalid candidate index");
+        return;
+    }
+
+    String mac = String(scanResults[idx].mac);
+    mac.toLowerCase();
+    mac.trim();
+
+    if (!isValidMac(mac.c_str())) {
+        server.send(400, "text/plain", "Invalid MAC address");
+        return;
+    }
+
+    // Duplicate check
+    for (int i = 0; i < batteryCount; i++) {
+        String cfgMac = String(batteryConfigs[i].mac);
+        cfgMac.toLowerCase();
+        if (cfgMac == mac) {
+            server.sendHeader("Location", "/batteries");
+            server.send(302, "text/plain", "");
+            return;
+        }
+    }
+
+    if (batteryCount >= MAX_BATTERIES) {
+        server.send(400, "text/plain", "Maximum battery count reached");
+        return;
+    }
+
+    // Retrieve the user-edited display name for this candidate
+    String nameKey = "name_" + String(idx);
+    String name = server.hasArg(nameKey) ? server.arg(nameKey) : mac;
+    name.trim();
+    if (name.length() == 0) name = mac;
+    if (name.length() >= MAX_NAME_LEN) name = name.substring(0, MAX_NAME_LEN - 1);
+
+    addBattery(mac.c_str(), name.c_str());
+
+    server.sendHeader("Location", "/batteries");
+    server.send(302, "text/plain", "");
+}
+
+static void handleBatteriesRemove() {
+    if (!server.hasArg("index")) {
+        server.send(400, "text/plain", "Missing index");
+        return;
+    }
+
+    String indexArg = server.arg("index");
+    if (!isAllDigits(indexArg)) {
+        server.send(400, "text/plain", "Invalid index");
+        return;
+    }
+
+    int index = indexArg.toInt();
+    if (index < 0 || index >= batteryCount) {
+        server.send(400, "text/plain", "Index out of range");
+        return;
+    }
+
+    removeBattery(index);
+
+    server.sendHeader("Location", "/batteries");
+    server.send(302, "text/plain", "");
+}
+
 void setup() {
     Serial.begin(115200);
     delay(500);
@@ -1213,6 +1602,9 @@ void setup() {
     Serial.println("=== JBD BMS -> Solis CAN Bridge (persistent classic BLE multi-battery) ===");
 
     setupCAN();
+
+    // Load active battery list from NVS before anything else
+    loadNVSConfig();
 
     WiFi.mode(WIFI_STA);
     bool wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
@@ -1225,6 +1617,10 @@ void setup() {
         Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
         server.on("/battery", handleBatteryDetail);
+        server.on("/batteries", handleBatteriesPage);
+        server.on("/batteries/scan", handleBatteriesScan);
+        server.on("/batteries/add", handleBatteriesAdd);
+        server.on("/batteries/remove", handleBatteriesRemove);
         server.begin();
         Serial.println("Web server started on port 80");
         wifiReady = true;
@@ -1238,8 +1634,8 @@ void setup() {
     pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(&discoveryCallbacks);
 
-    Serial.printf("Configured batteries: %d\n", BATTERY_COUNT);
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    Serial.printf("Configured batteries: %d\n", batteryCount);
+    for (int i = 0; i < batteryCount; i++) {
         Serial.printf("  [%d] %s %s enabled=%s\n",
                       i,
                       batteryConfigs[i].name,
@@ -1253,7 +1649,7 @@ void setup() {
         Serial.println("Some enabled batteries were not discovered at startup.");
     }
 
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (!batteryConfigs[i].enabled) continue;
 
         if (!batteries[i].seen) {
@@ -1290,7 +1686,7 @@ void loop() {
 
     if (wifiReady) server.handleClient();
 
-    for (int i = 0; i < BATTERY_COUNT; i++) {
+    for (int i = 0; i < batteryCount; i++) {
         if (!batteryConfigs[i].enabled) continue;
 
         if (isBatteryConnected(i)) {
