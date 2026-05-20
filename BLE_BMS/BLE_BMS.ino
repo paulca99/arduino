@@ -39,6 +39,10 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define SOLIS_POLL_INTERVAL_MS     5000
 #define SOLIS_INTER_REGISTER_DELAY_MS 15
 #define SOLIS_MIN_POLL_WAIT_MS      100
+#define SOLIS_OFFLINE_POLL_WAIT_MS 15000
+#define SOLIS_OFFLINE_STREAK_THRESHOLD 2
+#define SOLIS_OFFLINE_FAIL_BURST_LIMIT 4
+#define SOLIS_NO_SUCCESS_LOG_INTERVAL_MS 30000UL
 #define SOLIS_STALE_POLL_MULTIPLIER   2
 #define SOLIS_DIVISOR_EPSILON   1.0e-6f
 #define SOLIS_TASK_STACK_SIZE      4096
@@ -1180,11 +1184,16 @@ static bool readSolisDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) 
 static void solisPollTask(void* pv) {
     (void)pv;
 
+    uint32_t noSuccessStreak = 0;
+    uint32_t noSuccessPasses = 0;
+    unsigned long lastNoSuccessLogMs = 0;
+
     for (;;) {
         uint32_t pollStartMs = millis();
         uint32_t errorsThisPass = 0;
         uint32_t lockTimeoutsThisPass = 0;
         bool anySuccess = false;
+        uint8_t consecutiveRegFails = 0;
 
         for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
             uint16_t raw = 0;
@@ -1199,8 +1208,14 @@ static void solisPollTask(void* pv) {
                 } else {
                     lockTimeoutsThisPass++;
                 }
+                consecutiveRegFails = 0;
             } else {
                 errorsThisPass++;
+                consecutiveRegFails++;
+                // If RS485 is offline, stop this poll pass early and back off.
+                if (!anySuccess && consecutiveRegFails >= SOLIS_OFFLINE_FAIL_BURST_LIMIT) {
+                    break;
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(SOLIS_INTER_REGISTER_DELAY_MS));
         }
@@ -1214,7 +1229,19 @@ static void solisPollTask(void* pv) {
         }
 
         if (!anySuccess) {
-            Serial.println("Solis poll pass had no successful reads");
+            noSuccessStreak++;
+            noSuccessPasses++;
+
+            unsigned long nowMs = millis();
+            if (lastNoSuccessLogMs == 0 ||
+                (nowMs - lastNoSuccessLogMs) >= SOLIS_NO_SUCCESS_LOG_INTERVAL_MS) {
+                Serial.printf("Solis poll pass had no successful reads (streak=%lu, total=%lu)\n",
+                              (unsigned long)noSuccessStreak,
+                              (unsigned long)noSuccessPasses);
+                lastNoSuccessLogMs = nowMs;
+            }
+        } else {
+            noSuccessStreak = 0;
         }
 
         unsigned long nextPollAtMs = pollStartMs + SOLIS_POLL_INTERVAL_MS;
@@ -1222,6 +1249,9 @@ static void solisPollTask(void* pv) {
         unsigned long waitMs = remainingMs <= 0
                              ? SOLIS_MIN_POLL_WAIT_MS
                              : static_cast<unsigned long>(remainingMs);
+        if (!anySuccess && noSuccessStreak >= SOLIS_OFFLINE_STREAK_THRESHOLD && waitMs < SOLIS_OFFLINE_POLL_WAIT_MS) {
+            waitMs = SOLIS_OFFLINE_POLL_WAIT_MS;
+        }
         vTaskDelay(pdMS_TO_TICKS(waitMs));
     }
 }
