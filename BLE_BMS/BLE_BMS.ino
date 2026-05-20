@@ -957,6 +957,7 @@ static bool reconnectBattery(int index) {
     logBatteryDebugState(index, "[DBG before reconnect]");
 
     if (batteries[index].advertisedDevice == nullptr) {
+        // Keep reconnect work bounded in loop(): do one short scan slice only.
         if (!scanForBattery(index, MIN_SCAN_SLICE_MS)) {
             Serial.printf("[%s] not seen during reconnect scan\n", batteryConfigs[index].name);
             batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;

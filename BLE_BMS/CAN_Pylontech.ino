@@ -112,6 +112,8 @@ static uint8_t voltageToSoc(float packV) {
 // Helper — transmit one CAN frame, print warning if it fails
 // -----------------------------------------------------------------------
 static bool canSend(twai_message_t& msg) {
+    // Called from the main loop path only (sendCANFrames), so these counters
+    // are intentionally simple function-static state.
     static uint32_t txFailCount = 0;
     static unsigned long lastFailLogMs = 0;
 
