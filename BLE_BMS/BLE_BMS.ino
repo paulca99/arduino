@@ -1212,7 +1212,8 @@ static void solisPollTask(void* pv) {
             } else {
                 errorsThisPass++;
                 consecutiveRegFails++;
-                // If RS485 is offline, stop this poll pass early and back off.
+                // Only trigger burst-cutoff when *all* reads in this pass are failing.
+                // Once we have at least one success, keep polling the full register set.
                 if (!anySuccess && consecutiveRegFails >= SOLIS_OFFLINE_FAIL_BURST_LIMIT) {
                     break;
                 }
@@ -1249,7 +1250,7 @@ static void solisPollTask(void* pv) {
         unsigned long waitMs = remainingMs <= 0
                              ? SOLIS_MIN_POLL_WAIT_MS
                              : static_cast<unsigned long>(remainingMs);
-        if (!anySuccess && noSuccessStreak >= SOLIS_OFFLINE_STREAK_THRESHOLD && waitMs < SOLIS_OFFLINE_POLL_WAIT_MS) {
+        if (!anySuccess && noSuccessStreak >= SOLIS_OFFLINE_STREAK_THRESHOLD) {
             waitMs = SOLIS_OFFLINE_POLL_WAIT_MS;
         }
         vTaskDelay(pdMS_TO_TICKS(waitMs));
