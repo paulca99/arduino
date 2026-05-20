@@ -23,6 +23,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define CAN_RX_PIN     GPIO_NUM_19
 
 #define CAN_INTERVAL_MS            100
+#define CAN_DEGRADED_INTERVAL_MS  2000
 #define LOG_INTERVAL_MS           5000
 #define HEARTBEAT_INTERVAL_MS     1000
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
@@ -37,6 +38,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RS485_TX_PIN                 17
 #define SOLIS_MODBUS_TIMEOUT_MS     180
 #define SOLIS_POLL_INTERVAL_MS     5000
+#define SOLIS_DEGRADED_POLL_INTERVAL_MS  7000
+#define SOLIS_FAIL_LOG_INTERVAL_MS      10000
 #define SOLIS_INTER_REGISTER_DELAY_MS 15
 #define SOLIS_MIN_POLL_WAIT_MS      100
 #define SOLIS_STALE_POLL_MULTIPLIER   2
@@ -250,12 +253,13 @@ static void solisPollTask(void* pv);
 
 // CAN API from CAN_Pylontech.ino
 void setupCAN();
-void sendCANFrames(float voltage,
+bool sendCANFrames(float voltage,
                    float current,
                    uint8_t soc,
                    float temperature,
                    bool chargeAllowed,
                    bool dischargeAllowed);
+bool isCANDegraded();
 
 static const char* wifiStatusToString(wl_status_t status) {
     switch (status) {
@@ -1187,6 +1191,10 @@ static bool readSolisDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) 
 static void solisPollTask(void* pv) {
     (void)pv;
 
+    bool solisDegraded = false;
+    uint32_t consecutiveFailures = 0;
+    unsigned long lastSolisFailLogMs = 0;
+
     for (;;) {
         uint32_t pollStartMs = millis();
         uint32_t errorsThisPass = 0;
@@ -1220,11 +1228,28 @@ static void solisPollTask(void* pv) {
             xSemaphoreGive(solisMutex);
         }
 
+        unsigned long pollIntervalMs;
         if (!anySuccess) {
-            Serial.println("Solis poll pass had no successful reads");
+            consecutiveFailures++;
+            unsigned long nowMs = millis();
+            if (nowMs - lastSolisFailLogMs >= SOLIS_FAIL_LOG_INTERVAL_MS) {
+                lastSolisFailLogMs = nowMs;
+                Serial.printf("Solis RS485 poll failed (%lu consecutive); backing off to %d s\n",
+                              (unsigned long)consecutiveFailures,
+                              SOLIS_DEGRADED_POLL_INTERVAL_MS / 1000);
+            }
+            solisDegraded = true;
+            pollIntervalMs = SOLIS_DEGRADED_POLL_INTERVAL_MS;
+        } else {
+            if (solisDegraded) {
+                Serial.println("Solis RS485 recovered — resuming normal 5 s poll interval");
+                solisDegraded = false;
+            }
+            consecutiveFailures = 0;
+            pollIntervalMs = SOLIS_POLL_INTERVAL_MS;
         }
 
-        unsigned long nextPollAtMs = pollStartMs + SOLIS_POLL_INTERVAL_MS;
+        unsigned long nextPollAtMs = pollStartMs + pollIntervalMs;
         long remainingMs = static_cast<long>(nextPollAtMs - millis());
         unsigned long waitMs = remainingMs <= 0
                              ? SOLIS_MIN_POLL_WAIT_MS
@@ -1820,7 +1845,7 @@ void loop() {
 
     aggregate = buildAggregateSnapshot(now);
 
-    if (now - lastCAN >= CAN_INTERVAL_MS) {
+    if (now - lastCAN >= (isCANDegraded() ? CAN_DEGRADED_INTERVAL_MS : CAN_INTERVAL_MS)) {
         lastCAN = now;
         if (isAggregateUsable(aggregate, now)) {
             sendCANFrames(aggregate.voltage,

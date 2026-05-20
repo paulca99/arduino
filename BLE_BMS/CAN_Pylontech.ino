@@ -44,6 +44,18 @@
 static uint32_t aliveCounter = 0;
 
 // -----------------------------------------------------------------------
+// CAN degraded-mode state
+// When any frame fails to transmit, canDegraded is set; the main loop then
+// switches to CAN_DEGRADED_INTERVAL_MS retry cadence.  The first fully
+// successful sendCANFrames() call clears the flag and restores normal pacing.
+// Failure messages are throttled to at most one every CAN_FAIL_LOG_INTERVAL_MS.
+// -----------------------------------------------------------------------
+static bool          canDegraded        = false;
+static uint32_t      canTxFailureCount  = 0;
+static unsigned long lastCANFailLogMs   = 0;
+#define CAN_FAIL_LOG_INTERVAL_MS        5000UL
+
+// -----------------------------------------------------------------------
 // SOC_EMA_TAU_S — EMA time constant for the voltage-based SoC filter.
 //
 // Using instantaneous pack voltage to derive SoC causes the reported SoC
@@ -108,12 +120,13 @@ static uint8_t voltageToSoc(float packV) {
 }
 
 // -----------------------------------------------------------------------
-// Helper — transmit one CAN frame, print warning if it fails
+// Helper — transmit one CAN frame; returns true on success.
+// Failures are counted so sendCANFrames() can log and pace them.
 // -----------------------------------------------------------------------
-static void canSend(twai_message_t& msg) {
-    if (twai_transmit(&msg, pdMS_TO_TICKS(10)) != ESP_OK) {
-        Serial.printf("⚠️  CAN TX failed for ID 0x%03X\n", msg.identifier);
-    }
+static bool canSend(twai_message_t& msg) {
+    if (twai_transmit(&msg, pdMS_TO_TICKS(10)) == ESP_OK) return true;
+    canTxFailureCount++;
+    return false;
 }
 
 // -----------------------------------------------------------------------
@@ -323,14 +336,19 @@ static void can_send_alive() {
 }
 
 // -----------------------------------------------------------------------
-// Send all Pylontech frames — call every 100ms from main loop
+// Send all Pylontech frames — call every 100 ms from main loop.
+// Returns true if every frame was queued successfully (normal mode).
+// Returns false if any frame failed; the main loop should use the degraded
+// retry interval (CAN_DEGRADED_INTERVAL_MS) until this returns true again.
 // -----------------------------------------------------------------------
-void sendCANFrames(float voltage,
+bool sendCANFrames(float voltage,
                    float current,
                    uint8_t soc,
                    float temperature,
                    bool chargeAllowed,
                    bool dischargeAllowed) {
+    uint32_t preFailures = canTxFailureCount;
+
     can_send_limits();
     can_send_soc(voltage, soc);
     can_send_measurements(voltage, current, temperature);
@@ -338,4 +356,32 @@ void sendCANFrames(float voltage,
     can_send_request(chargeAllowed, dischargeAllowed);
     can_send_manufacturer();
     can_send_alive();
+
+    bool batchFailed = (canTxFailureCount > preFailures);
+
+    if (batchFailed) {
+        canDegraded = true;
+        unsigned long nowMs = millis();
+        if (nowMs - lastCANFailLogMs >= CAN_FAIL_LOG_INTERVAL_MS) {
+            lastCANFailLogMs = nowMs;
+            Serial.printf("CAN TX failed (total: %lu); degraded mode, retrying every %lu s\n",
+                          (unsigned long)canTxFailureCount,
+                          (unsigned long)(CAN_DEGRADED_INTERVAL_MS / 1000));
+        }
+        return false;
+    }
+
+    if (canDegraded) {
+        Serial.println("CAN TX recovered — resuming normal 100 ms cadence");
+        canDegraded = false;
+    }
+    return true;
+}
+
+// -----------------------------------------------------------------------
+// Query whether CAN is currently in degraded (backoff) mode.
+// Used by the main loop to select the appropriate transmit interval.
+// -----------------------------------------------------------------------
+bool isCANDegraded() {
+    return canDegraded;
 }
