@@ -792,7 +792,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
         return;
     }
 
-    const uint8_t* cmd = cmd3;
+    uint8_t* cmd = cmd3;
     size_t cmdLen = sizeof(cmd3);
     BatteryRequestStage nextStage = REQUEST_STAGE_WAIT_03;
     bool partOfCurrentCycle = false;
