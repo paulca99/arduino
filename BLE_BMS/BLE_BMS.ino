@@ -1185,7 +1185,7 @@ static void solisPollTask(void* pv) {
     (void)pv;
 
     unsigned long noSuccessStreak = 0;
-    unsigned long noSuccessPasses = 0;
+    unsigned long totalNoSuccessPasses = 0;
     unsigned long lastNoSuccessLogMs = 0;
 
     for (;;) {
@@ -1193,7 +1193,7 @@ static void solisPollTask(void* pv) {
         uint32_t errorsThisPass = 0;
         uint32_t lockTimeoutsThisPass = 0;
         bool anySuccess = false;
-        uint8_t consecutiveRegFails = 0;
+        uint8_t consecutiveRegisterFails = 0;
 
         for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
             uint16_t raw = 0;
@@ -1208,14 +1208,14 @@ static void solisPollTask(void* pv) {
                 } else {
                     lockTimeoutsThisPass++;
                 }
-                consecutiveRegFails = 0;
+                consecutiveRegisterFails = 0;
             } else {
                 errorsThisPass++;
-                consecutiveRegFails++;
+                consecutiveRegisterFails++;
                 // Only trigger burst-cutoff when *all* reads in this pass are failing.
                 // Once we have at least one success, keep polling the full register set,
                 // so healthy communication still refreshes the complete snapshot.
-                if (!anySuccess && consecutiveRegFails >= SOLIS_OFFLINE_FAIL_BURST_LIMIT) {
+                if (!anySuccess && consecutiveRegisterFails >= SOLIS_OFFLINE_FAIL_BURST_LIMIT) {
                     break;
                 }
             }
@@ -1232,14 +1232,14 @@ static void solisPollTask(void* pv) {
 
         if (!anySuccess) {
             noSuccessStreak++;
-            noSuccessPasses++;
+            totalNoSuccessPasses++;
 
             unsigned long nowMs = millis();
             if (lastNoSuccessLogMs == 0 ||
                 (nowMs - lastNoSuccessLogMs) >= SOLIS_NO_SUCCESS_LOG_INTERVAL_MS) {
                 Serial.printf("Solis poll pass had no successful reads (streak=%lu, total=%lu)\n",
                               (unsigned long)noSuccessStreak,
-                              (unsigned long)noSuccessPasses);
+                              (unsigned long)totalNoSuccessPasses);
                 lastNoSuccessLogMs = nowMs;
             }
         } else {
