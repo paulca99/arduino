@@ -98,3 +98,20 @@ Project memory for BLE_BMS multi-battery work.
   - key caution recorded: pack average can hide a weaker group, especially relevant because groups 1 and 9 had historically been weaker
   - conservative overnight guidance discussed: if pack voltage continues falling toward about 42.5 V, use caution; if it reaches around 42.0 V and is still falling, strongly consider disconnecting the ESP/buck load for the night
   - specific limitation recorded: without per-group voltage visibility, it is not possible to know whether an individual weak group is already significantly below the pack average
+- Overnight outcome and revised interpretation:
+  - user left the system overnight and later found total Growatt2 pack voltage at about 41.23 V
+  - manual checking showed series group 1 had fallen to about 2.88 V
+  - user then put Growatt2 on charge
+  - this confirmed that pack voltage alone was not a safe enough proxy near the low end for this battery
+  - strong practical conclusion: Growatt2 must be managed by weakest-group behavior, not by pack voltage alone, especially near the bottom of discharge
+  - the observation strongly reinforces that restoring per-group visibility in the production sketch is important before future unattended low-voltage tests
+- Inverter protection setting change:
+  - user changed Solis inverter setting DischargeUVVPRO from 40.0 V to 44.5 V
+  - rationale captured: 40.0 V pack cutoff was too low in practice for Growatt2 because group 1 could already be at about 2.88 V while total pack voltage was only about 41.23 V
+  - 44.5 V / 14S ~= 3.18 V average per group, giving more margin for weak groups
+  - accepted tradeoff: higher cutoff may leave some capacity unused, but is safer for this uneven pack
+- Buck-converter interpretation update:
+  - user strongly doubted that the buck converters alone could explain the overnight voltage drop
+  - user provided Amazon listing details for the 60V->12V converter: Jadeshay buck converter, 20V-60V input, 12V output, 3A max, 36W max, waterproof automotive-style module
+  - key conclusion recorded: the converter description does not prove zero no-load current, but the overnight low-voltage outcome is more plausibly explained by weak-group behavior / imbalance than by buck idle draw alone
+  - refined interpretation: even if the buck chain consumed some power, the dangerous result was that weak group 1 reached a low voltage earlier than pack voltage alone suggested
