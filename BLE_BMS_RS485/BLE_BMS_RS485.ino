@@ -469,8 +469,11 @@ static void flush485() {
 
 static int readReply(uint8_t* buf, int maxLen, uint32_t timeoutMs) {
   int len = 0;
-  uint32_t last = millis();
-  while (millis() - last < timeoutMs) {
+  uint32_t start = millis();
+  uint32_t last = start;
+  // Use both an inter-character timeout (last) and an absolute deadline (start)
+  // so that continuous RS485 noise cannot hold this function open indefinitely.
+  while (millis() - last < timeoutMs && millis() - start < timeoutMs) {
     while (RS485.available()) {
       uint8_t b = RS485.read();
       if (len < maxLen) buf[len++] = b;

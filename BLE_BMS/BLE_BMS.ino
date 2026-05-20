@@ -970,7 +970,16 @@ static bool reconnectBattery(int index) {
     }
 
     bool ok = connectBattery(index);
-    if (!ok) batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+    if (!ok) {
+        batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+        // Drop the stale device record so the next attempt takes the bounded
+        // scan path instead of another long blocking connect() call.
+        if (batteries[index].advertisedDevice != nullptr) {
+            delete batteries[index].advertisedDevice;
+            batteries[index].advertisedDevice = nullptr;
+        }
+        batteries[index].seen = false;
+    }
     return ok;
 }
 
@@ -1132,8 +1141,11 @@ static void flushRS485Input() {
 
 static int readRS485Reply(uint8_t* buf, int maxLen, uint32_t timeoutMs) {
     int len = 0;
-    uint32_t last = millis();
-    while (millis() - last < timeoutMs) {
+    uint32_t start = millis();
+    uint32_t last = start;
+    // Use both an inter-character timeout (last) and an absolute deadline (start)
+    // so that continuous RS485 noise cannot hold this function open indefinitely.
+    while (millis() - last < timeoutMs && millis() - start < timeoutMs) {
         while (RS485.available()) {
             uint8_t byteValue = RS485.read();
             if (len < maxLen) buf[len++] = byteValue;
