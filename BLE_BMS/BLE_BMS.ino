@@ -36,11 +36,11 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define WIFI_CONNECT_TIMEOUT_MS  10000
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
-#define RECONNECT_SCAN_TIMEOUT_MS  6000
+#define RECONNECT_SCAN_TIMEOUT_MS  3000
 #define SCAN_SLICE_MS              1200
 #define MIN_SCAN_SLICE_MS           200
 #define USER_SCAN_TIMEOUT_MS      10000
-#define USER_SCAN_SLICE_MS         900
+#define USER_SCAN_SLICE_MS         600
 #define ADDED_BATTERY_RECONNECT_DELAY_MS 2000
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
@@ -589,15 +589,12 @@ class ClientCallbacks : public BLEClientCallbacks {
 
 class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) override {
-        if (!advertisedDevice.haveServiceUUID() ||
-            !advertisedDevice.isAdvertisingService(serviceUUID)) {
-            return;
-        }
-
         String seenMac = advertisedDevice.getAddress().toString().c_str();
         seenMac.toLowerCase();
 
-        // During user-triggered scan: collect BMS candidates not already configured
+        // During user-triggered scan: collect ALL nearby BLE devices as candidates
+        // (not just those advertising the FF00 service UUID, because many JBD BMS
+        // modules don't include service UUIDs in their advertising packet).
         if (userScanActive && scanResultCount < MAX_SCAN_RESULTS) {
             bool alreadyKnown = false;
             for (int i = 0; i < batteryCount; i++) {
@@ -621,10 +618,17 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
                     strncpy(scanResults[scanResultCount].name, advName.c_str(), MAX_NAME_LEN - 1);
                     scanResults[scanResultCount].name[MAX_NAME_LEN - 1] = '\0';
                     scanResultCount++;
-                    Serial.printf("[SCAN] BMS candidate: %s (%s)\n",
+                    Serial.printf("[SCAN] BLE candidate: %s (%s)\n",
                                   seenMac.c_str(), advName.c_str());
                 }
             }
+        }
+
+        // Normal operation (reconnect scanning): only process devices advertising
+        // the BMS service UUID to avoid connecting to random BLE devices.
+        if (!advertisedDevice.haveServiceUUID() ||
+            !advertisedDevice.isAdvertisingService(serviceUUID)) {
+            return;
         }
 
         // Normal operation: match against configured batteries
@@ -938,15 +942,18 @@ static bool reconnectBattery(int index) {
 
     if (connectBattery(index)) return true;
 
-    if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
-        Serial.printf("[%s] rediscovery failed\n", batteryConfigs[index].name);
-        batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
-        return false;
+    // Connect failed with the cached advertised device.  Clear it so the next
+    // reconnect attempt does a fresh scan instead of trying the stale address.
+    // Do NOT do a second blocking scan here — it would block loop() for another
+    // RECONNECT_SCAN_TIMEOUT_MS and further starve the WiFi radio.
+    if (batteries[index].advertisedDevice != nullptr) {
+        delete batteries[index].advertisedDevice;
+        batteries[index].advertisedDevice = nullptr;
     }
-
-    bool ok = connectBattery(index);
-    if (!ok) batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
-    return ok;
+    batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+    Serial.printf("[%s] connect failed, cleared cached device, will retry in %dms\n",
+                  batteryConfigs[index].name, RECONNECT_INTERVAL_MS);
+    return false;
 }
 
 static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {

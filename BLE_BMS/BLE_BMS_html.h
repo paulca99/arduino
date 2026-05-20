@@ -82,17 +82,21 @@ function renderSummary(data){
   rowsEl.innerHTML=rows||'<tr><td colspan="14">No configured batteries.</td></tr>';
   statusEl.textContent='WiFi '+data.wifi+', last refresh '+(new Date().toLocaleTimeString());
 }
+var refreshPending=false;
 function refreshSummary(){
+  if(refreshPending) return;
+  refreshPending=true;
   fetch('/api/summary',{cache:'no-store'})
     .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-    .then(renderSummary)
+    .then(function(data){refreshPending=false;renderSummary(data);})
     .catch(function(err){
+      refreshPending=false;
       console.warn('summary fetch failed',err);
       statusEl.textContent='Summary refresh failed: '+err.message;
     });
 }
 refreshSummary();
-setInterval(refreshSummary,2000);
+setInterval(refreshSummary,4000);
 </script>
 </body>
 </html>
@@ -189,7 +193,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 <div id="activeBlock"><p class="note">Loading&#8230;</p></div>
 <h2>Discover new batteries</h2>
 <p><button class="btn btn-scan" id="scanBtn" type="button">&#128269; Scan for BMS Devices</button></p>
-<p class="note">Scan runs in the background. Only BLE devices advertising the BMS service UUID are listed.</p>
+<p class="note">Scan runs in the background. All nearby BLE devices are listed as candidates &mdash; choose your BMS device by MAC address or name.</p>
 <div id="scanInfo" class="note">Scan idle.</div>
 <h2>Candidates</h2>
 <div id="candidateBlock"><p class="note">No scan results yet.</p></div>
@@ -275,11 +279,15 @@ function renderState(data){
   scanBtn.disabled=!!(scan.requested||scan.inProgress||pending);
   addBtn.disabled=!((data.candidates||[]).length)||pending||data.batteryCount>=data.maxBatteries;
 }
+var refreshBatteriesPending=false;
 function refreshBatteries(){
+  if(refreshBatteriesPending) return;
+  refreshBatteriesPending=true;
   fetch('/api/batteries',{cache:'no-store'})
     .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-    .then(renderState)
+    .then(function(data){refreshBatteriesPending=false;renderState(data);})
     .catch(function(err){
+      refreshBatteriesPending=false;
       console.warn('batteries fetch failed',err);
       pageStatus.className='note bad';
       pageStatus.textContent='Failed to refresh batteries: '+err.message;
@@ -320,7 +328,7 @@ addBtn.addEventListener('click',function(){
     });
 });
 refreshBatteries();
-setInterval(refreshBatteries,1500);
+setInterval(refreshBatteries,3000);
 </script>
 </body>
 </html>
