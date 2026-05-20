@@ -38,6 +38,12 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define SOLIS_MODBUS_TIMEOUT_MS     180
 #define SOLIS_POLL_INTERVAL_MS     5000
 #define SOLIS_INTER_REGISTER_DELAY_MS 15
+#define SOLIS_MIN_POLL_WAIT_MS      100
+#define SOLIS_STALE_POLL_MULTIPLIER   2
+#define SOLIS_DIVISOR_EPSILON   1.0e-6f
+#define SOLIS_TASK_STACK_SIZE      4096
+#define SOLIS_TASK_PRIORITY           1
+#define SOLIS_TASK_CORE               1
 #define SOLIS_MUTEX_TIMEOUT_MS      100
 #define SOLIS_SLAVE_ID                1
 
@@ -213,6 +219,7 @@ static const SolisRegisterInfo SOLIS_REGISTER_INFOS[] = {
     {33140, "Battery SOC", 1.0f, 0, "%", false, false, "Confirmed. SOC percent."},
     {33142, "Battery voltage", 100.0f, 2, "V", false, false, "Confirmed. 0.01 V scale."},
 };
+static const size_t SOLIS_REGISTER_INFO_COUNT = sizeof(SOLIS_REGISTER_INFOS) / sizeof(SOLIS_REGISTER_INFOS[0]);
 
 static SolisState solisState = {};
 static SemaphoreHandle_t solisMutex = nullptr;
@@ -236,6 +243,7 @@ static bool tryBuildSignedSolisBatteryPowerW(const SolisState& state, float& pow
 static bool tryBuildSolisPvPowerW(const SolisState& state, uint16_t voltageReg, uint16_t currentReg, float& powerW);
 static bool copySolisSnapshot(SolisState& snapshot);
 static String buildInverterJson();
+static String htmlEscape(const String& input);
 static void handleInverter();
 static void handleInverterApi();
 static void solisPollTask(void* pv);
@@ -1040,7 +1048,7 @@ static RegisterValue getSolisRegisterValue(const SolisState& state, uint16_t doc
 }
 
 static const SolisRegisterInfo* findSolisRegisterInfo(uint16_t docReg) {
-    for (size_t i = 0; i < sizeof(SOLIS_REGISTER_INFOS) / sizeof(SOLIS_REGISTER_INFOS[0]); i++) {
+    for (size_t i = 0; i < SOLIS_REGISTER_INFO_COUNT; i++) {
         if (SOLIS_REGISTER_INFOS[i].reg == docReg) return &SOLIS_REGISTER_INFOS[i];
     }
     return nullptr;
@@ -1056,10 +1064,10 @@ static bool tryGetSolisScaledValue(const SolisState& state,
                                    bool signedValue,
                                    float& value) {
     RegisterValue regValue = getSolisRegisterValue(state, docReg);
-    if (!regValue.valid || divisor == 0.0f) return false;
+    if (!regValue.valid || fabsf(divisor) < SOLIS_DIVISOR_EPSILON) return false;
 
-    value = signedValue ? (float)((int16_t)regValue.raw) / divisor
-                        : (float)regValue.raw / divisor;
+    value = signedValue ? static_cast<float>(static_cast<int16_t>(regValue.raw)) / divisor
+                        : static_cast<float>(regValue.raw) / divisor;
     return true;
 }
 
@@ -1134,14 +1142,14 @@ static int readRS485Reply(uint8_t* buf, int maxLen, uint32_t timeoutMs) {
             if (len < maxLen) buf[len++] = byteValue;
             last = millis();
         }
-        delay(1);
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
     return len;
 }
 
 static bool validModbusCRC(const uint8_t* buf, int len) {
     if (len < 4) return false;
-    uint16_t rxCRC = buf[len - 2] | (uint16_t(buf[len - 1]) << 8);
+    uint16_t rxCRC = buf[len - 2] | (static_cast<uint16_t>(buf[len - 1]) << 8);
     return rxCRC == modbusCRC(buf, len - 2);
 }
 
@@ -1172,7 +1180,7 @@ static bool readSolisDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) 
     if (!validModbusCRC(buf, len)) return false;
     if (buf[0] != slave || buf[1] != 0x04 || buf[2] != 2) return false;
 
-    value = (uint16_t(buf[3]) << 8) | buf[4];
+    value = (static_cast<uint16_t>(buf[3]) << 8) | buf[4];
     return true;
 }
 
@@ -1216,10 +1224,11 @@ static void solisPollTask(void* pv) {
             Serial.println("Solis poll pass had no successful reads");
         }
 
-        uint32_t elapsedMs = millis() - pollStartMs;
-        uint32_t waitMs = elapsedMs >= SOLIS_POLL_INTERVAL_MS
-                        ? 100U
-                        : (SOLIS_POLL_INTERVAL_MS - elapsedMs);
+        unsigned long nextPollAtMs = pollStartMs + SOLIS_POLL_INTERVAL_MS;
+        long remainingMs = static_cast<long>(nextPollAtMs - millis());
+        unsigned long waitMs = remainingMs <= 0
+                             ? SOLIS_MIN_POLL_WAIT_MS
+                             : static_cast<unsigned long>(remainingMs);
         vTaskDelay(pdMS_TO_TICKS(waitMs));
     }
 }
@@ -1284,8 +1293,8 @@ static String formatSolisRegisterDisplay(uint16_t docReg, const RegisterValue& r
     const SolisRegisterInfo* info = findSolisRegisterInfo(docReg);
     if (info == nullptr || info->rawOnly) return String(regValue.raw);
 
-    float scaled = info->signedValue ? (float)((int16_t)regValue.raw) / info->divisor
-                                     : (float)regValue.raw / info->divisor;
+    float scaled = info->signedValue ? static_cast<float>(static_cast<int16_t>(regValue.raw)) / info->divisor
+                                     : static_cast<float>(regValue.raw) / info->divisor;
     String text = String(scaled, info->decimals);
     if (info->unit != nullptr && info->unit[0] != '\0') {
         text += " ";
@@ -1368,7 +1377,7 @@ static String buildInverterJson() {
         json += ",\"raw\":";
         json += String(snapshot.values[i].raw);
         json += ",\"signed\":";
-        json += String((int16_t)snapshot.values[i].raw);
+        json += String(static_cast<int16_t>(snapshot.values[i].raw));
         json += "}";
     }
     json += "}";
@@ -1385,7 +1394,7 @@ static void handleInverter() {
     copySolisSnapshot(snapshot);
 
     unsigned long ageMs = snapshot.lastSuccessMs == 0 ? 0 : (now - snapshot.lastSuccessMs);
-    bool stale = snapshot.lastSuccessMs == 0 || ageMs > (SOLIS_POLL_INTERVAL_MS * 2UL);
+    bool stale = snapshot.lastSuccessMs == 0 || ageMs > (SOLIS_POLL_INTERVAL_MS * SOLIS_STALE_POLL_MULTIPLIER);
 
     String batteryDirection = "unknown";
     RegisterValue direction = getSolisRegisterValue(snapshot, SOLIS_REG_BATTERY_DIRECTION);
@@ -1422,7 +1431,7 @@ static void handleInverter() {
     server.sendContent(F("<p>Cached RS485 data only. Modbus polling runs in a dedicated FreeRTOS task every ~5 seconds so BLE/CAN/web work stays responsive.</p>"));
 
     server.sendContent(F("<div class='grid'>"));
-    sendCard("Last good poll",
+    sendCard(stale ? "Last good poll (stale)" : "Last good poll (fresh)",
              snapshot.lastSuccessMs == 0 ? String("Never") : String(ageMs / 1000UL) + " s ago",
              stale ? "amber" : "green");
     sendCard("Poll count", String(snapshot.pollCount));
@@ -1445,7 +1454,7 @@ static void handleInverter() {
     server.sendContent(F("<h2>Register snapshot</h2><table><tr>"
                          "<th>Label</th><th>Register</th><th>Display</th><th>Raw</th><th>Signed</th><th>Notes</th>"
                          "</tr>"));
-    for (size_t i = 0; i < sizeof(SOLIS_REGISTER_INFOS) / sizeof(SOLIS_REGISTER_INFOS[0]); i++) {
+    for (size_t i = 0; i < SOLIS_REGISTER_INFO_COUNT; i++) {
         const SolisRegisterInfo& info = SOLIS_REGISTER_INFOS[i];
         RegisterValue regValue = getSolisRegisterValue(snapshot, info.reg);
 
@@ -1455,7 +1464,7 @@ static void handleInverter() {
               "</td><td class='mono'>" + String(info.reg) +
               "</td><td>" + htmlEscape(formatSolisRegisterDisplay(info.reg, regValue)) +
               "</td><td>" + (regValue.valid ? String(regValue.raw) : String("--")) +
-              "</td><td>" + (regValue.valid ? String((int16_t)regValue.raw) : String("--")) +
+              "</td><td>" + (regValue.valid ? String(static_cast<int16_t>(regValue.raw)) : String("--")) +
               "</td><td>" + htmlEscape(String(info.note)) + "</td></tr>";
         server.sendContent(row);
     }
@@ -1705,11 +1714,11 @@ void setup() {
         BaseType_t pollTaskOk = xTaskCreatePinnedToCore(
             solisPollTask,
             "SolisPoll",
-            4096,
+            SOLIS_TASK_STACK_SIZE,
             nullptr,
-            1,
+            SOLIS_TASK_PRIORITY,
             nullptr,
-            1);
+            SOLIS_TASK_CORE);
         if (pollTaskOk != pdPASS) {
             Serial.println("Failed to start Solis poll task; inverter polling disabled");
         } else {
