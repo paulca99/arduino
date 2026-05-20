@@ -40,6 +40,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define MIN_SCAN_SLICE_MS           200
 #define USER_SCAN_TIMEOUT_MS      10000
 #define USER_SCAN_SLICE_MS         900
+#define ADDED_BATTERY_RECONNECT_DELAY_MS 2000
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
 #define CONNECT_DELAY_MS            100
@@ -62,6 +63,7 @@ enum BatteryRequestStage : uint8_t {
     REQUEST_STAGE_WAIT_04       // Waiting for the cell-voltage response.
 };
 
+// Bounded runtime battery set to keep BLE/NVS/UI state predictable on ESP32.
 #define MAX_BATTERIES     6
 #define MAX_NAME_LEN     20
 #define MAX_MAC_LEN      18
@@ -95,13 +97,14 @@ enum PendingWebActionType : uint8_t {
     WEB_ACTION_REMOVE
 };
 
-static volatile PendingWebActionType pendingWebAction = WEB_ACTION_NONE;
+static PendingWebActionType pendingWebAction = WEB_ACTION_NONE;
 static char pendingActionMac[MAX_MAC_LEN] = {0};
 static char pendingActionName[MAX_NAME_LEN] = {0};
 static int pendingRemoveIndex = -1;
 static bool lastActionOk = true;
 static char lastActionMessage[80] = "idle";
 static unsigned long lastActionMs = 0;
+static portMUX_TYPE webActionMux = portMUX_INITIALIZER_UNLOCKED;
 
 struct BatteryState {
     BLEAdvertisedDevice* advertisedDevice = nullptr;
@@ -191,7 +194,11 @@ static void handleApiBatteriesAdd(AsyncWebServerRequest* request);
 static void handleApiBatteriesRemove(AsyncWebServerRequest* request);
 static void servicePendingWebAction();
 static void serviceUserScan(unsigned long nowMs);
+static void finishUserScan();
+static bool canAttemptReconnect();
 static bool isAllDigits(const String& s);
+static bool isValidMac(const char* mac);
+static String sanitizeDisplayName(const String& raw);
 
 static const char* wifiStatusToString(wl_status_t status) {
     switch (status) {
@@ -1081,21 +1088,36 @@ static String buildSummaryJson() {
     String json;
     json.reserve(4096);
     json += F("{\"ok\":true");
-    json += F(",\"uptimeMs\":") + String(now);
-    json += F(",\"wifi\":\"") + jsonEscape(String(wifiStatusToString(WiFi.status()))) + '"';
-    json += F(",\"enabledCount\":") + String(enabledBatteryCount());
-    json += F(",\"connectedCount\":") + String(connectedBatteryCount());
+    json += F(",\"uptimeMs\":");
+    json += String(now);
+    json += F(",\"wifi\":\"");
+    json += jsonEscape(String(wifiStatusToString(WiFi.status())));
+    json += '"';
+    json += F(",\"enabledCount\":");
+    json += String(enabledBatteryCount());
+    json += F(",\"connectedCount\":");
+    json += String(connectedBatteryCount());
     json += F(",\"aggregate\":{");
-    json += F("\"valid\":") + jsonBool(snap.valid);
-    json += F(",\"contributingBatteries\":") + String(snap.contributingBatteries);
-    json += F(",\"voltage\":") + String(snap.voltage, 2);
-    json += F(",\"current\":") + String(snap.current, 2);
-    json += F(",\"soc\":") + String(snap.soc);
-    json += F(",\"hasTemperature\":") + jsonBool(snap.hasTemperature);
-    json += F(",\"temperature\":") + String(snap.temperature, 1);
-    json += F(",\"chargeAllowed\":") + jsonBool(snap.chargeAllowed);
-    json += F(",\"dischargeAllowed\":") + jsonBool(snap.dischargeAllowed);
-    json += F(",\"lastFreshMs\":") + String(snap.lastFreshMs);
+    json += F("\"valid\":");
+    json += jsonBool(snap.valid);
+    json += F(",\"contributingBatteries\":");
+    json += String(snap.contributingBatteries);
+    json += F(",\"voltage\":");
+    json += String(snap.voltage, 2);
+    json += F(",\"current\":");
+    json += String(snap.current, 2);
+    json += F(",\"soc\":");
+    json += String(snap.soc);
+    json += F(",\"hasTemperature\":");
+    json += jsonBool(snap.hasTemperature);
+    json += F(",\"temperature\":");
+    json += String(snap.temperature, 1);
+    json += F(",\"chargeAllowed\":");
+    json += jsonBool(snap.chargeAllowed);
+    json += F(",\"dischargeAllowed\":");
+    json += jsonBool(snap.dischargeAllowed);
+    json += F(",\"lastFreshMs\":");
+    json += String(snap.lastFreshMs);
     json += F(",\"ageSec\":");
     json += (snap.lastFreshMs == 0) ? String(-1) : String((now - snap.lastFreshMs) / 1000UL);
     json += F("},\"batteries\":[");
@@ -1111,25 +1133,44 @@ static String buildSummaryJson() {
         const bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
 
         json += '{';
-        json += F("\"index\":") + String(i);
-        json += F(",\"name\":\"") + jsonEscape(String(cfg.name)) + '"';
-        json += F(",\"mac\":\"") + jsonEscape(String(cfg.mac)) + '"';
-        json += F(",\"enabled\":") + jsonBool(cfg.enabled);
-        json += F(",\"connected\":") + jsonBool(isBatteryConnected(i));
-        json += F(",\"hasData\":") + jsonBool(battery.hasData);
-        json += F(",\"hasTemperature\":") + jsonBool(battery.hasTemperature);
-        json += F(",\"voltage\":") + String(battery.voltage, 2);
-        json += F(",\"current\":") + String(battery.current, 2);
-        json += F(",\"soc\":") + String(battery.soc);
-        json += F(",\"temperature\":") + String(battery.temperature, 1);
+        json += F("\"index\":");
+        json += String(i);
+        json += F(",\"name\":\"");
+        json += jsonEscape(String(cfg.name));
+        json += '"';
+        json += F(",\"mac\":\"");
+        json += jsonEscape(String(cfg.mac));
+        json += '"';
+        json += F(",\"enabled\":");
+        json += jsonBool(cfg.enabled);
+        json += F(",\"connected\":");
+        json += jsonBool(isBatteryConnected(i));
+        json += F(",\"hasData\":");
+        json += jsonBool(battery.hasData);
+        json += F(",\"hasTemperature\":");
+        json += jsonBool(battery.hasTemperature);
+        json += F(",\"voltage\":");
+        json += String(battery.voltage, 2);
+        json += F(",\"current\":");
+        json += String(battery.current, 2);
+        json += F(",\"soc\":");
+        json += String(battery.soc);
+        json += F(",\"temperature\":");
+        json += String(battery.temperature, 1);
         json += F(",\"dataAgeSec\":");
         json += (battery.lastGoodDataMs == 0) ? String(-1) : String((now - battery.lastGoodDataMs) / 1000UL);
-        json += F(",\"disconnectCount\":") + String(battery.disconnectCount);
-        json += F(",\"hasCellStats\":") + jsonBool(hasCellStats);
-        json += F(",\"minCellV\":") + String(hasCellStats ? (minCellMv / 1000.0f) : 0.0f, 3);
-        json += F(",\"maxCellV\":") + String(hasCellStats ? (maxCellMv / 1000.0f) : 0.0f, 3);
-        json += F(",\"minCellIndex\":") + String(hasCellStats ? (minCellIndex + 1) : 0);
-        json += F(",\"maxCellIndex\":") + String(hasCellStats ? (maxCellIndex + 1) : 0);
+        json += F(",\"disconnectCount\":");
+        json += String(battery.disconnectCount);
+        json += F(",\"hasCellStats\":");
+        json += jsonBool(hasCellStats);
+        json += F(",\"minCellV\":");
+        json += String(hasCellStats ? (minCellMv / 1000.0f) : 0.0f, 3);
+        json += F(",\"maxCellV\":");
+        json += String(hasCellStats ? (maxCellMv / 1000.0f) : 0.0f, 3);
+        json += F(",\"minCellIndex\":");
+        json += String(hasCellStats ? (minCellIndex + 1) : 0);
+        json += F(",\"maxCellIndex\":");
+        json += String(hasCellStats ? (maxCellIndex + 1) : 0);
         json += '}';
     }
 
@@ -1145,17 +1186,30 @@ static String buildBatteryDetailJson(int index) {
     String json;
     json.reserve(2048 + (size_t)battery.cellCount * 12);
     json += F("{\"ok\":true");
-    json += F(",\"index\":") + String(index);
-    json += F(",\"name\":\"") + jsonEscape(String(cfg.name)) + '"';
-    json += F(",\"mac\":\"") + jsonEscape(String(cfg.mac)) + '"';
-    json += F(",\"connected\":") + jsonBool(isBatteryConnected(index));
-    json += F(",\"hasData\":") + jsonBool(battery.hasData);
-    json += F(",\"hasTemperature\":") + jsonBool(battery.hasTemperature);
-    json += F(",\"hasCellData\":") + jsonBool(battery.hasCellData && battery.cellCount > 0);
-    json += F(",\"voltage\":") + String(battery.voltage, 2);
-    json += F(",\"current\":") + String(battery.current, 2);
-    json += F(",\"soc\":") + String(battery.soc);
-    json += F(",\"temperature\":") + String(battery.temperature, 1);
+    json += F(",\"index\":");
+    json += String(index);
+    json += F(",\"name\":\"");
+    json += jsonEscape(String(cfg.name));
+    json += '"';
+    json += F(",\"mac\":\"");
+    json += jsonEscape(String(cfg.mac));
+    json += '"';
+    json += F(",\"connected\":");
+    json += jsonBool(isBatteryConnected(index));
+    json += F(",\"hasData\":");
+    json += jsonBool(battery.hasData);
+    json += F(",\"hasTemperature\":");
+    json += jsonBool(battery.hasTemperature);
+    json += F(",\"hasCellData\":");
+    json += jsonBool(battery.hasCellData && battery.cellCount > 0);
+    json += F(",\"voltage\":");
+    json += String(battery.voltage, 2);
+    json += F(",\"current\":");
+    json += String(battery.current, 2);
+    json += F(",\"soc\":");
+    json += String(battery.soc);
+    json += F(",\"temperature\":");
+    json += String(battery.temperature, 1);
     json += F(",\"cellDataAgeSec\":");
     json += (battery.hasCellData && battery.lastCellDataMs != 0) ? String((now - battery.lastCellDataMs) / 1000UL) : String(-1);
     json += F(",\"cells\":[");
@@ -1168,33 +1222,72 @@ static String buildBatteryDetailJson(int index) {
 }
 
 static String buildBatteriesJson() {
+    bool scanReq = false;
+    bool scanBusy = false;
+    bool scanCompleted = false;
+    unsigned long scanDeadline = 0;
+    bool actionPending = false;
+    bool actionOk = true;
+    unsigned long actionMs = 0;
+    char actionMessage[sizeof(lastActionMessage)] = {0};
+    portENTER_CRITICAL(&webActionMux);
+    scanReq = scanRequested;
+    scanBusy = scanInProgress;
+    scanCompleted = scanDone;
+    scanDeadline = userScanDeadlineMs;
+    actionPending = pendingWebAction != WEB_ACTION_NONE;
+    actionOk = lastActionOk;
+    actionMs = lastActionMs;
+    strncpy(actionMessage, lastActionMessage, sizeof(actionMessage) - 1);
+    portEXIT_CRITICAL(&webActionMux);
+
     String json;
     json.reserve(4096);
     json += F("{\"ok\":true");
-    json += F(",\"batteryCount\":") + String(batteryCount);
-    json += F(",\"maxBatteries\":") + String(MAX_BATTERIES);
+    json += F(",\"batteryCount\":");
+    json += String(batteryCount);
+    json += F(",\"maxBatteries\":");
+    json += String(MAX_BATTERIES);
     json += F(",\"scan\":{");
-    json += F("\"requested\":") + jsonBool(scanRequested);
-    json += F(",\"inProgress\":") + jsonBool(scanInProgress);
-    json += F(",\"done\":") + jsonBool(scanDone);
-    json += F(",\"resultCount\":") + String(scanResultCount);
-    json += F(",\"deadlineMs\":") + String(userScanDeadlineMs);
+    json += F("\"requested\":");
+    json += jsonBool(scanReq);
+    json += F(",\"inProgress\":");
+    json += jsonBool(scanBusy);
+    json += F(",\"done\":");
+    json += jsonBool(scanCompleted);
+    json += F(",\"resultCount\":");
+    json += String(scanResultCount);
+    json += F(",\"deadlineMs\":");
+    json += String(scanDeadline);
     json += F("},\"action\":{");
-    json += F("\"pending\":") + jsonBool(pendingWebAction != WEB_ACTION_NONE);
-    json += F(",\"ok\":") + jsonBool(lastActionOk);
-    json += F(",\"message\":\"") + jsonEscape(String(lastActionMessage)) + '"';
-    json += F(",\"atMs\":") + String(lastActionMs);
+    json += F("\"pending\":");
+    json += jsonBool(actionPending);
+    json += F(",\"ok\":");
+    json += jsonBool(actionOk);
+    json += F(",\"message\":\"");
+    json += jsonEscape(String(actionMessage));
+    json += '"';
+    json += F(",\"atMs\":");
+    json += String(actionMs);
     json += F("},\"configured\":[");
 
     for (int i = 0; i < batteryCount; i++) {
         if (i > 0) json += ',';
         json += '{';
-        json += F("\"index\":") + String(i);
-        json += F(",\"name\":\"") + jsonEscape(String(batteryConfigs[i].name)) + '"';
-        json += F(",\"mac\":\"") + jsonEscape(String(batteryConfigs[i].mac)) + '"';
-        json += F(",\"connected\":") + jsonBool(isBatteryConnected(i));
-        json += F(",\"seen\":") + jsonBool(batteries[i].seen);
-        json += F(",\"hasData\":") + jsonBool(batteries[i].hasData);
+        json += F("\"index\":");
+        json += String(i);
+        json += F(",\"name\":\"");
+        json += jsonEscape(String(batteryConfigs[i].name));
+        json += '"';
+        json += F(",\"mac\":\"");
+        json += jsonEscape(String(batteryConfigs[i].mac));
+        json += '"';
+        json += F(",\"connected\":");
+        json += jsonBool(isBatteryConnected(i));
+        json += F(",\"seen\":");
+        json += jsonBool(batteries[i].seen);
+        json += F(",\"hasData\":");
+        json += jsonBool(batteries[i].hasData);
         json += '}';
     }
 
@@ -1202,9 +1295,14 @@ static String buildBatteriesJson() {
     for (int i = 0; i < scanResultCount; i++) {
         if (i > 0) json += ',';
         json += '{';
-        json += F("\"index\":") + String(i);
-        json += F(",\"mac\":\"") + jsonEscape(String(scanResults[i].mac)) + '"';
-        json += F(",\"name\":\"") + jsonEscape(String(scanResults[i].name)) + '"';
+        json += F("\"index\":");
+        json += String(i);
+        json += F(",\"mac\":\"");
+        json += jsonEscape(String(scanResults[i].mac));
+        json += '"';
+        json += F(",\"name\":\"");
+        json += jsonEscape(String(scanResults[i].name));
+        json += '"';
         json += '}';
     }
     json += F("]}");
@@ -1475,24 +1573,30 @@ static void logBMSData() {
 static Preferences prefs;
 
 static void saveNVSConfig() {
-    prefs.begin("bms_cfg", false);
-    prefs.putInt("count", batteryCount);
+    if (!prefs.begin("bms_cfg", false)) {
+        Serial.println("[NVS] save begin failed");
+        return;
+    }
+    bool ok = prefs.putInt("count", batteryCount) > 0;
     for (int i = 0; i < batteryCount; i++) {
         char key[12];
         snprintf(key, sizeof(key), "name_%d", i);
-        prefs.putString(key, batteryConfigs[i].name);
+        ok = prefs.putString(key, batteryConfigs[i].name) > 0 && ok;
         snprintf(key, sizeof(key), "mac_%d", i);
-        prefs.putString(key, batteryConfigs[i].mac);
+        ok = prefs.putString(key, batteryConfigs[i].mac) > 0 && ok;
     }
     prefs.end();
-    Serial.printf("[NVS] saved %d batteries\n", batteryCount);
+    Serial.printf("[NVS] saved %d batteries (%s)\n", batteryCount, ok ? "ok" : "partial");
 }
 
 static void loadNVSConfig() {
     memset(batteryConfigs, 0, sizeof(batteryConfigs));
     batteryCount = 0;
 
-    prefs.begin("bms_cfg", true);
+    if (!prefs.begin("bms_cfg", true)) {
+        Serial.println("[NVS] load begin failed");
+        return;
+    }
     int count = prefs.getInt("count", 0);
     if (count < 0) count = 0;
     if (count > MAX_BATTERIES) count = MAX_BATTERIES;
@@ -1500,10 +1604,15 @@ static void loadNVSConfig() {
     for (int i = 0; i < count; i++) {
         char key[12];
         snprintf(key, sizeof(key), "name_%d", i);
-        String name = prefs.getString(key, "");
+        String name = sanitizeDisplayName(prefs.getString(key, ""));
         snprintf(key, sizeof(key), "mac_%d", i);
         String mac = prefs.getString(key, "");
-        if (mac.length() == 0) continue;
+        mac.toLowerCase();
+        mac.trim();
+        if (!isValidMac(mac.c_str())) {
+            Serial.printf("[NVS] skipping invalid MAC at slot %d: %s\n", i, mac.c_str());
+            continue;
+        }
         if (name.length() == 0) name = mac;
         strncpy(batteryConfigs[batteryCount].name, name.c_str(), MAX_NAME_LEN - 1);
         batteryConfigs[batteryCount].name[MAX_NAME_LEN - 1] = '\0';
@@ -1529,7 +1638,20 @@ static bool isAllDigits(const String& s) {
     return true;
 }
 
+static String sanitizeDisplayName(const String& raw) {
+    String out;
+    out.reserve(raw.length());
+    for (size_t i = 0; i < raw.length(); i++) {
+        char c = raw.charAt(i);
+        if ((uint8_t)c >= 0x20 && (uint8_t)c <= 0x7E) out += c;
+    }
+    out.trim();
+    if (out.length() >= MAX_NAME_LEN) out = out.substring(0, MAX_NAME_LEN - 1);
+    return out;
+}
+
 static bool isValidMac(const char* mac) {
+    // Stored/scanned BLE MACs are normalized to the canonical xx:xx:xx:xx:xx:xx form.
     if (mac == nullptr || strlen(mac) != 17) return false;
     for (int i = 0; i < 17; i++) {
         if (i % 3 == 2) {
@@ -1550,7 +1672,8 @@ static void addBattery(const char* mac, const char* name) {
     batteryConfigs[idx].mac[MAX_MAC_LEN - 1] = '\0';
     batteryConfigs[idx].enabled = true;
     batteries[idx] = BatteryState();
-    batteries[idx].nextReconnectMs = millis() + 2000UL;
+    // Let the scan/action path settle before the normal reconnect flow picks this battery up.
+    batteries[idx].nextReconnectMs = millis() + ADDED_BATTERY_RECONNECT_DELAY_MS;
     batteryCount++;
     saveNVSConfig();
     Serial.printf("[MGR] added [%s] %s total=%d\n", name, mac, batteryCount);
@@ -1589,10 +1712,12 @@ static void removeBattery(int index) {
 // -----------------------------------------------------------------------
 
 static void setLastActionStatus(bool ok, const String& message) {
+    portENTER_CRITICAL(&webActionMux);
     lastActionOk = ok;
     strncpy(lastActionMessage, message.c_str(), sizeof(lastActionMessage) - 1);
     lastActionMessage[sizeof(lastActionMessage) - 1] = '\0';
     lastActionMs = millis();
+    portEXIT_CRITICAL(&webActionMux);
 }
 
 static void removeScanResultAt(int index) {
@@ -1620,20 +1745,76 @@ static void removeScanResultByMac(const char* mac) {
     }
 }
 
+static bool tryQueueAddAction(const String& mac, const String& name) {
+    bool queued = false;
+    portENTER_CRITICAL(&webActionMux);
+    if (pendingWebAction == WEB_ACTION_NONE) {
+        strncpy(pendingActionMac, mac.c_str(), MAX_MAC_LEN - 1);
+        pendingActionMac[MAX_MAC_LEN - 1] = '\0';
+        strncpy(pendingActionName, name.c_str(), MAX_NAME_LEN - 1);
+        pendingActionName[MAX_NAME_LEN - 1] = '\0';
+        pendingWebAction = WEB_ACTION_ADD;
+        queued = true;
+    }
+    portEXIT_CRITICAL(&webActionMux);
+    return queued;
+}
+
+static bool tryQueueRemoveAction(int index) {
+    bool queued = false;
+    portENTER_CRITICAL(&webActionMux);
+    if (pendingWebAction == WEB_ACTION_NONE) {
+        pendingRemoveIndex = index;
+        pendingWebAction = WEB_ACTION_REMOVE;
+        queued = true;
+    }
+    portEXIT_CRITICAL(&webActionMux);
+    return queued;
+}
+
+static bool tryQueueUserScan() {
+    bool queued = false;
+    portENTER_CRITICAL(&webActionMux);
+    if (!scanRequested && !scanInProgress) {
+        scanRequested = true;
+        scanDone = false;
+        userScanDeadlineMs = 0;
+        queued = true;
+    }
+    portEXIT_CRITICAL(&webActionMux);
+    return queued;
+}
+
 static void servicePendingWebAction() {
-    PendingWebActionType action = pendingWebAction;
-    if (action == WEB_ACTION_NONE) return;
+    PendingWebActionType action = WEB_ACTION_NONE;
+    char macBuf[MAX_MAC_LEN] = {0};
+    char nameBuf[MAX_NAME_LEN] = {0};
+    int removeIndex = -1;
 
-    pendingWebAction = WEB_ACTION_NONE;
-
+    portENTER_CRITICAL(&webActionMux);
+    action = pendingWebAction;
     if (action == WEB_ACTION_ADD) {
-        String mac = pendingActionMac;
-        mac.toLowerCase();
-        mac.trim();
-        String name = pendingActionName;
-        name.trim();
+        strncpy(macBuf, pendingActionMac, sizeof(macBuf) - 1);
+        strncpy(nameBuf, pendingActionName, sizeof(nameBuf) - 1);
+        macBuf[sizeof(macBuf) - 1] = '\0';
+        nameBuf[sizeof(nameBuf) - 1] = '\0';
         pendingActionMac[0] = '\0';
         pendingActionName[0] = '\0';
+    } else if (action == WEB_ACTION_REMOVE) {
+        removeIndex = pendingRemoveIndex;
+        pendingRemoveIndex = -1;
+    }
+    pendingWebAction = WEB_ACTION_NONE;
+    portEXIT_CRITICAL(&webActionMux);
+
+    if (action == WEB_ACTION_NONE) return;
+
+    if (action == WEB_ACTION_ADD) {
+        String mac = macBuf;
+        mac.toLowerCase();
+        mac.trim();
+        String name = nameBuf;
+        name.trim();
 
         if (!isValidMac(mac.c_str())) {
             setLastActionStatus(false, F("Queued add failed: invalid MAC"));
@@ -1661,8 +1842,7 @@ static void servicePendingWebAction() {
     }
 
     if (action == WEB_ACTION_REMOVE) {
-        const int index = pendingRemoveIndex;
-        pendingRemoveIndex = -1;
+        const int index = removeIndex;
         if (index < 0 || index >= batteryCount) {
             setLastActionStatus(false, F("Queued remove failed: battery not found"));
             return;
@@ -1673,56 +1853,74 @@ static void servicePendingWebAction() {
     }
 }
 
+static void finishUserScan() {
+    portENTER_CRITICAL(&webActionMux);
+    scanInProgress = false;
+    userScanActive = false;
+    scanDone = true;
+    userScanDeadlineMs = 0;
+    portEXIT_CRITICAL(&webActionMux);
+    pBLEScan->stop();
+    pBLEScan->clearResults();
+    setLastActionStatus(true,
+                        scanResultCount > 0 ? String(F("Scan complete"))
+                                            : String(F("Scan complete - no candidates")));
+    Serial.printf("[WEB] battery scan complete results=%d\n", scanResultCount);
+}
+
+static bool canAttemptReconnect() {
+    bool scanQueued = false;
+    bool scanBusy = false;
+    portENTER_CRITICAL(&webActionMux);
+    scanQueued = scanRequested;
+    scanBusy = scanInProgress;
+    portEXIT_CRITICAL(&webActionMux);
+    return !scanBusy && !scanQueued;
+}
+
 static void serviceUserScan(unsigned long nowMs) {
+    bool startedScan = false;
+    bool scanBusy = false;
+    unsigned long scanDeadline = 0;
+    portENTER_CRITICAL(&webActionMux);
     if (scanRequested && !scanInProgress) {
         scanRequested = false;
         scanInProgress = true;
         scanDone = false;
         userScanActive = true;
         userScanDeadlineMs = nowMs + USER_SCAN_TIMEOUT_MS;
+        startedScan = true;
+    }
+    scanBusy = scanInProgress;
+    scanDeadline = userScanDeadlineMs;
+    portEXIT_CRITICAL(&webActionMux);
+
+    if (startedScan) {
         scanResultCount = 0;
         memset(scanResults, 0, sizeof(scanResults));
         pBLEScan->setActiveScan(true);
         pBLEScan->setInterval(BLE_SCAN_INTERVAL_UNITS);
         pBLEScan->setWindow(BLE_SCAN_WINDOW_UNITS);
         setLastActionStatus(true, F("Battery scan started"));
-        Serial.printf("[WEB] queued battery scan start deadline=%lu\n", userScanDeadlineMs);
+        Serial.printf("[WEB] queued battery scan start deadline=%lu\n", scanDeadline);
     }
 
-    if (!scanInProgress) return;
+    if (!scanBusy) return;
 
-    if (scanResultCount >= MAX_SCAN_RESULTS || hasDeadlinePassed(userScanDeadlineMs)) {
-        scanInProgress = false;
-        userScanActive = false;
-        scanDone = true;
-        userScanDeadlineMs = 0;
-        pBLEScan->stop();
-        pBLEScan->clearResults();
-        setLastActionStatus(true,
-                            scanResultCount > 0 ? String(F("Scan complete"))
-                                                : String(F("Scan complete - no candidates")));
-        Serial.printf("[WEB] battery scan complete results=%d\n", scanResultCount);
+    if (scanResultCount >= MAX_SCAN_RESULTS || hasDeadlinePassed(scanDeadline)) {
+        finishUserScan();
         return;
     }
 
-    unsigned long remainingMs = userScanDeadlineMs - nowMs;
+    unsigned long remainingMs = scanDeadline - nowMs;
     unsigned long sliceMs = remainingMs < USER_SCAN_SLICE_MS ? remainingMs : USER_SCAN_SLICE_MS;
     if (sliceMs < MIN_SCAN_SLICE_MS) sliceMs = MIN_SCAN_SLICE_MS;
 
     pBLEScan->start(scanDurationSeconds(sliceMs), false);
     pBLEScan->clearResults();
 
-    if (scanResultCount >= MAX_SCAN_RESULTS || hasDeadlinePassed(userScanDeadlineMs)) {
-        scanInProgress = false;
-        userScanActive = false;
-        scanDone = true;
-        userScanDeadlineMs = 0;
-        pBLEScan->stop();
-        pBLEScan->clearResults();
-        setLastActionStatus(true,
-                            scanResultCount > 0 ? String(F("Scan complete"))
-                                                : String(F("Scan complete - no candidates")));
-        Serial.printf("[WEB] battery scan complete results=%d\n", scanResultCount);
+    if (scanResultCount >= MAX_SCAN_RESULTS || hasDeadlinePassed(scanDeadline)) {
+        finishUserScan();
     }
 }
 
@@ -1903,13 +2101,10 @@ static void handleApiBatteries(AsyncWebServerRequest* request) {
 }
 
 static void handleApiBatteriesScan(AsyncWebServerRequest* request) {
-    if (scanRequested || scanInProgress) {
+    if (!tryQueueUserScan()) {
         sendJsonResponse(request, 200, buildBatteriesJson());
         return;
     }
-    scanRequested = true;
-    scanDone = false;
-    userScanDeadlineMs = 0;
     setLastActionStatus(true, F("Battery scan queued"));
     sendJsonResponse(request, 202, buildBatteriesJson());
 }
@@ -1922,10 +2117,6 @@ static void handleApiBatteriesAdd(AsyncWebServerRequest* request) {
     }
     if (idx < 0 || idx >= scanResultCount) {
         sendJsonError(request, 400, "Candidate index out of range");
-        return;
-    }
-    if (pendingWebAction != WEB_ACTION_NONE) {
-        sendJsonError(request, 409, "Another battery action is already pending");
         return;
     }
     if (batteryCount >= MAX_BATTERIES) {
@@ -1949,16 +2140,13 @@ static void handleApiBatteriesAdd(AsyncWebServerRequest* request) {
         }
     }
 
-    String name = request->hasParam("name") ? request->getParam("name")->value() : mac;
-    name.trim();
+    String name = request->hasParam("name") ? sanitizeDisplayName(request->getParam("name")->value()) : mac;
     if (name.length() == 0) name = mac;
-    if (name.length() >= MAX_NAME_LEN) name = name.substring(0, MAX_NAME_LEN - 1);
 
-    strncpy(pendingActionMac, mac.c_str(), MAX_MAC_LEN - 1);
-    pendingActionMac[MAX_MAC_LEN - 1] = '\0';
-    strncpy(pendingActionName, name.c_str(), MAX_NAME_LEN - 1);
-    pendingActionName[MAX_NAME_LEN - 1] = '\0';
-    pendingWebAction = WEB_ACTION_ADD;
+    if (!tryQueueAddAction(mac, name)) {
+        sendJsonError(request, 409, "Another battery action is already pending");
+        return;
+    }
     setLastActionStatus(true, String(F("Queued add for ")) + name);
     sendJsonResponse(request, 202, buildBatteriesJson());
 }
@@ -1973,13 +2161,10 @@ static void handleApiBatteriesRemove(AsyncWebServerRequest* request) {
         sendJsonError(request, 400, "Battery index out of range");
         return;
     }
-    if (pendingWebAction != WEB_ACTION_NONE) {
+    if (!tryQueueRemoveAction(index)) {
         sendJsonError(request, 409, "Another battery action is already pending");
         return;
     }
-
-    pendingRemoveIndex = index;
-    pendingWebAction = WEB_ACTION_REMOVE;
     setLastActionStatus(true, String(F("Queued remove for ")) + batteryConfigs[index].name);
     sendJsonResponse(request, 202, buildBatteriesJson());
 }
@@ -2078,13 +2263,14 @@ void loop() {
     servicePendingWebAction();
     serviceUserScan(now);
     now = millis();
+    const bool reconnectAllowed = canAttemptReconnect();
 
     for (int i = 0; i < batteryCount; i++) {
         if (!batteryConfigs[i].enabled) continue;
 
         if (isBatteryConnected(i)) {
             serviceBatteryPolling(i, now);
-        } else if (!scanInProgress && !scanRequested && shouldAttemptReconnect(i, now)) {
+        } else if (reconnectAllowed && shouldAttemptReconnect(i, now)) {
             bool ok = reconnectBattery(i);
             Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
