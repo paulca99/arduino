@@ -1,6 +1,9 @@
 #include "driver/twai.h"
 #include <math.h>
 
+void logRuntimeEventf(const char* fmt, ...);
+void logRuntimeEventfThrottled(unsigned long* lastLogMs, unsigned long intervalMs, const char* fmt, ...);
+
 // -----------------------------------------------------------------------
 // Pylontech CAN protocol for Solis S5-EH1P3.6K-L
 //
@@ -111,8 +114,12 @@ static uint8_t voltageToSoc(float packV) {
 // Helper — transmit one CAN frame, print warning if it fails
 // -----------------------------------------------------------------------
 static void canSend(twai_message_t& msg) {
+    static unsigned long lastCanTxFailLogMs = 0;
     if (twai_transmit(&msg, pdMS_TO_TICKS(10)) != ESP_OK) {
-        Serial.printf("⚠️  CAN TX failed for ID 0x%03X\n", msg.identifier);
+        logRuntimeEventfThrottled(&lastCanTxFailLogMs,
+                                  2000UL,
+                                  "⚠️ CAN TX failed for ID 0x%03X",
+                                  msg.identifier);
     }
 }
 
@@ -244,6 +251,8 @@ static void can_send_measurements(float packVoltage, float packCurrent, float pa
 // 0x359 — Protection & alarm flags
 // -----------------------------------------------------------------------
 static void can_send_alarms(float packVoltage, float packTemp) {
+    static bool haveLastProtection = false;
+    static uint8_t lastProtection = 0;
     const float maxPackV = (float)PACK_SERIES_CELLS * 4.20f;
     const float minPackV = (float)PACK_SERIES_CELLS * 2.75f;
     uint8_t protection = 0;
@@ -264,12 +273,23 @@ static void can_send_alarms(float packVoltage, float packTemp) {
     msg.data[5] = 0x50;        // 'P'
     msg.data[6] = 0x4E;        // 'N'
     canSend(msg);
+
+    if (!haveLastProtection || protection != lastProtection) {
+        logRuntimeEventf("CAN 0x359 protection=0x%02X (V=%.2f T=%.1f)",
+                         protection,
+                         packVoltage,
+                         packTemp);
+        lastProtection = protection;
+        haveLastProtection = true;
+    }
 }
 
 // -----------------------------------------------------------------------
 // 0x35C — Charge/discharge request flags
 // -----------------------------------------------------------------------
 static void can_send_request(bool chargeAllowed, bool dischargeAllowed) {
+    static bool haveLastFlags = false;
+    static uint8_t lastFlags = 0;
     uint8_t flags = 0;
     if (chargeAllowed) flags |= 0x80;
     if (dischargeAllowed) flags |= 0x40;
@@ -281,6 +301,15 @@ static void can_send_request(bool chargeAllowed, bool dischargeAllowed) {
     msg.data[0] = flags;
     msg.data[1] = 0x00;
     canSend(msg);
+
+    if (!haveLastFlags || flags != lastFlags) {
+        logRuntimeEventf("CAN 0x35C flags=0x%02X charge=%s discharge=%s",
+                         flags,
+                         chargeAllowed ? "yes" : "no",
+                         dischargeAllowed ? "yes" : "no");
+        lastFlags = flags;
+        haveLastFlags = true;
+    }
 }
 
 // -----------------------------------------------------------------------

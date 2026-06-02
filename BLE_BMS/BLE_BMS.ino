@@ -9,6 +9,7 @@
 #include <HardwareSerial.h>
 #include <math.h>
 #include <new>
+#include <stdarg.h>
 #include <string.h>
 #include "driver/twai.h"
 
@@ -32,6 +33,9 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define WIFI_PASSWORD_UPPER "DEADBEEF"
 #define WIFI_PASSWORD_LOWER "deadbeef"
 #define WIFI_CONNECT_TIMEOUT_MS  10000
+#define RUNTIME_LOG_MAX_LINES      96
+#define RUNTIME_LOG_LINE_LEN      144
+#define WEB_REQUEST_LOG_THROTTLE_MS 60000UL
 
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
@@ -226,6 +230,12 @@ static SemaphoreHandle_t solisMutex = nullptr;
 
 static BatteryState batteries[BATTERY_COUNT];
 static AggregateSnapshot aggregate;
+static char runtimeLogLines[RUNTIME_LOG_MAX_LINES][RUNTIME_LOG_LINE_LEN];
+static uint16_t runtimeLogHead = 0;
+static uint16_t runtimeLogCount = 0;
+static portMUX_TYPE runtimeLogMux = portMUX_INITIALIZER_UNLOCKED;
+static unsigned long lastWebRootLogMs = 0;
+static wl_status_t lastWifiStatus = WL_IDLE_STATUS;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
@@ -246,7 +256,11 @@ static String buildInverterJson();
 static String htmlEscape(const String& input);
 static void handleInverter();
 static void handleInverterApi();
+static void handleLog();
 static void solisPollTask(void* pv);
+static void sendContentf(const char* fmt, ...);
+void logRuntimeEventf(const char* fmt, ...);
+void logRuntimeEventfThrottled(unsigned long* lastLogMs, unsigned long intervalMs, const char* fmt, ...);
 
 // CAN API from CAN_Pylontech.ino
 void setupCAN();
@@ -342,6 +356,64 @@ static int connectedBatteryCount() {
         if (isBatteryConnected(i)) count++;
     }
     return count;
+}
+
+static void appendRuntimeLogLine(const char* line) {
+    if (line == nullptr) return;
+
+    portENTER_CRITICAL(&runtimeLogMux);
+    strncpy(runtimeLogLines[runtimeLogHead], line, RUNTIME_LOG_LINE_LEN - 1);
+    runtimeLogLines[runtimeLogHead][RUNTIME_LOG_LINE_LEN - 1] = '\0';
+    runtimeLogHead = (runtimeLogHead + 1U) % RUNTIME_LOG_MAX_LINES;
+    if (runtimeLogCount < RUNTIME_LOG_MAX_LINES) {
+        runtimeLogCount++;
+    }
+    portEXIT_CRITICAL(&runtimeLogMux);
+}
+
+static void logRuntimeEventV(const char* fmt, va_list args) {
+    if (fmt == nullptr) return;
+
+    char message[100];
+    vsnprintf(message, sizeof(message), fmt, args);
+
+    char line[RUNTIME_LOG_LINE_LEN];
+    snprintf(line, sizeof(line), "[%10lu ms] %s", millis(), message);
+    Serial.println(line);
+    appendRuntimeLogLine(line);
+}
+
+void logRuntimeEventf(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    logRuntimeEventV(fmt, args);
+    va_end(args);
+}
+
+void logRuntimeEventfThrottled(unsigned long* lastLogMs, unsigned long intervalMs, const char* fmt, ...) {
+    if (lastLogMs == nullptr) return;
+
+    unsigned long now = millis();
+    if (*lastLogMs != 0 && (uint32_t)(now - *lastLogMs) < intervalMs) {
+        return;
+    }
+    *lastLogMs = now;
+
+    va_list args;
+    va_start(args, fmt);
+    logRuntimeEventV(fmt, args);
+    va_end(args);
+}
+
+static void sendContentf(const char* fmt, ...) {
+    if (fmt == nullptr) return;
+
+    char buffer[768];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    server.sendContent(buffer);
 }
 
 static void logBatteryDebugState(int index, const char* prefix) {
@@ -615,7 +687,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.connected = true;
         battery.connectedAtMs = millis();
         battery.nextReconnectMs = 0;
-        Serial.printf("[%s] connected\n", batteryConfigs[index].name);
+        logRuntimeEventf("[%s] connected", batteryConfigs[index].name);
         logBatteryDebugState(index, "[DBG onConnect]");
     }
 
@@ -636,9 +708,9 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.nextReconnectMs = battery.lastDisconnectMs + RECONNECT_INTERVAL_MS;
         battery.disconnectCount++;
 
-        Serial.printf("[%s] disconnected (drops=%lu)\n",
-                      batteryConfigs[index].name,
-                      battery.disconnectCount);
+        logRuntimeEventf("[%s] disconnected (drops=%lu)",
+                         batteryConfigs[index].name,
+                         battery.disconnectCount);
         logBatteryDebugState(index, "[DBG onDisconnect]");
     }
 };
@@ -662,7 +734,7 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
 
             BLEAdvertisedDevice* discoveredDevice = new (std::nothrow) BLEAdvertisedDevice(advertisedDevice);
             if (discoveredDevice == nullptr) {
-                Serial.printf("[%s] discovery allocation failed\n", batteryConfigs[i].name);
+                logRuntimeEventf("[%s] discovery allocation failed", batteryConfigs[i].name);
                 return;
             }
 
@@ -672,9 +744,9 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
             }
             batteries[i].advertisedDevice = discoveredDevice;
 
-            Serial.printf("[%s] discovered at %s\n",
-                          batteryConfigs[i].name,
-                          batteryConfigs[i].mac);
+            logRuntimeEventf("[%s] discovered at %s",
+                             batteryConfigs[i].name,
+                             batteryConfigs[i].mac);
 
             if (seenBatteryCount() >= enabledBatteryCount()) {
                 BLEDevice::getScan()->stop();
@@ -885,6 +957,10 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
                           battery.packetLen,
                           battery.expectedLen,
                           battery.packetError ? "yes" : "no");
+            logRuntimeEventf("[%s] BLE request timeout (timeouts=%lu stage=%u)",
+                             batteryConfigs[index].name,
+                             battery.requestTimeouts + 1,
+                             (unsigned)battery.requestStage);
             battery.requestInFlight = false;
             battery.requestDeadlineMs = 0;
             if (battery.requestStage == REQUEST_STAGE_WAIT_04) {
@@ -943,9 +1019,9 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
         }
         battery.requestStage = REQUEST_STAGE_IDLE;
         battery.failedReads++;
-        Serial.printf("[DBG] [%s] writeValue failed immediately for cmd=0x%02X\n",
-                      batteryConfigs[index].name,
-                      cmd[2]);
+        logRuntimeEventf("[%s] BLE write failed cmd=0x%02X",
+                         batteryConfigs[index].name,
+                         cmd[2]);
         logBatteryDebugState(index, "[DBG write fail]");
     }
 }
@@ -953,12 +1029,12 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 static bool reconnectBattery(int index) {
     if (isBatteryConnected(index)) return true;
 
-    Serial.printf("[%s] reconnect attempt\n", batteryConfigs[index].name);
+    logRuntimeEventf("[%s] reconnect attempt", batteryConfigs[index].name);
     logBatteryDebugState(index, "[DBG before reconnect]");
 
     if (batteries[index].advertisedDevice == nullptr) {
         if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
-            Serial.printf("[%s] not seen during reconnect scan\n", batteryConfigs[index].name);
+            logRuntimeEventf("[%s] not seen during reconnect scan", batteryConfigs[index].name);
             batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
             return false;
         }
@@ -967,7 +1043,7 @@ static bool reconnectBattery(int index) {
     if (connectBattery(index)) return true;
 
     if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
-        Serial.printf("[%s] rediscovery failed\n", batteryConfigs[index].name);
+        logRuntimeEventf("[%s] rediscovery failed", batteryConfigs[index].name);
         batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
         return false;
     }
@@ -1221,7 +1297,7 @@ static void solisPollTask(void* pv) {
         }
 
         if (!anySuccess) {
-            Serial.println("Solis poll pass had no successful reads");
+            logRuntimeEventf("Solis poll pass had no successful reads");
         }
 
         unsigned long nextPollAtMs = pollStartMs + SOLIS_POLL_INTERVAL_MS;
@@ -1458,18 +1534,21 @@ static void handleInverter() {
         const SolisRegisterInfo& info = SOLIS_REGISTER_INFOS[i];
         RegisterValue regValue = getSolisRegisterValue(snapshot, info.reg);
 
-        String row;
-        row.reserve(320);
-        row = "<tr><td>" + htmlEscape(String(info.label)) +
-              "</td><td class='mono'>" + String(info.reg) +
-              "</td><td>" + htmlEscape(formatSolisRegisterDisplay(info.reg, regValue)) +
-              "</td><td>" + (regValue.valid ? String(regValue.raw) : String("--")) +
-              "</td><td>" + (regValue.valid ? String(static_cast<int16_t>(regValue.raw)) : String("--")) +
-              "</td><td>" + htmlEscape(String(info.note)) + "</td></tr>";
-        server.sendContent(row);
+        String labelEsc = htmlEscape(String(info.label));
+        String displayEsc = htmlEscape(formatSolisRegisterDisplay(info.reg, regValue));
+        String noteEsc = htmlEscape(String(info.note));
+        String rawText = regValue.valid ? String(regValue.raw) : String("--");
+        String signedText = regValue.valid ? String(static_cast<int16_t>(regValue.raw)) : String("--");
+        sendContentf("<tr><td>%s</td><td class='mono'>%u</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+                     labelEsc.c_str(),
+                     info.reg,
+                     displayEsc.c_str(),
+                     rawText.c_str(),
+                     signedText.c_str(),
+                     noteEsc.c_str());
     }
     server.sendContent(F("</table>"));
-    server.sendContent(F("<p>JSON endpoints: <a href='/api/inverter'>/api/inverter</a> · <a href='/api/solis'>/api/solis</a></p>"));
+    server.sendContent(F("<p>JSON endpoints: <a href='/api/inverter'>/api/inverter</a> · <a href='/api/solis'>/api/solis</a> · <a href='/log'>Runtime log</a></p>"));
     server.sendContent(F("</body></html>"));
     server.sendContent("");
 }
@@ -1478,11 +1557,13 @@ static void handleRoot() {
     unsigned long now = millis();
     AggregateSnapshot snap = buildAggregateSnapshot(now);
 
-    Serial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
-                  ESP.getFreeHeap(),
-                  connectedBatteryCount(),
-                  enabledBatteryCount(),
-                  wifiStatusToString(WiFi.status()));
+    logRuntimeEventfThrottled(&lastWebRootLogMs,
+                              WEB_REQUEST_LOG_THROTTLE_MS,
+                              "[WEB] GET / heap=%u connected=%d/%d wifi=%s",
+                              ESP.getFreeHeap(),
+                              connectedBatteryCount(),
+                              enabledBatteryCount(),
+                              wifiStatusToString(WiFi.status()));
 
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "text/html", "");
@@ -1534,27 +1615,36 @@ static void handleRoot() {
         uint16_t minCellMv = 0;
         uint16_t maxCellMv = 0;
         bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
-        String batteryLink = "<a href='/battery?index=" + String(i) + "'>" + htmlEscape(String(cfg.name)) + "</a>";
-
-        String row;
-        row.reserve(512);
-        row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
-                     String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
-                      "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
-                      "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
-                      "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
-                      "</td><td>" + (battery.hasTemperature ? String(battery.temperature, 1) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(minCellMv / 1000.0f, 3) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(minCellIndex + 1) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(maxCellMv / 1000.0f, 3) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(maxCellIndex + 1) : String("-")) +
-                      "</td><td>" + age +
-                      "</td><td>" + String(battery.disconnectCount) + "</td></tr>";
-
-        server.sendContent(row);
+        String nameEsc = htmlEscape(String(cfg.name));
+        String macEsc = htmlEscape(String(cfg.mac));
+        String voltageText = battery.hasData ? String(battery.voltage, 2) : String("-");
+        String currentText = battery.hasData ? String(battery.current, 2) : String("-");
+        String socText = battery.hasData ? String(battery.soc) : String("-");
+        String tempText = battery.hasTemperature ? String(battery.temperature, 1) : String("-");
+        String minCellText = hasCellStats ? String(minCellMv / 1000.0f, 3) : String("-");
+        String minCellIdText = hasCellStats ? String(minCellIndex + 1) : String("-");
+        String maxCellText = hasCellStats ? String(maxCellMv / 1000.0f, 3) : String("-");
+        String maxCellIdText = hasCellStats ? String(maxCellIndex + 1) : String("-");
+        sendContentf("<tr><td><a href='/battery?index=%d'>%s</a></td><td class='mono'>%s</td><td>%s</td><td class='%s'>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%lu</td></tr>",
+                     i,
+                     nameEsc.c_str(),
+                     macEsc.c_str(),
+                     cfg.enabled ? "yes" : "no",
+                     isBatteryConnected(i) ? "green" : "red",
+                     isBatteryConnected(i) ? "yes" : "no",
+                     voltageText.c_str(),
+                     currentText.c_str(),
+                     socText.c_str(),
+                     tempText.c_str(),
+                     minCellText.c_str(),
+                     minCellIdText.c_str(),
+                     maxCellText.c_str(),
+                     maxCellIdText.c_str(),
+                     age.c_str(),
+                     battery.disconnectCount);
     }
 
-    server.sendContent(F("</table><p><a href='/inverter'>Solis inverter monitor</a> · <a href='/api/inverter'>Inverter JSON</a></p>"
+    server.sendContent(F("</table><p><a href='/inverter'>Solis inverter monitor</a> · <a href='/api/inverter'>Inverter JSON</a> · <a href='/log'>Runtime log</a></p>"
                          "<p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
     server.sendContent("");
 }
@@ -1607,12 +1697,12 @@ static void handleBatteryDetail() {
                          "</style></head><body>"));
 
     server.sendContent(F("<p><a href='/'>Back to summary</a></p>"));
-    server.sendContent(String("<h1>Battery detail: ") + htmlEscape(String(cfg.name)) + "</h1>");
-    server.sendContent(String("<div class='card'><div>MAC: <span class='mono'>") +
-                       htmlEscape(String(cfg.mac)) +
-                       "</span></div>");
-    server.sendContent(String("<div>Connected: ") + (isBatteryConnected(index) ? "yes" : "no") + "</div>");
-    server.sendContent(String("<div>Cell data age: ") + cellDataAge + "</div></div>");
+    String nameEsc = htmlEscape(String(cfg.name));
+    String macEsc = htmlEscape(String(cfg.mac));
+    sendContentf("<h1>Battery detail: %s</h1>", nameEsc.c_str());
+    sendContentf("<div class='card'><div>MAC: <span class='mono'>%s</span></div>", macEsc.c_str());
+    sendContentf("<div>Connected: %s</div>", isBatteryConnected(index) ? "yes" : "no");
+    sendContentf("<div>Cell data age: %s</div></div>", cellDataAge.c_str());
 
     if (!battery.hasCellData || battery.cellCount == 0) {
         server.sendContent(F("<p class='muted'>No valid cell data available yet.</p></body></html>"));
@@ -1620,13 +1710,86 @@ static void handleBatteryDetail() {
         return;
     }
 
-    server.sendContent("<h2>Cell voltages (" + String(battery.cellCount) + ")</h2>");
+    sendContentf("<h2>Cell voltages (%u)</h2>", battery.cellCount);
     server.sendContent(F("<table><tr><th>Cell</th><th>Voltage (V)</th></tr>"));
     for (uint8_t i = 0; i < battery.cellCount; i++) {
-        String row = "<tr><td>" + String(i + 1) + "</td><td>" + String(battery.cellMv[i] / 1000.0f, 3) + "</td></tr>";
-        server.sendContent(row);
+        String cellVoltage = String(battery.cellMv[i] / 1000.0f, 3);
+        sendContentf("<tr><td>%u</td><td>%s</td></tr>",
+                     static_cast<unsigned>(i + 1),
+                     cellVoltage.c_str());
     }
     server.sendContent(F("</table></body></html>"));
+    server.sendContent("");
+}
+
+static void handleLog() {
+    unsigned long now = millis();
+    AggregateSnapshot snap = buildAggregateSnapshot(now);
+    SolisState solisSnapshot = {};
+    copySolisSnapshot(solisSnapshot);
+
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html", "");
+
+    server.sendContent(F("<!DOCTYPE html><html><head>"
+                         "<meta charset='UTF-8'>"
+                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                         "<meta http-equiv='refresh' content='5'>"
+                         "<title>Runtime log</title>"
+                         "<style>"
+                         "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
+                         "h1{color:#e0c97f;margin-bottom:4px}a{color:#8ec5ff}.muted{color:#a0b4cc}"
+                         "pre{white-space:pre-wrap;word-break:break-word;background:#111a30;border:1px solid #2a2a4a;border-radius:8px;padding:10px}"
+                         "</style></head><body>"));
+    server.sendContent(F("<p><a href='/'>Back to summary</a></p><h1>Runtime log</h1>"));
+    sendContentf("<p class='muted'>uptime=%lus · heap=%u · wifi=%s · batteries=%d/%d · solis polls=%lu errors=%lu lockTimeouts=%lu</p>",
+                 now / 1000UL,
+                 ESP.getFreeHeap(),
+                 wifiStatusToString(WiFi.status()),
+                 connectedBatteryCount(),
+                 enabledBatteryCount(),
+                 static_cast<unsigned long>(solisSnapshot.pollCount),
+                 static_cast<unsigned long>(solisSnapshot.readErrors),
+                 static_cast<unsigned long>(solisSnapshot.lockTimeouts));
+    if (snap.valid) {
+        sendContentf("<p class='muted'>aggregate=%.2fV %.2fA SoC %u%% chargeAllowed=%s dischargeAllowed=%s fresh=%us ago</p>",
+                     snap.voltage,
+                     snap.current,
+                     snap.soc,
+                     snap.chargeAllowed ? "yes" : "no",
+                     snap.dischargeAllowed ? "yes" : "no",
+                     (now - snap.lastFreshMs) / 1000UL);
+    } else {
+        server.sendContent(F("<p class='muted'>aggregate: no fresh battery data</p>"));
+    }
+    server.sendContent(F("<pre>"));
+
+    uint16_t count = 0;
+    uint16_t head = 0;
+    portENTER_CRITICAL(&runtimeLogMux);
+    count = runtimeLogCount;
+    head = runtimeLogHead;
+    portEXIT_CRITICAL(&runtimeLogMux);
+
+    if (count == 0) {
+        server.sendContent(F("(no log entries yet)"));
+    } else {
+        uint16_t start = (head + RUNTIME_LOG_MAX_LINES - count) % RUNTIME_LOG_MAX_LINES;
+        for (uint16_t i = 0; i < count; i++) {
+            uint16_t idx = (start + i) % RUNTIME_LOG_MAX_LINES;
+            char line[RUNTIME_LOG_LINE_LEN];
+            portENTER_CRITICAL(&runtimeLogMux);
+            strncpy(line, runtimeLogLines[idx], sizeof(line));
+            line[sizeof(line) - 1] = '\0';
+            portEXIT_CRITICAL(&runtimeLogMux);
+
+            server.sendContent(htmlEscape(String(line)));
+            server.sendContent(F("\n"));
+            if ((i & 0x0FU) == 0x0FU) delay(0);
+        }
+    }
+
+    server.sendContent(F("</pre></body></html>"));
     server.sendContent("");
 }
 
@@ -1734,18 +1897,20 @@ void setup() {
         wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
     }
     if (wifiOk) {
-        Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
+        logRuntimeEventf("WiFi connected - http://%s", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
         server.on("/battery", handleBatteryDetail);
         server.on("/inverter", handleInverter);
         server.on("/api/inverter", handleInverterApi);
         server.on("/api/solis", handleInverterApi);
+        server.on("/log", handleLog);
         server.begin();
-        Serial.println("Web server started on port 80");
+        logRuntimeEventf("Web server started on port 80");
         wifiReady = true;
     } else {
-        Serial.println("WiFi failed - continuing without web server");
+        logRuntimeEventf("WiFi failed - continuing without web server");
     }
+    lastWifiStatus = WiFi.status();
 
     BLEDevice::init("");
     BLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -1792,6 +1957,11 @@ static unsigned long lastHeartbeat = 0;
 
 void loop() {
     unsigned long now = millis();
+    wl_status_t wifiStatus = WiFi.status();
+    if (wifiStatus != lastWifiStatus) {
+        lastWifiStatus = wifiStatus;
+        logRuntimeEventf("WiFi status -> %s", wifiStatusToString(wifiStatus));
+    }
 
     if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeat = now;
@@ -1812,7 +1982,7 @@ void loop() {
             serviceBatteryPolling(i, now);
         } else if (shouldAttemptReconnect(i, now)) {
             bool ok = reconnectBattery(i);
-            Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
+            logRuntimeEventf("[%s] reconnect %s", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
 
         if (wifiReady) server.handleClient();
