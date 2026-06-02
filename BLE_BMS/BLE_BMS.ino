@@ -348,11 +348,7 @@ public:
 
         if (len < 0) return 0;
 
-        if (len >= (int)sizeof(buffer)) {
-            buffer[sizeof(buffer) - 2] = '\n';
-            buffer[sizeof(buffer) - 1] = '\0';
-            len = sizeof(buffer) - 1;
-        }
+        if (len >= (int)sizeof(buffer)) len = sizeof(buffer) - 1;
 
         BaseSerial.print(buffer);
         appendLogText(buffer);
@@ -360,9 +356,7 @@ public:
     }
 };
 
-static LoggedSerialProxy LoggedSerial;
-
-#define Serial LoggedSerial
+static LoggedSerialProxy LogSerial;
 
 // Explicit prototypes avoid Arduino auto-generated prototypes being emitted
 // before the custom type definitions above.
@@ -386,6 +380,7 @@ static void rememberPendingReboot(const char* reason, unsigned long nowMs);
 static void clearPendingRebootInfo();
 static void servicePeriodicReboot(unsigned long nowMs);
 static bool isBatteryContributing(int index, unsigned long nowMs);
+static bool tryParseBatteryIndex(const String& input, int& index);
 static void handleBatteryToggle();
 static void handleLogs();
 static void handleLogsApi();
@@ -581,7 +576,7 @@ static void logBatteryDebugState(int index, const char* prefix) {
     unsigned long ageReq = battery.lastRequestMs == 0 ? 0 : (now - battery.lastRequestMs);
     long deadlineIn = battery.requestInFlight ? (long)(battery.requestDeadlineMs - now) : 0L;
 
-    Serial.printf(
+    LogSerial.printf(
         "%s [%s] enabled=%s seen=%s connected=%s hasData=%s hasCellData=%s reqInFlight=%s "
         "lastReqAge=%lu lastGoodAge=%lu deadlineIn=%ld packetLen=%d expectedLen=%d "
         "packetError=%s stage=%u gotPacket03=%s gotPacket04=%s ok=%lu fail=%lu timeouts=%lu drops=%lu heap=%u wifi=%s\n",
@@ -613,7 +608,7 @@ static void logBatteryDebugState(int index, const char* prefix) {
 
 static void logSystemDebugSummary(const char* prefix) {
     unsigned long now = millis();
-    Serial.printf(
+    LogSerial.printf(
         "%s now=%lu heap=%u wifi=%s connected=%d/%d enabled=%d\n",
         prefix,
         now,
@@ -754,7 +749,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         if (length == 0 || pData[0] != 0xDD) return;
         battery.packetError = (pData[2] != 0x00);
         battery.expectedLen = pData[3] + 7;
-        Serial.printf("[DBG] [%s] notify start chunkLen=%u expected=%d status=0x%02X\n",
+        LogSerial.printf("[DBG] [%s] notify start chunkLen=%u expected=%d status=0x%02X\n",
                       batteryConfigs[index].name,
                       (unsigned)length,
                       battery.expectedLen,
@@ -762,7 +757,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     }
 
     if (battery.packetLen + (int)length > MAX_PACKET_LEN) {
-        Serial.printf("[DBG] [%s] notify overflow packetLen=%d add=%u\n",
+        LogSerial.printf("[DBG] [%s] notify overflow packetLen=%d add=%u\n",
                       batteryConfigs[index].name,
                       battery.packetLen,
                       (unsigned)length);
@@ -778,7 +773,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     }
 
     if (!checksumValid(battery.packetBuf, battery.packetLen)) {
-        Serial.printf("[DBG] [%s] checksum fail type=0x%02X len=%d\n",
+        LogSerial.printf("[DBG] [%s] checksum fail type=0x%02X len=%d\n",
                       batteryConfigs[index].name,
                       battery.packetBuf[1],
                       battery.packetLen);
@@ -792,7 +787,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     if ((packetType == 0x03 && !expect03) ||
         (packetType == 0x04 && !expect04) ||
         (packetType != 0x03 && packetType != 0x04)) {
-        Serial.printf("[DBG] [%s] unexpected packet type=0x%02X stage=%u len=%d\n",
+        LogSerial.printf("[DBG] [%s] unexpected packet type=0x%02X stage=%u len=%d\n",
                       batteryConfigs[index].name,
                       packetType,
                       (unsigned)battery.requestStage,
@@ -821,13 +816,13 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         }
 
         if (packetType == 0x03) {
-            Serial.printf("[DBG] [%s] packet03 complete V=%.2f I=%.2f SoC=%u\n",
+            LogSerial.printf("[DBG] [%s] packet03 complete V=%.2f I=%.2f SoC=%u\n",
                           batteryConfigs[index].name,
                           battery.voltage,
                           battery.current,
                           battery.soc);
         } else {
-            Serial.printf("[DBG] [%s] packet04 complete cells=%u\n",
+            LogSerial.printf("[DBG] [%s] packet04 complete cells=%u\n",
                           batteryConfigs[index].name,
                           battery.cellCount);
         }
@@ -843,7 +838,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.connected = true;
         battery.connectedAtMs = millis();
         battery.nextReconnectMs = 0;
-        Serial.printf("[%s] connected\n", batteryConfigs[index].name);
+        LogSerial.printf("[%s] connected\n", batteryConfigs[index].name);
         logBatteryDebugState(index, "[DBG onConnect]");
     }
 
@@ -864,7 +859,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.nextReconnectMs = battery.lastDisconnectMs + RECONNECT_INTERVAL_MS;
         battery.disconnectCount++;
 
-        Serial.printf("[%s] disconnected (drops=%lu)\n",
+        LogSerial.printf("[%s] disconnected (drops=%lu)\n",
                       batteryConfigs[index].name,
                       battery.disconnectCount);
         logBatteryDebugState(index, "[DBG onDisconnect]");
@@ -890,7 +885,7 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
 
             BLEAdvertisedDevice* discoveredDevice = new (std::nothrow) BLEAdvertisedDevice(advertisedDevice);
             if (discoveredDevice == nullptr) {
-                Serial.printf("[%s] discovery allocation failed\n", batteryConfigs[i].name);
+                LogSerial.printf("[%s] discovery allocation failed\n", batteryConfigs[i].name);
                 return;
             }
 
@@ -900,7 +895,7 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
             }
             batteries[i].advertisedDevice = discoveredDevice;
 
-            Serial.printf("[%s] discovered at %s\n",
+            LogSerial.printf("[%s] discovered at %s\n",
                           batteryConfigs[i].name,
                           batteryConfigs[i].mac);
 
@@ -918,14 +913,14 @@ static DiscoveryCallbacks discoveryCallbacks;
 static void cleanupBatteryClient(int index) {
     BatteryState& battery = batteries[index];
 
-    Serial.printf("[DBG] cleanupBatteryClient start [%s]\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] cleanupBatteryClient start [%s]\n", batteryConfigs[index].name);
     logBatteryDebugState(index, "[DBG before cleanup]");
 
     if (battery.client != nullptr) {
         if (battery.client->isConnected()) {
-            Serial.printf("[DBG] [%s] before disconnect()\n", batteryConfigs[index].name);
+            LogSerial.printf("[DBG] [%s] before disconnect()\n", batteryConfigs[index].name);
             battery.client->disconnect();
-            Serial.printf("[DBG] [%s] after disconnect()\n", batteryConfigs[index].name);
+            LogSerial.printf("[DBG] [%s] after disconnect()\n", batteryConfigs[index].name);
         }
         delete battery.client;
         battery.client = nullptr;
@@ -1014,22 +1009,22 @@ static bool connectBattery(int index) {
 
     BatteryState& battery = batteries[index];
     if (battery.advertisedDevice == nullptr) {
-        Serial.printf("[DBG] [%s] connect skipped: no advertisedDevice\n", batteryConfigs[index].name);
+        LogSerial.printf("[DBG] [%s] connect skipped: no advertisedDevice\n", batteryConfigs[index].name);
         battery.nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
         return false;
     }
 
-    Serial.printf("[DBG] [%s] connectBattery start\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] [%s] connectBattery start\n", batteryConfigs[index].name);
     logBatteryDebugState(index, "[DBG before connect]");
 
     cleanupBatteryClient(index);
 
-    Serial.printf("[DBG] [%s] before createClient()\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] [%s] before createClient()\n", batteryConfigs[index].name);
     battery.client = BLEDevice::createClient();
-    Serial.printf("[DBG] [%s] after createClient() client=%p\n", batteryConfigs[index].name, battery.client);
+    LogSerial.printf("[DBG] [%s] after createClient() client=%p\n", batteryConfigs[index].name, battery.client);
 
     if (battery.client == nullptr) {
-        Serial.printf("[%s] failed to create BLE client\n", batteryConfigs[index].name);
+        LogSerial.printf("[%s] failed to create BLE client\n", batteryConfigs[index].name);
         return false;
     }
 
@@ -1037,46 +1032,46 @@ static bool connectBattery(int index) {
 
     delay(CONNECT_DELAY_MS);
 
-    Serial.printf("[DBG] [%s] before connect()\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] [%s] before connect()\n", batteryConfigs[index].name);
     bool connectOk = battery.client->connect(battery.advertisedDevice);
-    Serial.printf("[DBG] [%s] after connect() => %s\n", batteryConfigs[index].name, connectOk ? "OK" : "FAIL");
+    LogSerial.printf("[DBG] [%s] after connect() => %s\n", batteryConfigs[index].name, connectOk ? "OK" : "FAIL");
 
     if (!connectOk) {
-        Serial.printf("[%s] connect() failed\n", batteryConfigs[index].name);
+        LogSerial.printf("[%s] connect() failed\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
     }
 
-    Serial.printf("[DBG] [%s] before getService()\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] [%s] before getService()\n", batteryConfigs[index].name);
     battery.service = battery.client->getService(serviceUUID);
-    Serial.printf("[DBG] [%s] after getService() service=%p\n", batteryConfigs[index].name, battery.service);
+    LogSerial.printf("[DBG] [%s] after getService() service=%p\n", batteryConfigs[index].name, battery.service);
 
     if (battery.service == nullptr) {
-        Serial.printf("[%s] FF00 service not found\n", batteryConfigs[index].name);
+        LogSerial.printf("[%s] FF00 service not found\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
     }
 
-    Serial.printf("[DBG] [%s] before getCharacteristic(RX)\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] [%s] before getCharacteristic(RX)\n", batteryConfigs[index].name);
     battery.rx = battery.service->getCharacteristic(charUUID_rx);
-    Serial.printf("[DBG] [%s] after getCharacteristic(RX) rx=%p\n", batteryConfigs[index].name, battery.rx);
+    LogSerial.printf("[DBG] [%s] after getCharacteristic(RX) rx=%p\n", batteryConfigs[index].name, battery.rx);
 
     if (battery.rx == nullptr || !battery.rx->canNotify()) {
-        Serial.printf("[%s] FF01 notify characteristic not found\n", batteryConfigs[index].name);
+        LogSerial.printf("[%s] FF01 notify characteristic not found\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
     }
 
-    Serial.printf("[DBG] [%s] before registerForNotify()\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] [%s] before registerForNotify()\n", batteryConfigs[index].name);
     battery.rx->registerForNotify(notifyCallback);
-    Serial.printf("[DBG] [%s] after registerForNotify()\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] [%s] after registerForNotify()\n", batteryConfigs[index].name);
 
-    Serial.printf("[DBG] [%s] before getCharacteristic(TX)\n", batteryConfigs[index].name);
+    LogSerial.printf("[DBG] [%s] before getCharacteristic(TX)\n", batteryConfigs[index].name);
     battery.tx = battery.service->getCharacteristic(charUUID_tx);
-    Serial.printf("[DBG] [%s] after getCharacteristic(TX) tx=%p\n", batteryConfigs[index].name, battery.tx);
+    LogSerial.printf("[DBG] [%s] after getCharacteristic(TX) tx=%p\n", batteryConfigs[index].name, battery.tx);
 
     if (battery.tx == nullptr || (!battery.tx->canWrite() && !battery.tx->canWriteNoResponse())) {
-        Serial.printf("[%s] FF02 write characteristic not found\n", batteryConfigs[index].name);
+        LogSerial.printf("[%s] FF02 write characteristic not found\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
     }
@@ -1089,7 +1084,7 @@ static bool connectBattery(int index) {
     battery.lastRequestMs = millis() - REQUEST_INTERVAL_MS;
 
     if (battery.connected) {
-        Serial.printf("[%s] ready: connected + notifications registered\n", batteryConfigs[index].name);
+        LogSerial.printf("[%s] ready: connected + notifications registered\n", batteryConfigs[index].name);
     }
 
     logBatteryDebugState(index, "[DBG after connect]");
@@ -1106,7 +1101,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 
     if (battery.requestInFlight) {
         if (hasDeadlinePassed(battery.requestDeadlineMs)) {
-            Serial.printf("[DBG] [%s] request timeout now=%lu deadline=%lu packetLen=%d expected=%d packetError=%s\n",
+            LogSerial.printf("[DBG] [%s] request timeout now=%lu deadline=%lu packetLen=%d expected=%d packetError=%s\n",
                           batteryConfigs[index].name,
                           nowMs,
                           battery.requestDeadlineMs,
@@ -1150,7 +1145,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     battery.requestInFlight = true;
     battery.requestStage = nextStage;
 
-    Serial.printf("[DBG] [%s] before writeValue cmd=0x%02X cycle=%s heap=%u\n",
+    LogSerial.printf("[DBG] [%s] before writeValue cmd=0x%02X cycle=%s heap=%u\n",
                   batteryConfigs[index].name,
                   cmd[2],
                   partOfCurrentCycle ? "continue" : "start",
@@ -1158,7 +1153,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 
     bool ok = battery.tx->writeValue(cmd, cmdLen, false);
 
-    Serial.printf("[DBG] [%s] after writeValue cmd=0x%02X ok=%s\n",
+    LogSerial.printf("[DBG] [%s] after writeValue cmd=0x%02X ok=%s\n",
                   batteryConfigs[index].name,
                   cmd[2],
                   ok ? "yes" : "no");
@@ -1171,7 +1166,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
         }
         battery.requestStage = REQUEST_STAGE_IDLE;
         battery.failedReads++;
-        Serial.printf("[DBG] [%s] writeValue failed immediately for cmd=0x%02X\n",
+        LogSerial.printf("[DBG] [%s] writeValue failed immediately for cmd=0x%02X\n",
                       batteryConfigs[index].name,
                       cmd[2]);
         logBatteryDebugState(index, "[DBG write fail]");
@@ -1181,12 +1176,12 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 static bool reconnectBattery(int index) {
     if (isBatteryConnected(index)) return true;
 
-    Serial.printf("[%s] reconnect attempt\n", batteryConfigs[index].name);
+    LogSerial.printf("[%s] reconnect attempt\n", batteryConfigs[index].name);
     logBatteryDebugState(index, "[DBG before reconnect]");
 
     if (batteries[index].advertisedDevice == nullptr) {
         if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
-            Serial.printf("[%s] not seen during reconnect scan\n", batteryConfigs[index].name);
+            LogSerial.printf("[%s] not seen during reconnect scan\n", batteryConfigs[index].name);
             batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
             return false;
         }
@@ -1195,7 +1190,7 @@ static bool reconnectBattery(int index) {
     if (connectBattery(index)) return true;
 
     if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
-        Serial.printf("[%s] rediscovery failed\n", batteryConfigs[index].name);
+        LogSerial.printf("[%s] rediscovery failed\n", batteryConfigs[index].name);
         batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
         return false;
     }
@@ -1329,7 +1324,7 @@ static void applyEnabledBatteryMask(uint32_t mask) {
 static void loadBatteryEnabledConfig() {
     uint32_t defaultMask = buildEnabledBatteryMask();
     if (!prefsReady) {
-        Serial.printf("Battery enable config using sketch defaults mask=0x%08lX\n",
+        LogSerial.printf("Battery enable config using sketch defaults mask=0x%08lX\n",
                       static_cast<unsigned long>(defaultMask));
         return;
     }
@@ -1340,7 +1335,7 @@ static void loadBatteryEnabledConfig() {
 
     uint32_t storedMask = configPrefs.getULong(CONFIG_KEY_ENABLED_MASK, defaultMask);
     applyEnabledBatteryMask(storedMask);
-    Serial.printf("Battery enable config loaded from NVS mask=0x%08lX\n",
+    LogSerial.printf("Battery enable config loaded from NVS mask=0x%08lX\n",
                   static_cast<unsigned long>(storedMask));
 }
 
@@ -1351,7 +1346,7 @@ static bool persistBatteryEnabledConfig() {
     size_t written = configPrefs.putULong(CONFIG_KEY_ENABLED_MASK, mask);
     if (written == 0) return false;
 
-    Serial.printf("Battery enable config saved to NVS mask=0x%08lX\n",
+    LogSerial.printf("Battery enable config saved to NVS mask=0x%08lX\n",
                   static_cast<unsigned long>(mask));
     return true;
 }
@@ -1381,7 +1376,7 @@ static bool setBatteryEnabled(int index, bool enabled) {
         cleanupBatteryClient(index);
     }
 
-    Serial.printf("[%s] aggregate membership %s via web\n",
+    LogSerial.printf("[%s] aggregate membership %s via web\n",
                   batteryConfigs[index].name,
                   enabled ? "enabled" : "disabled");
     return true;
@@ -1413,7 +1408,7 @@ static void rememberPendingReboot(const char* reason, unsigned long nowMs) {
     if (!prefsReady || reason == nullptr) return;
     configPrefs.putString(CONFIG_KEY_REBOOT_REASON, reason);
     configPrefs.putULong(CONFIG_KEY_REBOOT_UPTIME, nowMs);
-    configPrefs.putULong(CONFIG_KEY_REBOOT_AT_MS, millis());
+    configPrefs.putULong(CONFIG_KEY_REBOOT_AT_MS, nowMs);
 }
 
 static void clearPendingRebootInfo() {
@@ -1431,15 +1426,27 @@ static bool isBatteryContributing(int index, unsigned long nowMs) {
            (nowMs - battery.lastGoodDataMs) <= DATA_FRESH_MS;
 }
 
+static bool tryParseBatteryIndex(const String& input, int& index) {
+    if (input.length() == 0) return false;
+
+    char* endPtr = nullptr;
+    long parsed = strtol(input.c_str(), &endPtr, 10);
+    if (endPtr == nullptr || *endPtr != '\0') return false;
+    if (parsed < 0 || parsed >= BATTERY_COUNT) return false;
+
+    index = (int)parsed;
+    return true;
+}
+
 static void servicePeriodicReboot(unsigned long nowMs) {
     if (PERIODIC_REBOOT_INTERVAL_MS == 0) return;
     if (nowMs < PERIODIC_REBOOT_INTERVAL_MS) return;
 
-    Serial.printf("[SYSTEM] periodic reboot due after %lu ms uptime (interval=%lu ms)\n",
+    LogSerial.printf("[SYSTEM] periodic reboot due after %lu ms uptime (interval=%lu ms)\n",
                   nowMs,
                   (unsigned long)PERIODIC_REBOOT_INTERVAL_MS);
     rememberPendingReboot("periodic_4h", nowMs);
-    Serial.flush();
+    LogSerial.flush();
     delay(50);
     ESP.restart();
 }
@@ -1669,7 +1676,7 @@ static void pollSolisOnce(unsigned long nowMs) {
     }
 
     if (!blockOk) {
-        Serial.println("Solis poll pass had no successful reads");
+        LogSerial.println("Solis poll pass had no successful reads");
     }
 }
 
@@ -2144,17 +2151,9 @@ static void handleBatteryToggle() {
         return;
     }
 
-    String indexArg = server.arg("index");
-    for (size_t i = 0; i < indexArg.length(); i++) {
-        if (!isDigit(indexArg.charAt(i))) {
-            server.send(400, "text/plain", "Invalid battery index");
-            return;
-        }
-    }
-
-    int index = indexArg.toInt();
-    if (index < 0 || index >= BATTERY_COUNT) {
-        server.send(404, "text/plain", "Battery not found");
+    int index = -1;
+    if (!tryParseBatteryIndex(server.arg("index"), index)) {
+        server.send(400, "text/plain", "Invalid battery index");
         return;
     }
 
@@ -2173,7 +2172,7 @@ static void handleRoot() {
     unsigned long now = millis();
     AggregateSnapshot snap = buildAggregateSnapshot(now);
 
-    Serial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
+    LogSerial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
                   ESP.getFreeHeap(),
                   connectedBatteryCount(),
                   enabledBatteryCount(),
@@ -2243,9 +2242,11 @@ static void handleRoot() {
         bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
         bool contributing = isBatteryContributing(i, now);
         String batteryLink = "<a href='/battery?index=" + String(i) + "'>" + htmlEscape(String(cfg.name)) + "</a>";
+        String escapedIndex = htmlEscape(String(i));
+        String escapedEnabledValue = htmlEscape(String(cfg.enabled ? 0 : 1));
         String action = "<form method='POST' action='/battery-toggle'>"
-                       "<input type='hidden' name='index' value='" + String(i) + "'>"
-                       "<input type='hidden' name='enabled' value='" + String(cfg.enabled ? 0 : 1) + "'>"
+                       "<input type='hidden' name='index' value='" + escapedIndex + "'>"
+                       "<input type='hidden' name='enabled' value='" + escapedEnabledValue + "'>"
                        "<button" + String(cfg.enabled ? " class='warn'" : "") + " type='submit'>" +
                        String(cfg.enabled ? "Disable" : "Enable") + "</button></form>";
 
@@ -2280,21 +2281,9 @@ static void handleBatteryDetail() {
         return;
     }
 
-    String indexArg = server.arg("index");
-    if (indexArg.length() == 0) {
-        server.send(400, "text/plain", "Missing battery index");
-        return;
-    }
-    for (size_t i = 0; i < indexArg.length(); i++) {
-        if (!isDigit(indexArg.charAt(i))) {
-            server.send(400, "text/plain", "Invalid battery index");
-            return;
-        }
-    }
-
-    int index = indexArg.toInt();
-    if (index < 0 || index >= BATTERY_COUNT) {
-        server.send(404, "text/plain", "Battery not found");
+    int index = -1;
+    if (!tryParseBatteryIndex(server.arg("index"), index)) {
+        server.send(400, "text/plain", "Invalid battery index");
         return;
     }
 
@@ -2346,15 +2335,15 @@ static void handleBatteryDetail() {
 }
 
 static bool tryConnectWiFi(const char* ssid, const char* password) {
-    Serial.printf("Trying WiFi: %s\n", ssid);
+    LogSerial.printf("Trying WiFi: %s\n", ssid);
     WiFi.begin(ssid, password);
 
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
         delay(250);
-        Serial.print(".");
+        LogSerial.print(".");
     }
-    Serial.println();
+    LogSerial.println();
     return WiFi.status() == WL_CONNECTED;
 }
 
@@ -2362,20 +2351,20 @@ static void logBMSData() {
     unsigned long now = millis();
     AggregateSnapshot snap = buildAggregateSnapshot(now);
 
-    Serial.println("\n========== BMS STATUS ==========");
-    Serial.printf("Connected batteries: %d/%d\n", connectedBatteryCount(), enabledBatteryCount());
+    LogSerial.println("\n========== BMS STATUS ==========");
+    LogSerial.printf("Connected batteries: %d/%d\n", connectedBatteryCount(), enabledBatteryCount());
 
     if (snap.valid) {
-        Serial.printf("Aggregate: %.2f V  %.2f A  SoC %u%%",
+        LogSerial.printf("Aggregate: %.2f V  %.2f A  SoC %u%%",
                       snap.voltage,
                       snap.current,
                       snap.soc);
         if (snap.hasTemperature) {
-            Serial.printf("  Temp %.1f C", snap.temperature);
+            LogSerial.printf("  Temp %.1f C", snap.temperature);
         }
-        Serial.printf("  Fresh=%u\n", snap.contributingBatteries);
+        LogSerial.printf("  Fresh=%u\n", snap.contributingBatteries);
     } else {
-        Serial.println("Aggregate: no fresh data");
+        LogSerial.println("Aggregate: no fresh data");
     }
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -2386,7 +2375,7 @@ static void logBMSData() {
                              ? 0
                              : (now - battery.lastGoodDataMs) / 1000UL;
 
-        Serial.printf("[%s] connected=%s seen=%s ok=%lu fail=%lu timeouts=%lu drops=%lu age=%lus reqInFlight=%s pkt=%d/%d",
+        LogSerial.printf("[%s] connected=%s seen=%s ok=%lu fail=%lu timeouts=%lu drops=%lu age=%lus reqInFlight=%s pkt=%d/%d",
                       batteryConfigs[i].name,
                       isBatteryConnected(i) ? "yes" : "no",
                       battery.seen ? "yes" : "no",
@@ -2400,38 +2389,38 @@ static void logBMSData() {
                       battery.expectedLen);
 
         if (battery.hasData) {
-            Serial.printf("  %.2f V %.2f A SoC %u%%",
+            LogSerial.printf("  %.2f V %.2f A SoC %u%%",
                           battery.voltage,
                           battery.current,
                           battery.soc);
-            if (battery.hasTemperature) Serial.printf(" %.1f C", battery.temperature);
+            if (battery.hasTemperature) LogSerial.printf(" %.1f C", battery.temperature);
         }
-        Serial.println();
+        LogSerial.println();
     }
 
-    Serial.printf("CAN aggregate lock timeouts: %lu\n", static_cast<unsigned long>(canAggregateLockTimeouts));
+    LogSerial.printf("CAN aggregate lock timeouts: %lu\n", static_cast<unsigned long>(canAggregateLockTimeouts));
     logSystemDebugSummary("[DBG summary]");
-    Serial.println("=================================");
+    LogSerial.println("=================================");
 }
 
 void setup() {
-    Serial.begin(115200);
+    LogSerial.begin(115200);
     delay(500);
-    Serial.println();
-    Serial.println("=== JBD BMS -> Solis CAN Bridge (persistent classic BLE multi-battery) ===");
+    LogSerial.println();
+    LogSerial.println("=== JBD BMS -> Solis CAN Bridge (persistent classic BLE multi-battery) ===");
 
     prefsReady = configPrefs.begin(CONFIG_NAMESPACE, false);
     if (prefsReady) {
-        Serial.printf("Preferences namespace '%s' ready\n", CONFIG_NAMESPACE);
+        LogSerial.printf("Preferences namespace '%s' ready\n", CONFIG_NAMESPACE);
         loadBatteryEnabledConfig();
         loadPersistedRebootInfo();
     } else {
-        Serial.printf("Failed to open Preferences namespace '%s'; using sketch defaults only\n", CONFIG_NAMESPACE);
+        LogSerial.printf("Failed to open Preferences namespace '%s'; using sketch defaults only\n", CONFIG_NAMESPACE);
     }
 
-    Serial.printf("Reset reason: %s\n", resetReasonToString(esp_reset_reason()));
+    LogSerial.printf("Reset reason: %s\n", resetReasonToString(esp_reset_reason()));
     if (lastPersistedRebootPresent) {
-        Serial.printf("Previous requested reboot: %s after %lu ms uptime (recorded at %lu ms)\n",
+        LogSerial.printf("Previous requested reboot: %s after %lu ms uptime (recorded at %lu ms)\n",
                       lastPersistedRebootReason,
                       lastPersistedRebootUptimeMs,
                       lastPersistedRebootAtMs);
@@ -2441,16 +2430,16 @@ void setup() {
 
     solisMutex = xSemaphoreCreateMutex();
     if (solisMutex == nullptr) {
-        Serial.println("Failed to create Solis mutex; inverter polling disabled");
+        LogSerial.println("Failed to create Solis mutex; inverter polling disabled");
     } else {
         RS485.begin(9600, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-        Serial.printf("Solis RS485 polling will run in loop() on RX=%d TX=%d\n", RS485_RX_PIN, RS485_TX_PIN);
+        LogSerial.printf("Solis RS485 polling will run in loop() on RX=%d TX=%d\n", RS485_RX_PIN, RS485_TX_PIN);
     }
 
     canAggregateMutex = xSemaphoreCreateMutex();
     if (canAggregateMutex == nullptr) {
-        Serial.println("Failed to create CAN aggregate mutex");
-        Serial.println("CAN TX task disabled (missing aggregate mutex)");
+        LogSerial.println("Failed to create CAN aggregate mutex");
+        LogSerial.println("CAN TX task disabled (missing aggregate mutex)");
     } else {
         BaseType_t canTaskOk = xTaskCreatePinnedToCore(
             canTxTask,
@@ -2461,9 +2450,9 @@ void setup() {
             nullptr,
             CAN_TASK_CORE);
         if (canTaskOk != pdPASS) {
-            Serial.println("Failed to start CAN TX task");
+            LogSerial.println("Failed to start CAN TX task");
         } else {
-            Serial.printf("CAN TX task started on core %d\n", CAN_TASK_CORE);
+            LogSerial.printf("CAN TX task started on core %d\n", CAN_TASK_CORE);
         }
     }
 
@@ -2475,7 +2464,7 @@ void setup() {
         wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
     }
     if (wifiOk) {
-        Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
+        LogSerial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
         server.on("/battery", handleBatteryDetail);
         server.on("/battery-toggle", HTTP_POST, handleBatteryToggle);
@@ -2486,10 +2475,10 @@ void setup() {
         server.on("/api/inverter", handleInverterApi);
         server.on("/api/solis", handleInverterApi);
         server.begin();
-        Serial.println("Web server started on port 80");
+        LogSerial.println("Web server started on port 80");
         wifiReady = true;
     } else {
-        Serial.println("WiFi failed - continuing without web server");
+        LogSerial.println("WiFi failed - continuing without web server");
     }
 
     BLEDevice::init("");
@@ -2498,9 +2487,9 @@ void setup() {
     pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(&discoveryCallbacks);
 
-    Serial.printf("Configured batteries: %d\n", BATTERY_COUNT);
+    LogSerial.printf("Configured batteries: %d\n", BATTERY_COUNT);
     for (int i = 0; i < BATTERY_COUNT; i++) {
-        Serial.printf("  [%d] %s %s enabled=%s\n",
+        LogSerial.printf("  [%d] %s %s enabled=%s\n",
                       i,
                       batteryConfigs[i].name,
                       batteryConfigs[i].mac,
@@ -2508,22 +2497,22 @@ void setup() {
     }
 
     bool allSeen = scanForAllEnabledBatteries(STARTUP_SCAN_TIMEOUT_MS);
-    Serial.printf("Startup discovery: seen=%d/%d\n", seenBatteryCount(), enabledBatteryCount());
+    LogSerial.printf("Startup discovery: seen=%d/%d\n", seenBatteryCount(), enabledBatteryCount());
     if (!allSeen) {
-        Serial.println("Some enabled batteries were not discovered at startup.");
+        LogSerial.println("Some enabled batteries were not discovered at startup.");
     }
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
         if (!batteryConfigs[i].enabled) continue;
 
         if (!batteries[i].seen) {
-            Serial.printf("[%s] startup connect skipped (not discovered)\n", batteryConfigs[i].name);
+            LogSerial.printf("[%s] startup connect skipped (not discovered)\n", batteryConfigs[i].name);
             batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
             continue;
         }
 
         bool ok = connectBattery(i);
-        Serial.printf("[%s] startup connect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
+        LogSerial.printf("[%s] startup connect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         if (!ok) batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
     }
 
@@ -2541,7 +2530,7 @@ void loop() {
 
     if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeat = now;
-        Serial.printf("[loop] heartbeat now=%lu heap=%u wifi=%s connected=%d/%d\n",
+        LogSerial.printf("[loop] heartbeat now=%lu heap=%u wifi=%s connected=%d/%d\n",
                       now,
                       ESP.getFreeHeap(),
                       wifiStatusToString(WiFi.status()),
@@ -2558,7 +2547,7 @@ void loop() {
             serviceBatteryPolling(i, now);
         } else if (shouldAttemptReconnect(i, now)) {
             bool ok = reconnectBattery(i);
-            Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
+            LogSerial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
 
         if (wifiReady) server.handleClient();

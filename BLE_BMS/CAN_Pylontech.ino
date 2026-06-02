@@ -112,7 +112,7 @@ static uint8_t voltageToSoc(float packV) {
 // -----------------------------------------------------------------------
 static void canSend(twai_message_t& msg) {
     if (twai_transmit(&msg, pdMS_TO_TICKS(10)) != ESP_OK) {
-        Serial.printf("⚠️  CAN TX failed for ID 0x%03X\n", msg.identifier);
+        LogSerial.printf("⚠️  CAN TX failed for ID 0x%03X\n", msg.identifier);
     }
 }
 
@@ -135,14 +135,14 @@ void setupCAN() {
     twai_filter_config_t filter_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
     if (twai_driver_install(&general_config, &timing_config, &filter_config) != ESP_OK) {
-        Serial.println("❌ CAN driver install failed");
+        LogSerial.println("❌ CAN driver install failed");
         return;
     }
     if (twai_start() != ESP_OK) {
-        Serial.println("❌ CAN driver start failed");
+        LogSerial.println("❌ CAN driver start failed");
         return;
     }
-    Serial.println("✅ CAN driver started (500 kbps)");
+    LogSerial.println("✅ CAN driver started (500 kbps)");
 }
 
 // -----------------------------------------------------------------------
