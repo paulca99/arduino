@@ -328,6 +328,20 @@ static void can_send_alive() {
     canSend(msg);
 }
 
+static bool shouldSendScheduledFrame(unsigned long& lastSentMs,
+                                     bool& scheduleStarted,
+                                     unsigned long nowMs,
+                                     unsigned long intervalMs) {
+    if (!scheduleStarted) {
+        scheduleStarted = true;
+        lastSentMs = nowMs;
+        return true;
+    }
+    if ((unsigned long)(nowMs - lastSentMs) < intervalMs) return false;
+    lastSentMs = nowMs;
+    return true;
+}
+
 // -----------------------------------------------------------------------
 // Send Pylontech frames on a split schedule:
 // - 0x351/0x355/0x356/0x35C/0x305 every 500 ms for live control + telemetry
@@ -346,11 +360,13 @@ void sendCANFrames(float voltage,
     static unsigned long lastLiveFrameMs = 0;
     static unsigned long lastStatusFrameMs = 0;
     static unsigned long lastManufacturerFrameMs = 0;
+    static bool liveScheduleStarted = false;
+    static bool statusScheduleStarted = false;
+    static bool manufacturerScheduleStarted = false;
 
     unsigned long nowMs = millis();
 
-    if (lastLiveFrameMs == 0 || (nowMs - lastLiveFrameMs) >= CAN_LIVE_FRAME_INTERVAL_MS) {
-        lastLiveFrameMs = nowMs;
+    if (shouldSendScheduledFrame(lastLiveFrameMs, liveScheduleStarted, nowMs, CAN_LIVE_FRAME_INTERVAL_MS)) {
         can_send_limits();
         can_send_soc(voltage, soc);
         can_send_measurements(voltage, current, temperature);
@@ -358,13 +374,14 @@ void sendCANFrames(float voltage,
         can_send_alive();
     }
 
-    if (lastStatusFrameMs == 0 || (nowMs - lastStatusFrameMs) >= CAN_STATUS_FRAME_INTERVAL_MS) {
-        lastStatusFrameMs = nowMs;
+    if (shouldSendScheduledFrame(lastStatusFrameMs, statusScheduleStarted, nowMs, CAN_STATUS_FRAME_INTERVAL_MS)) {
         can_send_alarms(voltage, temperature);
     }
 
-    if (lastManufacturerFrameMs == 0 || (nowMs - lastManufacturerFrameMs) >= CAN_MANUFACTURER_FRAME_INTERVAL_MS) {
-        lastManufacturerFrameMs = nowMs;
+    if (shouldSendScheduledFrame(lastManufacturerFrameMs,
+                                 manufacturerScheduleStarted,
+                                 nowMs,
+                                 CAN_MANUFACTURER_FRAME_INTERVAL_MS)) {
         can_send_manufacturer();
     }
 }

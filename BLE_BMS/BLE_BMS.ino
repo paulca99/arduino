@@ -1192,7 +1192,7 @@ static void solisPollTask(void* pv) {
         uint32_t pollStartMs = millis();
         uint32_t errorsThisPass = 0;
         uint32_t lockTimeoutsThisPass = 0;
-        bool anySuccess = false;
+        bool hadSuccessfulReadThisPass = false;
 
         for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
             uint16_t raw = 0;
@@ -1203,7 +1203,7 @@ static void solisPollTask(void* pv) {
                     solisState.values[i].valid = true;
                     solisState.lastSuccessMs = now;
                     xSemaphoreGive(solisMutex);
-                    anySuccess = true;
+                    hadSuccessfulReadThisPass = true;
                 } else {
                     lockTimeoutsThisPass++;
                 }
@@ -1221,7 +1221,7 @@ static void solisPollTask(void* pv) {
             xSemaphoreGive(solisMutex);
         }
 
-        if (!anySuccess) {
+        if (!hadSuccessfulReadThisPass) {
             Serial.println("Solis poll pass had no successful reads");
         }
 
@@ -1230,7 +1230,7 @@ static void solisPollTask(void* pv) {
         unsigned long waitMs = remainingMs <= 0
                              ? SOLIS_MIN_POLL_WAIT_MS
                              : static_cast<unsigned long>(remainingMs);
-        if (!anySuccess && waitMs < SOLIS_FAILED_POLL_MIN_WAIT_MS) {
+        if (!hadSuccessfulReadThisPass && waitMs < SOLIS_FAILED_POLL_MIN_WAIT_MS) {
             // If a full pass failed, leave a little more breathing room before
             // retrying so RS485 trouble does not immediately turn into a tight
             // retry loop that competes with BLE, CAN, and the web handlers.
