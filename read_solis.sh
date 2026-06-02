@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ESP32_URL="http://esp32-E944B8/api/solis"
+ESP32_URL="http://esp32-9D244C/api/solis"
 INFLUX_URL="http://localhost:8086/write?db=power"
 HOST_TAG="server01"
 SOURCE_TAG="solis"
