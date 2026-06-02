@@ -106,7 +106,7 @@ Project memory for BLE_BMS multi-battery work.
   - strong practical conclusion: Growatt2 must be managed by weakest-group behavior, not by pack voltage alone, especially near the bottom of discharge
   - the observation strongly reinforces that restoring per-group visibility in the production sketch is important before future unattended low-voltage tests
 - Inverter protection setting change:
-  - user changed Solis inverter setting DischargeUVVPRO from 40.0 V to 44.5 V
+  - user changed Solis inverter setting DischargeUVWPRO from 40.0 V to 44.5 V
   - rationale captured: 40.0 V pack cutoff was too low in practice for Growatt2 because group 1 could already be at about 2.88 V while total pack voltage was only about 41.23 V
   - 44.5 V / 14S ~= 3.18 V average per group, giving more margin for weak groups
   - accepted tradeoff: higher cutoff may leave some capacity unused, but is safer for this uneven pack
@@ -210,3 +210,14 @@ Project memory for BLE_BMS multi-battery work.
     1. current Solis RS485 register map in code is materially wrong in several places
     2. the most likely immediate freeze trigger is still CAN failure/retry/log flooding, with RS485 failure handling as a secondary pressure source
 - User explicitly asked that these new Solis/CAN/freeze findings be remembered for later sessions.
+
+## 2026-06-02
+
+- User-tested improvement: RS485 full-span block reads performed better than the earlier one-register-at-a-time polling.
+- Key successful direction: switching RS485 to block reads was a positive change and should be remembered as a good step for Solis polling stability/performance.
+- Another useful result: moving CAN transmission onto its own CPU/core made the web UI work better / become more responsive.
+- Important system-level interpretation from today's testing:
+  - separating CAN from the busy main loop improved web responsiveness,
+  - while RS485 block reads improved inverter-stat polling behavior,
+  - so both changes are promising directions even if later architectural refinements are still needed.
+- User plans to continue testing tomorrow from this point.
