@@ -232,3 +232,5 @@ Project memory for BLE_BMS multi-battery work.
     4. optional periodic reboot around every 4 hours
   - architectural preference learned from the discussion: if reliability work resumes, the highest-priority protected path is battery truthfulness to the inverter (BLE data freshness -> aggregate state -> CAN), while web/UI should remain best-effort
   - a specific stale-data rule was discussed for possible future CAN hardening: battery data older than 3 minutes should not be sent onward as normal valid CAN battery state
+- Additional workflow principle from the user: AI is useful, but learning requires memory; future sessions should treat memory.txt as the mechanism for compounding project knowledge rather than repeatedly re-deriving the same conclusions.
+- Reconfirmed useful repository shortcut URL for open PRs: `https://github.com/paulca99/arduino/pulls?q=is%3Aopen+is%3Apr`
