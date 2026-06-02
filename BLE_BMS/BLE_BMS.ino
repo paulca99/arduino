@@ -7,9 +7,12 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <HardwareSerial.h>
+#include <Preferences.h>
 #include <math.h>
 #include <new>
+#include <stdarg.h>
 #include <string.h>
+#include <esp_system.h>
 #include "driver/twai.h"
 
 // -----------------------------------------------------------------------
@@ -27,6 +30,15 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define HEARTBEAT_INTERVAL_MS     1000
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
 #define DATA_FRESH_MS            15000UL
+#define PERIODIC_REBOOT_INTERVAL_MS (4UL * 60UL * 60UL * 1000UL)
+#define LOG_HISTORY_LINES             120
+#define LOG_LINE_MAX_CHARS            160
+#define LOG_PRINTF_BUFFER             320
+#define CONFIG_NAMESPACE           "bms_cfg"
+#define CONFIG_KEY_ENABLED_MASK "enabled_mask"
+#define CONFIG_KEY_REBOOT_REASON "reboot_reason"
+#define CONFIG_KEY_REBOOT_UPTIME "reboot_uptime"
+#define CONFIG_KEY_REBOOT_AT_MS  "reboot_at_ms"
 
 #define WIFI_SSID           "TP-LINK_73F3"
 #define WIFI_PASSWORD_UPPER "DEADBEEF"
@@ -246,12 +258,111 @@ static AggregateSnapshot aggregate;
 static AggregateSnapshot canAggregate;
 static SemaphoreHandle_t canAggregateMutex = nullptr;
 static volatile uint32_t canAggregateLockTimeouts = 0;
+static Preferences configPrefs;
+static bool prefsReady = false;
+
+static char logLines[LOG_HISTORY_LINES][LOG_LINE_MAX_CHARS];
+static uint16_t logHead = 0;
+static uint16_t logCount = 0;
+static char logCurrentLine[LOG_LINE_MAX_CHARS];
+static uint16_t logCurrentLen = 0;
+static portMUX_TYPE logBufferMux = portMUX_INITIALIZER_UNLOCKED;
+
+static char lastPersistedRebootReason[32] = "";
+static unsigned long lastPersistedRebootUptimeMs = 0;
+static unsigned long lastPersistedRebootAtMs = 0;
+static bool lastPersistedRebootPresent = false;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
 
 WebServer server(80);
 HardwareSerial RS485(2);
+static HardwareSerial& BaseSerial = Serial;
+
+static void appendLogText(const char* text);
+
+class LoggedSerialProxy {
+public:
+    void begin(unsigned long baud) { BaseSerial.begin(baud); }
+    void flush() { BaseSerial.flush(); }
+
+    size_t print(const char* value) {
+        if (value == nullptr) return 0;
+        size_t written = BaseSerial.print(value);
+        appendLogText(value);
+        return written;
+    }
+
+    size_t print(const String& value) {
+        size_t written = BaseSerial.print(value);
+        appendLogText(value.c_str());
+        return written;
+    }
+
+    template <typename T>
+    size_t print(const T& value) {
+        String text(value);
+        size_t written = BaseSerial.print(text);
+        appendLogText(text.c_str());
+        return written;
+    }
+
+    size_t println() {
+        size_t written = BaseSerial.println();
+        appendLogText("\n");
+        return written;
+    }
+
+    size_t println(const char* value) {
+        size_t written = BaseSerial.println(value);
+        if (value != nullptr) appendLogText(value);
+        appendLogText("\n");
+        return written;
+    }
+
+    size_t println(const String& value) {
+        size_t written = BaseSerial.println(value);
+        appendLogText(value.c_str());
+        appendLogText("\n");
+        return written;
+    }
+
+    template <typename T>
+    size_t println(const T& value) {
+        String text(value);
+        size_t written = BaseSerial.println(text);
+        appendLogText(text.c_str());
+        appendLogText("\n");
+        return written;
+    }
+
+    size_t printf(const char* format, ...) {
+        if (format == nullptr) return 0;
+
+        char buffer[LOG_PRINTF_BUFFER];
+        va_list args;
+        va_start(args, format);
+        int len = vsnprintf(buffer, sizeof(buffer), format, args);
+        va_end(args);
+
+        if (len < 0) return 0;
+
+        if (len >= (int)sizeof(buffer)) {
+            buffer[sizeof(buffer) - 2] = '\n';
+            buffer[sizeof(buffer) - 1] = '\0';
+            len = sizeof(buffer) - 1;
+        }
+
+        BaseSerial.print(buffer);
+        appendLogText(buffer);
+        return static_cast<size_t>(len);
+    }
+};
+
+static LoggedSerialProxy LoggedSerial;
+
+#define Serial LoggedSerial
 
 // Explicit prototypes avoid Arduino auto-generated prototypes being emitted
 // before the custom type definitions above.
@@ -263,9 +374,25 @@ static bool tryBuildSignedSolisBatteryPowerW(const SolisState& state, float& pow
 static bool tryBuildSolisPvPowerW(const SolisState& state, uint16_t voltageReg, uint16_t currentReg, float& powerW);
 static bool copySolisSnapshot(SolisState& snapshot);
 static String buildInverterJson();
+static String buildStatusJson();
 static String htmlEscape(const String& input);
+static String jsonEscape(const String& input);
+static const char* resetReasonToString(esp_reset_reason_t reason);
+static void loadBatteryEnabledConfig();
+static bool persistBatteryEnabledConfig();
+static bool setBatteryEnabled(int index, bool enabled);
+static void loadPersistedRebootInfo();
+static void rememberPendingReboot(const char* reason, unsigned long nowMs);
+static void clearPendingRebootInfo();
+static void servicePeriodicReboot(unsigned long nowMs);
+static bool isBatteryContributing(int index, unsigned long nowMs);
+static void handleBatteryToggle();
+static void handleLogs();
+static void handleLogsApi();
+static void handleStatusApi();
 static void handleInverter();
 static void handleInverterApi();
+static void cleanupBatteryClient(int index);
 static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues);
 static void pollSolisOnce(unsigned long nowMs);
 static void canTxTask(void* pv);
@@ -278,6 +405,85 @@ void sendCANFrames(float voltage,
                    float temperature,
                    bool chargeAllowed,
                    bool dischargeAllowed);
+
+static void finishCurrentLogLineLocked() {
+    if (logCurrentLen == 0) return;
+
+    if (logCurrentLen >= LOG_LINE_MAX_CHARS) logCurrentLen = LOG_LINE_MAX_CHARS - 1;
+    logCurrentLine[logCurrentLen] = '\0';
+    strncpy(logLines[logHead], logCurrentLine, LOG_LINE_MAX_CHARS);
+    logLines[logHead][LOG_LINE_MAX_CHARS - 1] = '\0';
+    logHead = (logHead + 1) % LOG_HISTORY_LINES;
+    if (logCount < LOG_HISTORY_LINES) logCount++;
+    logCurrentLen = 0;
+    logCurrentLine[0] = '\0';
+}
+
+static void appendLogCharLocked(char c) {
+    if (c == '\r') return;
+
+    if (c == '\n') {
+        finishCurrentLogLineLocked();
+        return;
+    }
+
+    if (logCurrentLen == 0) {
+        int prefixLen = snprintf(logCurrentLine, sizeof(logCurrentLine), "[%10lu] ", millis());
+        if (prefixLen < 0) prefixLen = 0;
+        if (prefixLen >= LOG_LINE_MAX_CHARS) prefixLen = LOG_LINE_MAX_CHARS - 1;
+        logCurrentLen = (uint16_t)prefixLen;
+    }
+
+    if (logCurrentLen < (LOG_LINE_MAX_CHARS - 1)) {
+        logCurrentLine[logCurrentLen++] = c;
+    }
+}
+
+static void appendLogText(const char* text) {
+    if (text == nullptr) return;
+
+    portENTER_CRITICAL(&logBufferMux);
+    while (*text != '\0') {
+        appendLogCharLocked(*text++);
+    }
+    portEXIT_CRITICAL(&logBufferMux);
+}
+
+static uint16_t copyLogLineAt(uint16_t orderedIndex, char* out, size_t outSize) {
+    if (out == nullptr || outSize == 0) return 0;
+
+    out[0] = '\0';
+
+    portENTER_CRITICAL(&logBufferMux);
+    uint16_t storedCount = logCount;
+    uint16_t extraCurrent = logCurrentLen > 0 ? 1 : 0;
+    uint16_t total = storedCount + extraCurrent;
+    if (orderedIndex >= total) {
+        portEXIT_CRITICAL(&logBufferMux);
+        return total;
+    }
+
+    if (orderedIndex < storedCount) {
+        uint16_t start = (logHead + LOG_HISTORY_LINES - storedCount) % LOG_HISTORY_LINES;
+        uint16_t actualIndex = (start + orderedIndex) % LOG_HISTORY_LINES;
+        strncpy(out, logLines[actualIndex], outSize);
+        out[outSize - 1] = '\0';
+    } else {
+        size_t copyLen = logCurrentLen;
+        if (copyLen >= outSize) copyLen = outSize - 1;
+        memcpy(out, logCurrentLine, copyLen);
+        out[copyLen] = '\0';
+    }
+    portEXIT_CRITICAL(&logBufferMux);
+    return total;
+}
+
+static uint16_t getLogLineCount() {
+    portENTER_CRITICAL(&logBufferMux);
+    uint16_t total = logCount + (logCurrentLen > 0 ? 1 : 0);
+    portEXIT_CRITICAL(&logBufferMux);
+    return total;
+}
 
 static const char* wifiStatusToString(wl_status_t status) {
     switch (status) {
@@ -1062,6 +1268,182 @@ static String jsonBool(bool value) {
     return value ? "true" : "false";
 }
 
+static String jsonEscape(const String& input) {
+    String out;
+    out.reserve(input.length() + 16);
+    for (size_t i = 0; i < input.length(); i++) {
+        char c = input.charAt(i);
+        switch (c) {
+            case '\\': out += F("\\\\"); break;
+            case '"': out += F("\\\""); break;
+            case '\b': out += F("\\b"); break;
+            case '\f': out += F("\\f"); break;
+            case '\n': out += F("\\n"); break;
+            case '\r': out += F("\\r"); break;
+            case '\t': out += F("\\t"); break;
+            default:
+                if ((uint8_t)c < 0x20U) {
+                    char escaped[7];
+                    snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned char)c);
+                    out += escaped;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+static const char* resetReasonToString(esp_reset_reason_t reason) {
+    switch (reason) {
+        case ESP_RST_UNKNOWN: return "unknown";
+        case ESP_RST_POWERON: return "power_on";
+        case ESP_RST_EXT: return "external_pin";
+        case ESP_RST_SW: return "software";
+        case ESP_RST_PANIC: return "panic";
+        case ESP_RST_INT_WDT: return "interrupt_watchdog";
+        case ESP_RST_TASK_WDT: return "task_watchdog";
+        case ESP_RST_WDT: return "other_watchdog";
+        case ESP_RST_DEEPSLEEP: return "deep_sleep";
+        case ESP_RST_BROWNOUT: return "brownout";
+        case ESP_RST_SDIO: return "sdio";
+        default: return "other";
+    }
+}
+
+static uint32_t buildEnabledBatteryMask() {
+    uint32_t mask = 0;
+    for (int i = 0; i < BATTERY_COUNT && i < 32; i++) {
+        if (batteryConfigs[i].enabled) mask |= (1UL << i);
+    }
+    return mask;
+}
+
+static void applyEnabledBatteryMask(uint32_t mask) {
+    for (int i = 0; i < BATTERY_COUNT && i < 32; i++) {
+        batteryConfigs[i].enabled = (mask & (1UL << i)) != 0;
+    }
+}
+
+static void loadBatteryEnabledConfig() {
+    uint32_t defaultMask = buildEnabledBatteryMask();
+    if (!prefsReady) {
+        Serial.printf("Battery enable config using sketch defaults mask=0x%08lX\n",
+                      static_cast<unsigned long>(defaultMask));
+        return;
+    }
+
+    if (!configPrefs.isKey(CONFIG_KEY_ENABLED_MASK)) {
+        configPrefs.putULong(CONFIG_KEY_ENABLED_MASK, defaultMask);
+    }
+
+    uint32_t storedMask = configPrefs.getULong(CONFIG_KEY_ENABLED_MASK, defaultMask);
+    applyEnabledBatteryMask(storedMask);
+    Serial.printf("Battery enable config loaded from NVS mask=0x%08lX\n",
+                  static_cast<unsigned long>(storedMask));
+}
+
+static bool persistBatteryEnabledConfig() {
+    if (!prefsReady) return false;
+
+    uint32_t mask = buildEnabledBatteryMask();
+    size_t written = configPrefs.putULong(CONFIG_KEY_ENABLED_MASK, mask);
+    if (written == 0) return false;
+
+    Serial.printf("Battery enable config saved to NVS mask=0x%08lX\n",
+                  static_cast<unsigned long>(mask));
+    return true;
+}
+
+static bool setBatteryEnabled(int index, bool enabled) {
+    if (index < 0 || index >= BATTERY_COUNT) return false;
+    if (batteryConfigs[index].enabled == enabled) return true;
+
+    bool previous = batteryConfigs[index].enabled;
+    batteryConfigs[index].enabled = enabled;
+    if (!persistBatteryEnabledConfig()) {
+        batteryConfigs[index].enabled = previous;
+        return false;
+    }
+
+    BatteryState& battery = batteries[index];
+    if (enabled) {
+        battery.seen = false;
+        battery.nextReconnectMs = millis();
+    } else {
+        battery.nextReconnectMs = 0;
+        battery.seen = false;
+        if (battery.advertisedDevice != nullptr) {
+            delete battery.advertisedDevice;
+            battery.advertisedDevice = nullptr;
+        }
+        cleanupBatteryClient(index);
+    }
+
+    Serial.printf("[%s] aggregate membership %s via web\n",
+                  batteryConfigs[index].name,
+                  enabled ? "enabled" : "disabled");
+    return true;
+}
+
+static void loadPersistedRebootInfo() {
+    lastPersistedRebootPresent = false;
+    lastPersistedRebootReason[0] = '\0';
+    lastPersistedRebootUptimeMs = 0;
+    lastPersistedRebootAtMs = 0;
+
+    if (!prefsReady) return;
+    if (!configPrefs.isKey(CONFIG_KEY_REBOOT_REASON)) return;
+
+    String reason = configPrefs.getString(CONFIG_KEY_REBOOT_REASON, "");
+    if (reason.length() == 0) {
+        clearPendingRebootInfo();
+        return;
+    }
+
+    reason.toCharArray(lastPersistedRebootReason, sizeof(lastPersistedRebootReason));
+    lastPersistedRebootUptimeMs = configPrefs.getULong(CONFIG_KEY_REBOOT_UPTIME, 0);
+    lastPersistedRebootAtMs = configPrefs.getULong(CONFIG_KEY_REBOOT_AT_MS, 0);
+    lastPersistedRebootPresent = true;
+    clearPendingRebootInfo();
+}
+
+static void rememberPendingReboot(const char* reason, unsigned long nowMs) {
+    if (!prefsReady || reason == nullptr) return;
+    configPrefs.putString(CONFIG_KEY_REBOOT_REASON, reason);
+    configPrefs.putULong(CONFIG_KEY_REBOOT_UPTIME, nowMs);
+    configPrefs.putULong(CONFIG_KEY_REBOOT_AT_MS, millis());
+}
+
+static void clearPendingRebootInfo() {
+    if (!prefsReady) return;
+    configPrefs.remove(CONFIG_KEY_REBOOT_REASON);
+    configPrefs.remove(CONFIG_KEY_REBOOT_UPTIME);
+    configPrefs.remove(CONFIG_KEY_REBOOT_AT_MS);
+}
+
+static bool isBatteryContributing(int index, unsigned long nowMs) {
+    if (!isBatteryEnabled(index)) return false;
+    const BatteryState& battery = batteries[index];
+    return battery.hasData &&
+           battery.lastGoodDataMs != 0 &&
+           (nowMs - battery.lastGoodDataMs) <= DATA_FRESH_MS;
+}
+
+static void servicePeriodicReboot(unsigned long nowMs) {
+    if (PERIODIC_REBOOT_INTERVAL_MS == 0) return;
+    if (nowMs < PERIODIC_REBOOT_INTERVAL_MS) return;
+
+    Serial.printf("[SYSTEM] periodic reboot due after %lu ms uptime (interval=%lu ms)\n",
+                  nowMs,
+                  (unsigned long)PERIODIC_REBOOT_INTERVAL_MS);
+    rememberPendingReboot("periodic_4h", nowMs);
+    Serial.flush();
+    delay(50);
+    ESP.restart();
+}
+
 static RegisterValue getSolisRegisterValue(const SolisState& state, uint16_t docReg) {
     for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
         if (SOLIS_REGISTER_SPECS[i].reg == docReg) return state.values[i];
@@ -1424,6 +1806,99 @@ static String formatSolisCardValue(const SolisState& snapshot,
     return text;
 }
 
+static String buildStatusJson() {
+    unsigned long now = millis();
+    AggregateSnapshot snap = buildAggregateSnapshot(now);
+
+    String json;
+    json.reserve(2800);
+    json += "{";
+    json += "\"uptimeMs\":";
+    json += String(now);
+    json += ",\"enabledBatteryCount\":";
+    json += String(enabledBatteryCount());
+    json += ",\"connectedBatteryCount\":";
+    json += String(connectedBatteryCount());
+    json += ",\"periodicRebootIntervalMs\":";
+    json += String((unsigned long)PERIODIC_REBOOT_INTERVAL_MS);
+    json += ",\"nextPeriodicRebootInMs\":";
+    json += (PERIODIC_REBOOT_INTERVAL_MS == 0 || now >= PERIODIC_REBOOT_INTERVAL_MS)
+          ? String(0)
+          : String((unsigned long)(PERIODIC_REBOOT_INTERVAL_MS - now));
+    json += ",\"resetReason\":\"";
+    json += resetReasonToString(esp_reset_reason());
+    json += "\"";
+    json += ",\"lastRequestedReboot\":";
+    if (lastPersistedRebootPresent) {
+        json += "{";
+        json += "\"reason\":\"";
+        json += jsonEscape(String(lastPersistedRebootReason));
+        json += "\",\"uptimeMs\":";
+        json += String(lastPersistedRebootUptimeMs);
+        json += ",\"recordedAtMs\":";
+        json += String(lastPersistedRebootAtMs);
+        json += "}";
+    } else {
+        json += "null";
+    }
+    json += ",\"aggregate\":{";
+    json += "\"valid\":";
+    json += jsonBool(snap.valid);
+    json += ",\"contributingBatteries\":";
+    json += String(snap.contributingBatteries);
+    json += ",\"lastFreshMs\":";
+    json += String(snap.lastFreshMs);
+    json += ",\"voltage\":";
+    json += snap.valid ? String(snap.voltage, 2) : String("null");
+    json += ",\"current\":";
+    json += snap.valid ? String(snap.current, 2) : String("null");
+    json += ",\"soc\":";
+    json += snap.valid ? String(snap.soc) : String("null");
+    json += ",\"temperatureC\":";
+    json += (snap.valid && snap.hasTemperature) ? String(snap.temperature, 1) : String("null");
+    json += "},\"batteries\":[";
+
+    for (int i = 0; i < BATTERY_COUNT; i++) {
+        if (i != 0) json += ",";
+        const BatteryConfig& cfg = batteryConfigs[i];
+        const BatteryState& battery = batteries[i];
+        bool contributing = isBatteryContributing(i, now);
+
+        json += "{";
+        json += "\"index\":";
+        json += String(i);
+        json += ",\"name\":\"";
+        json += jsonEscape(String(cfg.name));
+        json += "\",\"mac\":\"";
+        json += jsonEscape(String(cfg.mac));
+        json += "\",\"enabled\":";
+        json += jsonBool(cfg.enabled);
+        json += ",\"connected\":";
+        json += jsonBool(isBatteryConnected(i));
+        json += ",\"seen\":";
+        json += jsonBool(battery.seen);
+        json += ",\"contributing\":";
+        json += jsonBool(contributing);
+        json += ",\"lastGoodDataMs\":";
+        json += String(battery.lastGoodDataMs);
+        json += ",\"dataAgeMs\":";
+        json += battery.lastGoodDataMs == 0 ? String("null") : String(now - battery.lastGoodDataMs);
+        json += ",\"voltage\":";
+        json += battery.hasData ? String(battery.voltage, 2) : String("null");
+        json += ",\"current\":";
+        json += battery.hasData ? String(battery.current, 2) : String("null");
+        json += ",\"soc\":";
+        json += battery.hasData ? String(battery.soc) : String("null");
+        json += ",\"temperatureC\":";
+        json += battery.hasTemperature ? String(battery.temperature, 1) : String("null");
+        json += ",\"disconnectCount\":";
+        json += String(battery.disconnectCount);
+        json += "}";
+    }
+    json += "]}";
+    return json;
+}
+
 static String buildInverterJson() {
     SolisState snapshot = {};
     copySolisSnapshot(snapshot);
@@ -1490,6 +1965,10 @@ static String buildInverterJson() {
 
 static void handleInverterApi() {
     server.send(200, "application/json", buildInverterJson());
+}
+
+static void handleStatusApi() {
+    server.send(200, "application/json", buildStatusJson());
 }
 
 static void handleInverter() {
@@ -1578,6 +2057,118 @@ static void handleInverter() {
     server.sendContent("");
 }
 
+static void handleLogsApi() {
+    unsigned long now = millis();
+    uint16_t lineCount = getLogLineCount();
+
+    String json;
+    json.reserve(1200 + lineCount * 96);
+    json += "{";
+    json += "\"uptimeMs\":";
+    json += String(now);
+    json += ",\"lineCount\":";
+    json += String(lineCount);
+    json += ",\"resetReason\":\"";
+    json += resetReasonToString(esp_reset_reason());
+    json += "\"";
+    json += ",\"lastRequestedReboot\":";
+    if (lastPersistedRebootPresent) {
+        json += "{";
+        json += "\"reason\":\"";
+        json += jsonEscape(String(lastPersistedRebootReason));
+        json += "\",\"uptimeMs\":";
+        json += String(lastPersistedRebootUptimeMs);
+        json += ",\"recordedAtMs\":";
+        json += String(lastPersistedRebootAtMs);
+        json += "}";
+    } else {
+        json += "null";
+    }
+    json += ",\"lines\":[";
+    for (uint16_t i = 0; i < lineCount; i++) {
+        char line[LOG_LINE_MAX_CHARS];
+        copyLogLineAt(i, line, sizeof(line));
+        if (i != 0) json += ",";
+        json += "\"";
+        json += jsonEscape(String(line));
+        json += "\"";
+    }
+    json += "]}";
+    server.send(200, "application/json", json);
+}
+
+static void handleLogs() {
+    unsigned long now = millis();
+    uint16_t lineCount = getLogLineCount();
+
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html", "");
+    server.sendContent(F("<!DOCTYPE html><html><head>"
+                         "<meta charset='UTF-8'>"
+                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                         "<meta http-equiv='refresh' content='5'>"
+                         "<title>Device logs</title>"
+                         "<style>"
+                         "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
+                         "h1{color:#e0c97f;margin-bottom:4px}a{color:#8ec5ff}"
+                         ".card{background:#16213e;border-radius:8px;padding:12px;margin-bottom:16px}"
+                         ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:16px}"
+                         "pre{background:#0f172a;border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-word}"
+                         ".mono{font-family:monospace}.muted{color:#a0b4cc}"
+                         "</style></head><body>"));
+    server.sendContent(F("<p><a href='/'>Back to summary</a></p>"));
+    server.sendContent(F("<h1>Device logs</h1>"));
+    server.sendContent(F("<p class='muted'>Recent in-memory log lines only; no live work is triggered by this page.</p>"));
+    server.sendContent(F("<div class='grid'>"));
+    sendCard("Captured lines", String(lineCount));
+    sendCard("Reset reason", String(resetReasonToString(esp_reset_reason())));
+    sendCard("Uptime", String(now / 1000UL) + " s");
+    if (lastPersistedRebootPresent) {
+        sendCard("Previous requested reboot",
+                 String(lastPersistedRebootReason) + " @ " + String(lastPersistedRebootUptimeMs / 1000UL) + " s");
+    }
+    server.sendContent(F("</div><pre class='mono'>"));
+    for (uint16_t i = 0; i < lineCount; i++) {
+        char line[LOG_LINE_MAX_CHARS];
+        copyLogLineAt(i, line, sizeof(line));
+        server.sendContent(htmlEscape(String(line)));
+        server.sendContent("\n");
+    }
+    server.sendContent(F("</pre><p><a href='/api/logs'>/api/logs</a> · <a href='/api/status'>/api/status</a></p></body></html>"));
+    server.sendContent("");
+}
+
+static void handleBatteryToggle() {
+    if (!server.hasArg("index") || !server.hasArg("enabled")) {
+        server.send(400, "text/plain", "Missing battery toggle arguments");
+        return;
+    }
+
+    String indexArg = server.arg("index");
+    for (size_t i = 0; i < indexArg.length(); i++) {
+        if (!isDigit(indexArg.charAt(i))) {
+            server.send(400, "text/plain", "Invalid battery index");
+            return;
+        }
+    }
+
+    int index = indexArg.toInt();
+    if (index < 0 || index >= BATTERY_COUNT) {
+        server.send(404, "text/plain", "Battery not found");
+        return;
+    }
+
+    String enabledArg = server.arg("enabled");
+    bool enabled = enabledArg == "1" || enabledArg == "true" || enabledArg == "on";
+    if (!setBatteryEnabled(index, enabled)) {
+        server.send(500, "text/plain", "Failed to persist battery config");
+        return;
+    }
+
+    server.sendHeader("Location", "/", true);
+    server.send(303, "text/plain", "Battery config updated");
+}
+
 static void handleRoot() {
     unsigned long now = millis();
     AggregateSnapshot snap = buildAggregateSnapshot(now);
@@ -1603,11 +2194,19 @@ static void handleRoot() {
                          "th{background:#16213e;color:#a0b4cc}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}"
                          ".card{background:#16213e;border-radius:8px;padding:12px;text-align:center}.card .label{font-size:0.75em;color:#8899aa;margin-bottom:4px}"
                          ".card .value{font-size:1.4em;font-weight:bold}.green{color:#4caf50}.amber{color:#ff9800}.red{color:#f44336}.mono{font-family:monospace}"
+                         "button{background:#2d6cdf;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer}"
+                         "button.warn{background:#8b322c}form{margin:0}"
                          "</style></head><body><h1>Battery BMS (Persistent BLE)</h1>"));
 
     server.sendContent(F("<div class='grid'>"));
     sendCard("Enabled Batteries", String(enabledBatteryCount()));
     sendCard("Connected Batteries", String(connectedBatteryCount()));
+    sendCard("Periodic reboot", PERIODIC_REBOOT_INTERVAL_MS == 0 ? String("disabled")
+                                                                : String(PERIODIC_REBOOT_INTERVAL_MS / 3600000UL) + " h");
+    sendCard("Next reboot", PERIODIC_REBOOT_INTERVAL_MS == 0 ? String("n/a")
+                                                            : (now >= PERIODIC_REBOOT_INTERVAL_MS
+                                                                   ? String("due")
+                                                                   : String((PERIODIC_REBOOT_INTERVAL_MS - now) / 60000UL) + " min"));
 
     if (snap.valid) {
         sendCard("Aggregate Voltage", String(snap.voltage, 2) + " V");
@@ -1619,11 +2218,15 @@ static void handleRoot() {
     } else {
         sendCard("Aggregate", "No fresh data", "amber");
     }
+    if (lastPersistedRebootPresent) {
+        sendCard("Prev reboot", String(lastPersistedRebootReason) + " @ " + String(lastPersistedRebootUptimeMs / 1000UL) + " s");
+    }
 
     server.sendContent(F("</div>"));
+    server.sendContent(F("<p>Configured known batteries are listed below. The enable/disable buttons are persisted in NVS and directly control which batteries are scanned, connected and included in the aggregate after reboot.</p>"));
 
     server.sendContent(F("<h2>Per-battery status</h2><table><tr>"
-                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
+                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Connected</th><th>Contributing</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th><th>Aggregate membership</th>"
                          "</tr>"));
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -1638,12 +2241,19 @@ static void handleRoot() {
         uint16_t minCellMv = 0;
         uint16_t maxCellMv = 0;
         bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
+        bool contributing = isBatteryContributing(i, now);
         String batteryLink = "<a href='/battery?index=" + String(i) + "'>" + htmlEscape(String(cfg.name)) + "</a>";
+        String action = "<form method='POST' action='/battery-toggle'>"
+                       "<input type='hidden' name='index' value='" + String(i) + "'>"
+                       "<input type='hidden' name='enabled' value='" + String(cfg.enabled ? 0 : 1) + "'>"
+                       "<button" + String(cfg.enabled ? " class='warn'" : "") + " type='submit'>" +
+                       String(cfg.enabled ? "Disable" : "Enable") + "</button></form>";
 
         String row;
-        row.reserve(512);
+        row.reserve(640);
         row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
                      String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
+                      "</td><td class='" + (contributing ? "green'>yes" : "amber'>no") +
                       "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
                       "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
                       "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
@@ -1653,13 +2263,14 @@ static void handleRoot() {
                       "</td><td>" + (hasCellStats ? String(maxCellMv / 1000.0f, 3) : String("-")) +
                       "</td><td>" + (hasCellStats ? String(maxCellIndex + 1) : String("-")) +
                       "</td><td>" + age +
-                      "</td><td>" + String(battery.disconnectCount) + "</td></tr>";
+                      "</td><td>" + String(battery.disconnectCount) +
+                      "</td><td>" + action + "</td></tr>";
 
         server.sendContent(row);
     }
 
-    server.sendContent(F("</table><p><a href='/inverter'>Solis inverter monitor</a> · <a href='/api/inverter'>Inverter JSON</a></p>"
-                         "<p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
+    server.sendContent(F("</table><p><a href='/logs'>Device logs</a> · <a href='/api/logs'>Log JSON</a> · <a href='/api/status'>Status JSON</a> · <a href='/inverter'>Solis inverter monitor</a> · <a href='/api/inverter'>Inverter JSON</a></p>"
+                        "<p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
     server.sendContent("");
 }
 
@@ -1809,6 +2420,23 @@ void setup() {
     Serial.println();
     Serial.println("=== JBD BMS -> Solis CAN Bridge (persistent classic BLE multi-battery) ===");
 
+    prefsReady = configPrefs.begin(CONFIG_NAMESPACE, false);
+    if (prefsReady) {
+        Serial.printf("Preferences namespace '%s' ready\n", CONFIG_NAMESPACE);
+        loadBatteryEnabledConfig();
+        loadPersistedRebootInfo();
+    } else {
+        Serial.printf("Failed to open Preferences namespace '%s'; using sketch defaults only\n", CONFIG_NAMESPACE);
+    }
+
+    Serial.printf("Reset reason: %s\n", resetReasonToString(esp_reset_reason()));
+    if (lastPersistedRebootPresent) {
+        Serial.printf("Previous requested reboot: %s after %lu ms uptime (recorded at %lu ms)\n",
+                      lastPersistedRebootReason,
+                      lastPersistedRebootUptimeMs,
+                      lastPersistedRebootAtMs);
+    }
+
     setupCAN();
 
     solisMutex = xSemaphoreCreateMutex();
@@ -1850,7 +2478,11 @@ void setup() {
         Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
         server.on("/battery", handleBatteryDetail);
+        server.on("/battery-toggle", HTTP_POST, handleBatteryToggle);
+        server.on("/logs", handleLogs);
         server.on("/inverter", handleInverter);
+        server.on("/api/status", handleStatusApi);
+        server.on("/api/logs", handleLogsApi);
         server.on("/api/inverter", handleInverterApi);
         server.on("/api/solis", handleInverterApi);
         server.begin();
@@ -1944,6 +2576,8 @@ void loop() {
         lastLog = now;
         logBMSData();
     }
+
+    servicePeriodicReboot(now);
 
     delay(5);
 }
