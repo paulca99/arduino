@@ -36,6 +36,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RUNTIME_LOG_MAX_LINES      96
 #define RUNTIME_LOG_LINE_LEN      144
 #define WEB_REQUEST_LOG_THROTTLE_MS 60000UL
+#define WEB_CONTENT_CHUNK_SIZE    768
 
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
@@ -374,7 +375,7 @@ static void appendRuntimeLogLine(const char* line) {
 static void logRuntimeEventV(const char* fmt, va_list args) {
     if (fmt == nullptr) return;
 
-    char message[100];
+    char message[RUNTIME_LOG_LINE_LEN];
     vsnprintf(message, sizeof(message), fmt, args);
 
     char line[RUNTIME_LOG_LINE_LEN];
@@ -394,7 +395,7 @@ void logRuntimeEventfThrottled(unsigned long* lastLogMs, unsigned long intervalM
     if (lastLogMs == nullptr) return;
 
     unsigned long now = millis();
-    if (*lastLogMs != 0 && (uint32_t)(now - *lastLogMs) < intervalMs) {
+    if (*lastLogMs != 0 && (now - *lastLogMs) < intervalMs) {
         return;
     }
     *lastLogMs = now;
@@ -408,7 +409,7 @@ void logRuntimeEventfThrottled(unsigned long* lastLogMs, unsigned long intervalM
 static void sendContentf(const char* fmt, ...) {
     if (fmt == nullptr) return;
 
-    char buffer[768];
+    char buffer[WEB_CONTENT_CHUNK_SIZE];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buffer, sizeof(buffer), fmt, args);
@@ -1785,7 +1786,7 @@ static void handleLog() {
 
             server.sendContent(htmlEscape(String(line)));
             server.sendContent(F("\n"));
-            if ((i & 0x0FU) == 0x0FU) delay(0);
+            if ((i & 0x0FU) == 0x0FU) delay(0);  // Yield to keep loop/task watchdogs happy on long dumps.
         }
     }
 
