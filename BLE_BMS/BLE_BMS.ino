@@ -51,12 +51,16 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define SOLIS_STALE_POLL_MULTIPLIER   2
 #define SOLIS_DIVISOR_EPSILON   1.0e-6f
 #define SOLIS_MUTEX_TIMEOUT_MS      100
+#define CAN_MUTEX_TIMEOUT_MS        100
 #define SOLIS_SLAVE_ID                1
 #define CAN_TASK_STACK_SIZE        4096
 #define CAN_TASK_PRIORITY             1
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
 #else
+#ifndef CONFIG_ARDUINO_RUNNING_CORE
+#define CONFIG_ARDUINO_RUNNING_CORE 1
+#endif
 #define CAN_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
 #endif
 
@@ -241,6 +245,7 @@ static BatteryState batteries[BATTERY_COUNT];
 static AggregateSnapshot aggregate;
 static AggregateSnapshot canAggregate;
 static SemaphoreHandle_t canAggregateMutex = nullptr;
+static volatile uint32_t canAggregateLockTimeouts = 0;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
@@ -1287,27 +1292,34 @@ static void pollSolisOnce(unsigned long nowMs) {
 }
 
 static void updateCanAggregateSnapshot(const AggregateSnapshot& snap) {
-    if (canAggregateMutex != nullptr &&
-        xSemaphoreTake(canAggregateMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+    SemaphoreHandle_t mutex = canAggregateMutex;
+    if (mutex == nullptr) return;
+    if (xSemaphoreTake(mutex, pdMS_TO_TICKS(CAN_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        canAggregateLockTimeouts++;
         return;
     }
     canAggregate = snap;
-    if (canAggregateMutex != nullptr) xSemaphoreGive(canAggregateMutex);
+    if (mutex != nullptr) xSemaphoreGive(mutex);
 }
 
 static AggregateSnapshot copyCanAggregateSnapshot() {
     AggregateSnapshot snap = {};
-    if (canAggregateMutex != nullptr &&
-        xSemaphoreTake(canAggregateMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+    SemaphoreHandle_t mutex = canAggregateMutex;
+    if (mutex == nullptr) return snap;
+    if (xSemaphoreTake(mutex, pdMS_TO_TICKS(CAN_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        canAggregateLockTimeouts++;
+        snap.valid = false;
+        snap.lastFreshMs = 0;
         return snap;
     }
     snap = canAggregate;
-    if (canAggregateMutex != nullptr) xSemaphoreGive(canAggregateMutex);
+    if (mutex != nullptr) xSemaphoreGive(mutex);
     return snap;
 }
 
 static void canTxTask(void* pv) {
     (void)pv;
+    // Baseline tick used by vTaskDelayUntil() for steady CAN cadence.
     TickType_t lastWake = xTaskGetTickCount();
 
     for (;;) {
@@ -1786,6 +1798,7 @@ static void logBMSData() {
         Serial.println();
     }
 
+    Serial.printf("CAN aggregate lock timeouts: %lu\n", static_cast<unsigned long>(canAggregateLockTimeouts));
     logSystemDebugSummary("[DBG summary]");
     Serial.println("=================================");
 }
@@ -1809,9 +1822,6 @@ void setup() {
     canAggregateMutex = xSemaphoreCreateMutex();
     if (canAggregateMutex == nullptr) {
         Serial.println("Failed to create CAN aggregate mutex");
-    }
-
-    if (canAggregateMutex == nullptr) {
         Serial.println("CAN TX task disabled (missing aggregate mutex)");
     } else {
         BaseType_t canTaskOk = xTaskCreatePinnedToCore(
@@ -1923,8 +1933,8 @@ void loop() {
     }
 
     if (solisMutex != nullptr && (now - lastSolisPoll >= SOLIS_POLL_INTERVAL_MS)) {
-        lastSolisPoll = now;
         pollSolisOnce(now);
+        lastSolisPoll = millis();
     }
 
     aggregate = buildAggregateSnapshot(now);
