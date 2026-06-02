@@ -221,3 +221,5 @@ Project memory for BLE_BMS multi-battery work.
   - while RS485 block reads improved inverter-stat polling behavior,
   - so both changes are promising directions even if later architectural refinements are still needed.
 - User plans to continue testing tomorrow from this point.
+- Important clarification about memory.txt usage: this file is primarily project memory for the assistant so prior discussion context, learnings, stable baselines, and dead ends are not forgotten across later sessions.
+- User also shared a convenient GitHub URL for viewing open pull requests in the repository: `https://github.com/paulca99/arduino/pulls?q=is%3Aopen+is%3Apr`
