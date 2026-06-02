@@ -210,3 +210,9 @@ Project memory for BLE_BMS multi-battery work.
     1. current Solis RS485 register map in code is materially wrong in several places
     2. the most likely immediate freeze trigger is still CAN failure/retry/log flooding, with RS485 failure handling as a secondary pressure source
 - User explicitly asked that these new Solis/CAN/freeze findings be remembered for later sessions.
+
+## 2026-06-02
+
+- RS485 block reads: instead of reading individual Solis registers one at a time, a block read (Modbus function 0x03 or 0x04 with count > 1) can fetch multiple contiguous registers in a single transaction, reducing total RS485 round-trip time and timeout pressure during a full poll pass.
+- CAN on its own CPU (dedicated FreeRTOS task/core) makes the web server more responsive: by pinning or isolating CAN frame transmission to a separate core/task, the main loop and web-server task are no longer stalled by CAN transmit waits or backoff delays, resulting in more reliable web page loads.
+- Testing for both of these changes is planned for tomorrow (2026-06-03).
