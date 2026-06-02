@@ -32,6 +32,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define DATA_FRESH_MS            15000UL
 // Operational safety valve: reboot every 4 hours to recover from long-lived
 // BLE/Wi-Fi stack wedging. Adjust this single constant in code if needed.
+#define MS_PER_HOUR                3600000UL
 #define PERIODIC_REBOOT_INTERVAL_MS (4UL * 60UL * 60UL * 1000UL)
 #define LOG_HISTORY_LINES             120
 #define LOG_LINE_MAX_CHARS            160
@@ -117,6 +118,7 @@ static BatteryConfig batteryConfigs[] = {
     {"Growatt2", "a5:c2:37:51:85:89", true}
 };
 
+// NVS persistence stores enabled batteries in one uint32_t bitmask.
 static const int BATTERY_COUNT = sizeof(batteryConfigs) / sizeof(batteryConfigs[0]);
 static_assert(BATTERY_COUNT <= 32, "Battery enabled mask supports up to 32 batteries");
 
@@ -285,6 +287,7 @@ HardwareSerial RS485(2);
 static HardwareSerial& BaseSerial = Serial;
 
 static void appendLogText(const char* text);
+static const char* REBOOT_REASON_PERIODIC = "periodic_interval";
 
 class LoggedSerialProxy {
 public:
@@ -1453,7 +1456,7 @@ static void servicePeriodicReboot(unsigned long nowMs) {
     LogSerial.printf("[SYSTEM] periodic reboot due after %lu ms uptime (interval=%lu ms)\n",
                   uptimeMs,
                   (unsigned long)PERIODIC_REBOOT_INTERVAL_MS);
-    rememberPendingReboot("periodic_4h", uptimeMs);
+    rememberPendingReboot(REBOOT_REASON_PERIODIC, uptimeMs);
     LogSerial.flush();
     delay(50);
     ESP.restart();
@@ -2214,7 +2217,7 @@ static void handleRoot() {
     sendCard("Enabled Batteries", String(enabledBatteryCount()));
     sendCard("Connected Batteries", String(connectedBatteryCount()));
     sendCard("Periodic reboot", PERIODIC_REBOOT_INTERVAL_MS == 0 ? String("disabled")
-                                                                : String(PERIODIC_REBOOT_INTERVAL_MS / 3600000UL) + " h");
+                                                                : String(PERIODIC_REBOOT_INTERVAL_MS / MS_PER_HOUR) + " h");
     sendCard("Next reboot", PERIODIC_REBOOT_INTERVAL_MS == 0 ? String("n/a")
                                                             : (uptimeMs >= PERIODIC_REBOOT_INTERVAL_MS
                                                                    ? String("due")
