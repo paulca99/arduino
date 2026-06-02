@@ -33,7 +33,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 // Operational safety valve: reboot every 4 hours to recover from long-lived
 // BLE/Wi-Fi stack wedging. Adjust this single constant in code if needed.
 #define MS_PER_HOUR                3600000UL
-#define PERIODIC_REBOOT_INTERVAL_MS (4UL * 60UL * 60UL * 1000UL)
+#define PERIODIC_REBOOT_INTERVAL_MS (4UL * MS_PER_HOUR)
 #define LOG_HISTORY_LINES             120
 #define LOG_LINE_MAX_CHARS            160
 #define LOG_PRINTF_BUFFER             320
