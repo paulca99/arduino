@@ -223,3 +223,12 @@ Project memory for BLE_BMS multi-battery work.
 - User plans to continue testing tomorrow from this point.
 - Important clarification about memory.txt usage: this file is primarily project memory for the assistant so prior discussion context, learnings, stable baselines, and dead ends are not forgotten across later sessions.
 - User also shared a convenient GitHub URL for viewing open pull requests in the repository: `https://github.com/paulca99/arduino/pulls?q=is%3Aopen+is%3Apr`
+- Additional future-session note from this point in the conversation:
+  - if a later session restarts, it is worth re-checking open PRs first using that URL before starting new work, to avoid duplicating or conflicting with already-open changes
+  - recent user priorities/features requested after the runtime investigations were:
+    1. a lightweight web log page so runtime behavior can be inspected without the serial monitor
+    2. completely web-based battery enable/disable for aggregate membership
+    3. persistence of enabled batteries in NVS so reboot restores the same active BLE-queried aggregate set
+    4. optional periodic reboot around every 4 hours
+  - architectural preference learned from the discussion: if reliability work resumes, the highest-priority protected path is battery truthfulness to the inverter (BLE data freshness -> aggregate state -> CAN), while web/UI should remain best-effort
+  - a specific stale-data rule was discussed for possible future CAN hardening: battery data older than 3 minutes should not be sent onward as normal valid CAN battery state
