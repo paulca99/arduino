@@ -50,11 +50,15 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define SOLIS_MIN_POLL_WAIT_MS      100
 #define SOLIS_STALE_POLL_MULTIPLIER   2
 #define SOLIS_DIVISOR_EPSILON   1.0e-6f
-#define SOLIS_TASK_STACK_SIZE      4096
-#define SOLIS_TASK_PRIORITY           1
-#define SOLIS_TASK_CORE               1
 #define SOLIS_MUTEX_TIMEOUT_MS      100
 #define SOLIS_SLAVE_ID                1
+#define CAN_TASK_STACK_SIZE        4096
+#define CAN_TASK_PRIORITY             1
+#if CONFIG_FREERTOS_UNICORE
+#define CAN_TASK_CORE                0
+#else
+#define CAN_TASK_CORE  ((CONFIG_ARDUINO_RUNNING_CORE == 0) ? 1 : 0)
+#endif
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
@@ -235,6 +239,8 @@ static SemaphoreHandle_t solisMutex = nullptr;
 
 static BatteryState batteries[BATTERY_COUNT];
 static AggregateSnapshot aggregate;
+static AggregateSnapshot canAggregate;
+static portMUX_TYPE canAggregateMux = portMUX_INITIALIZER_UNLOCKED;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
@@ -256,7 +262,8 @@ static String htmlEscape(const String& input);
 static void handleInverter();
 static void handleInverterApi();
 static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues);
-static void solisPollTask(void* pv);
+static void pollSolisOnce(unsigned long nowMs);
+static void canTxTask(void* pv);
 
 // CAN API from CAN_Pylontech.ino
 void setupCAN();
@@ -1203,8 +1210,7 @@ static bool readSolisDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) 
 //   1 byte slave  +  1 byte func  +  1 byte byteCount  +  186 data bytes  +  2 CRC bytes  =  191 bytes.
 // The receive buffer below is sized for exactly this maximum.
 static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues) {
-    // Statically allocated to avoid a large stack frame; this function is only
-    // ever called from the single solisPollTask FreeRTOS task.
+    // Statically allocated to avoid a large stack frame.
     // Layout: 1 byte slave + 1 byte func + 1 byte byteCount + (count × 2) data bytes + 2 CRC bytes.
     // For 93 registers: 3 + 186 + 2 = 191 bytes.
     static uint8_t buf[3 + SOLIS_BLOCK_REG_COUNT * 2 + 2];  // 191 bytes for 93 registers
@@ -1230,67 +1236,86 @@ static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t coun
     return true;
 }
 
-static void solisPollTask(void* pv) {
-    (void)pv;
-
+static void pollSolisOnce(unsigned long nowMs) {
     // Snapshot buffer for the full 93-register block (33050..33142).
     uint16_t blockValues[SOLIS_BLOCK_REG_COUNT];
+    uint32_t lockTimeoutsThisPass = 0;
+
+    // Single Modbus FC04 read covering doc registers 33050..33142 inclusive.
+    // This replaces the previous loop of 21 individual one-register reads,
+    // reducing RS485 transaction overhead and improving responsiveness.
+    // The full block is a consistent snapshot taken at a single point in time.
+    bool blockOk = readSolisBlockU16(SOLIS_SLAVE_ID,
+                                     SOLIS_BLOCK_START_REG,
+                                     SOLIS_BLOCK_REG_COUNT,
+                                     blockValues);
+
+    if (blockOk) {
+        if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+            // Extract only the registers the sketch currently cares about from the
+            // full snapshot.  All entries in SOLIS_REGISTER_SPECS are expected to lie
+            // within the block span; the bounds check below guards against future
+            // additions that inadvertently fall outside 33050..33142.
+            for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
+                const uint16_t docReg = SOLIS_REGISTER_SPECS[i].reg;
+                if (docReg < SOLIS_BLOCK_START_REG || docReg > SOLIS_BLOCK_END_REG) {
+                    // Register outside block span; skip (entry stays invalid).
+                    continue;
+                }
+                const uint16_t offset = docReg - SOLIS_BLOCK_START_REG;
+                solisState.values[i].raw   = blockValues[offset];
+                solisState.values[i].valid = true;
+            }
+            solisState.lastSuccessMs = nowMs;
+            xSemaphoreGive(solisMutex);
+        } else {
+            lockTimeoutsThisPass++;
+        }
+    }
+
+    if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        solisState.lastPollMs = nowMs;
+        solisState.pollCount++;
+        if (!blockOk) solisState.readErrors++;
+        solisState.lockTimeouts += lockTimeoutsThisPass;
+        xSemaphoreGive(solisMutex);
+    }
+
+    if (!blockOk) {
+        Serial.println("Solis poll pass had no successful reads");
+    }
+}
+
+static void updateCanAggregateSnapshot(const AggregateSnapshot& snap) {
+    portENTER_CRITICAL(&canAggregateMux);
+    canAggregate = snap;
+    portEXIT_CRITICAL(&canAggregateMux);
+}
+
+static AggregateSnapshot copyCanAggregateSnapshot() {
+    AggregateSnapshot snap;
+    portENTER_CRITICAL(&canAggregateMux);
+    snap = canAggregate;
+    portEXIT_CRITICAL(&canAggregateMux);
+    return snap;
+}
+
+static void canTxTask(void* pv) {
+    (void)pv;
+    TickType_t lastWake = xTaskGetTickCount();
 
     for (;;) {
-        uint32_t pollStartMs = millis();
-        uint32_t lockTimeoutsThisPass = 0;
-
-        // Single Modbus FC04 read covering doc registers 33050..33142 inclusive.
-        // This replaces the previous loop of 21 individual one-register reads,
-        // reducing RS485 transaction overhead and improving responsiveness.
-        // The full block is a consistent snapshot taken at a single point in time.
-        bool blockOk = readSolisBlockU16(SOLIS_SLAVE_ID,
-                                         SOLIS_BLOCK_START_REG,
-                                         SOLIS_BLOCK_REG_COUNT,
-                                         blockValues);
-
-        if (blockOk) {
-            uint32_t now = millis();
-            if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-                // Extract only the registers the sketch currently cares about from the
-                // full snapshot.  All entries in SOLIS_REGISTER_SPECS are expected to lie
-                // within the block span; the bounds check below guards against future
-                // additions that inadvertently fall outside 33050..33142.
-                for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
-                    const uint16_t docReg = SOLIS_REGISTER_SPECS[i].reg;
-                    if (docReg < SOLIS_BLOCK_START_REG || docReg > SOLIS_BLOCK_END_REG) {
-                        // Register outside block span; skip (entry stays invalid).
-                        continue;
-                    }
-                    const uint16_t offset = docReg - SOLIS_BLOCK_START_REG;
-                    solisState.values[i].raw   = blockValues[offset];
-                    solisState.values[i].valid = true;
-                }
-                solisState.lastSuccessMs = now;
-                xSemaphoreGive(solisMutex);
-            } else {
-                lockTimeoutsThisPass++;
-            }
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(CAN_INTERVAL_MS));
+        unsigned long nowMs = millis();
+        AggregateSnapshot snap = copyCanAggregateSnapshot();
+        if (isAggregateUsable(snap, nowMs)) {
+            sendCANFrames(snap.voltage,
+                          snap.current,
+                          snap.soc,
+                          snap.temperature,
+                          snap.chargeAllowed,
+                          snap.dischargeAllowed);
         }
-
-        if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            solisState.lastPollMs = millis();
-            solisState.pollCount++;
-            if (!blockOk) solisState.readErrors++;
-            solisState.lockTimeouts += lockTimeoutsThisPass;
-            xSemaphoreGive(solisMutex);
-        }
-
-        if (!blockOk) {
-            Serial.println("Solis poll pass had no successful reads");
-        }
-
-        unsigned long nextPollAtMs = pollStartMs + SOLIS_POLL_INTERVAL_MS;
-        long remainingMs = static_cast<long>(nextPollAtMs - millis());
-        unsigned long waitMs = remainingMs <= 0
-                             ? SOLIS_MIN_POLL_WAIT_MS
-                             : static_cast<unsigned long>(remainingMs);
-        vTaskDelay(pdMS_TO_TICKS(waitMs));
     }
 }
 
@@ -1772,19 +1797,21 @@ void setup() {
         Serial.println("Failed to create Solis mutex; inverter polling disabled");
     } else {
         RS485.begin(9600, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-        BaseType_t pollTaskOk = xTaskCreatePinnedToCore(
-            solisPollTask,
-            "SolisPoll",
-            SOLIS_TASK_STACK_SIZE,
-            nullptr,
-            SOLIS_TASK_PRIORITY,
-            nullptr,
-            SOLIS_TASK_CORE);
-        if (pollTaskOk != pdPASS) {
-            Serial.println("Failed to start Solis poll task; inverter polling disabled");
-        } else {
-            Serial.printf("Solis RS485 poll task started on RX=%d TX=%d\n", RS485_RX_PIN, RS485_TX_PIN);
-        }
+        Serial.printf("Solis RS485 polling will run in loop() on RX=%d TX=%d\n", RS485_RX_PIN, RS485_TX_PIN);
+    }
+
+    BaseType_t canTaskOk = xTaskCreatePinnedToCore(
+        canTxTask,
+        "CanTx",
+        CAN_TASK_STACK_SIZE,
+        nullptr,
+        CAN_TASK_PRIORITY,
+        nullptr,
+        CAN_TASK_CORE);
+    if (canTaskOk != pdPASS) {
+        Serial.println("Failed to start CAN TX task");
+    } else {
+        Serial.printf("CAN TX task started on core %d\n", CAN_TASK_CORE);
     }
 
     WiFi.mode(WIFI_STA);
@@ -1844,10 +1871,11 @@ void setup() {
     }
 
     aggregate = buildAggregateSnapshot(millis());
+    updateCanAggregateSnapshot(aggregate);
     logSystemDebugSummary("[DBG setup complete]");
 }
 
-static unsigned long lastCAN = 0;
+static unsigned long lastSolisPoll = 0;
 static unsigned long lastLog = 0;
 static unsigned long lastHeartbeat = 0;
 
@@ -1879,19 +1907,13 @@ void loop() {
         if (wifiReady) server.handleClient();
     }
 
-    aggregate = buildAggregateSnapshot(now);
-
-    if (now - lastCAN >= CAN_INTERVAL_MS) {
-        lastCAN = now;
-        if (isAggregateUsable(aggregate, now)) {
-            sendCANFrames(aggregate.voltage,
-                          aggregate.current,
-                          aggregate.soc,
-                          aggregate.temperature,
-                          aggregate.chargeAllowed,
-                          aggregate.dischargeAllowed);
-        }
+    if (solisMutex != nullptr && (now - lastSolisPoll >= SOLIS_POLL_INTERVAL_MS)) {
+        lastSolisPoll = now;
+        pollSolisOnce(now);
     }
+
+    aggregate = buildAggregateSnapshot(now);
+    updateCanAggregateSnapshot(aggregate);
 
     if (now - lastLog >= LOG_INTERVAL_MS) {
         lastLog = now;
