@@ -22,7 +22,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define CAN_TX_PIN     GPIO_NUM_21
 #define CAN_RX_PIN     GPIO_NUM_19
 
-#define CAN_INTERVAL_MS            100
+#define CAN_INTERVAL_MS            500
 #define LOG_INTERVAL_MS           5000
 #define HEARTBEAT_INTERVAL_MS     1000
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
