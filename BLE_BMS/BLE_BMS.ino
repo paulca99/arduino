@@ -57,7 +57,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
 #else
-#define CAN_TASK_CORE  ((CONFIG_ARDUINO_RUNNING_CORE == 0) ? 1 : 0)
+#define CAN_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
 #endif
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
@@ -240,7 +240,7 @@ static SemaphoreHandle_t solisMutex = nullptr;
 static BatteryState batteries[BATTERY_COUNT];
 static AggregateSnapshot aggregate;
 static AggregateSnapshot canAggregate;
-static portMUX_TYPE canAggregateMux = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t canAggregateMutex = nullptr;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
@@ -1287,16 +1287,22 @@ static void pollSolisOnce(unsigned long nowMs) {
 }
 
 static void updateCanAggregateSnapshot(const AggregateSnapshot& snap) {
-    portENTER_CRITICAL(&canAggregateMux);
+    if (canAggregateMutex != nullptr &&
+        xSemaphoreTake(canAggregateMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        return;
+    }
     canAggregate = snap;
-    portEXIT_CRITICAL(&canAggregateMux);
+    if (canAggregateMutex != nullptr) xSemaphoreGive(canAggregateMutex);
 }
 
 static AggregateSnapshot copyCanAggregateSnapshot() {
-    AggregateSnapshot snap;
-    portENTER_CRITICAL(&canAggregateMux);
+    AggregateSnapshot snap = {};
+    if (canAggregateMutex != nullptr &&
+        xSemaphoreTake(canAggregateMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        return snap;
+    }
     snap = canAggregate;
-    portEXIT_CRITICAL(&canAggregateMux);
+    if (canAggregateMutex != nullptr) xSemaphoreGive(canAggregateMutex);
     return snap;
 }
 
@@ -1305,7 +1311,6 @@ static void canTxTask(void* pv) {
     TickType_t lastWake = xTaskGetTickCount();
 
     for (;;) {
-        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(CAN_INTERVAL_MS));
         unsigned long nowMs = millis();
         AggregateSnapshot snap = copyCanAggregateSnapshot();
         if (isAggregateUsable(snap, nowMs)) {
@@ -1316,6 +1321,7 @@ static void canTxTask(void* pv) {
                           snap.chargeAllowed,
                           snap.dischargeAllowed);
         }
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(CAN_INTERVAL_MS));
     }
 }
 
@@ -1800,18 +1806,27 @@ void setup() {
         Serial.printf("Solis RS485 polling will run in loop() on RX=%d TX=%d\n", RS485_RX_PIN, RS485_TX_PIN);
     }
 
-    BaseType_t canTaskOk = xTaskCreatePinnedToCore(
-        canTxTask,
-        "CanTx",
-        CAN_TASK_STACK_SIZE,
-        nullptr,
-        CAN_TASK_PRIORITY,
-        nullptr,
-        CAN_TASK_CORE);
-    if (canTaskOk != pdPASS) {
-        Serial.println("Failed to start CAN TX task");
+    canAggregateMutex = xSemaphoreCreateMutex();
+    if (canAggregateMutex == nullptr) {
+        Serial.println("Failed to create CAN aggregate mutex");
+    }
+
+    if (canAggregateMutex == nullptr) {
+        Serial.println("CAN TX task disabled (missing aggregate mutex)");
     } else {
-        Serial.printf("CAN TX task started on core %d\n", CAN_TASK_CORE);
+        BaseType_t canTaskOk = xTaskCreatePinnedToCore(
+            canTxTask,
+            "CanTx",
+            CAN_TASK_STACK_SIZE,
+            nullptr,
+            CAN_TASK_PRIORITY,
+            nullptr,
+            CAN_TASK_CORE);
+        if (canTaskOk != pdPASS) {
+            Serial.println("Failed to start CAN TX task");
+        } else {
+            Serial.printf("CAN TX task started on core %d\n", CAN_TASK_CORE);
+        }
     }
 
     WiFi.mode(WIFI_STA);
