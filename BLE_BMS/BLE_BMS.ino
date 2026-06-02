@@ -376,7 +376,9 @@ static void logRuntimeEventV(const char* fmt, va_list args) {
     if (fmt == nullptr) return;
 
     char message[RUNTIME_LOG_LINE_LEN];
-    vsnprintf(message, sizeof(message), fmt, args);
+    int written = vsnprintf(message, sizeof(message), fmt, args);
+    if (written < 0) return;
+    message[sizeof(message) - 1] = '\0';
 
     char line[RUNTIME_LOG_LINE_LEN];
     snprintf(line, sizeof(line), "[%10lu ms] %s", millis(), message);
@@ -412,8 +414,10 @@ static void sendContentf(const char* fmt, ...) {
     char buffer[WEB_CONTENT_CHUNK_SIZE];
     va_list args;
     va_start(args, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    int written = vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
+    if (written < 0) return;
+    buffer[sizeof(buffer) - 1] = '\0';
     server.sendContent(buffer);
 }
 
@@ -1775,7 +1779,9 @@ static void handleLog() {
     if (count == 0) {
         server.sendContent(F("(no log entries yet)"));
     } else {
-        uint16_t start = (head + RUNTIME_LOG_MAX_LINES - count) % RUNTIME_LOG_MAX_LINES;
+        uint16_t start = (head >= count)
+                       ? static_cast<uint16_t>(head - count)
+                       : static_cast<uint16_t>(RUNTIME_LOG_MAX_LINES - (count - head));
         for (uint16_t i = 0; i < count; i++) {
             uint16_t idx = (start + i) % RUNTIME_LOG_MAX_LINES;
             char line[RUNTIME_LOG_LINE_LEN];
@@ -1786,7 +1792,7 @@ static void handleLog() {
 
             server.sendContent(htmlEscape(String(line)));
             server.sendContent(F("\n"));
-            if ((i & 0x0FU) == 0x0FU) delay(0);  // Yield to keep loop/task watchdogs happy on long dumps.
+            if ((i & 0x07U) == 0x07U) delay(0);  // Yield to keep loop/task watchdogs happy on long dumps.
         }
     }
 
