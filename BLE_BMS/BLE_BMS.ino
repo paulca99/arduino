@@ -30,6 +30,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define HEARTBEAT_INTERVAL_MS     1000
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
 #define DATA_FRESH_MS            15000UL
+// Operational safety valve: reboot every 4 hours to recover from long-lived
+// BLE/Wi-Fi stack wedging. Adjust this single constant in code if needed.
 #define PERIODIC_REBOOT_INTERVAL_MS (4UL * 60UL * 60UL * 1000UL)
 #define LOG_HISTORY_LINES             120
 #define LOG_LINE_MAX_CHARS            160
@@ -116,6 +118,7 @@ static BatteryConfig batteryConfigs[] = {
 };
 
 static const int BATTERY_COUNT = sizeof(batteryConfigs) / sizeof(batteryConfigs[0]);
+static_assert(BATTERY_COUNT <= 32, "Battery enabled mask supports up to 32 batteries");
 
 struct BatteryState {
     BLEAdvertisedDevice* advertisedDevice = nullptr;
@@ -272,6 +275,7 @@ static char lastPersistedRebootReason[32] = "";
 static unsigned long lastPersistedRebootUptimeMs = 0;
 static unsigned long lastPersistedRebootAtMs = 0;
 static bool lastPersistedRebootPresent = false;
+static unsigned long bootStartMs = 0;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
@@ -414,7 +418,7 @@ static void finishCurrentLogLineLocked() {
     logCurrentLine[0] = '\0';
 }
 
-static void appendLogCharLocked(char c) {
+static void appendLogCharLocked(char c, unsigned long timestampMs) {
     if (c == '\r') return;
 
     if (c == '\n') {
@@ -423,7 +427,7 @@ static void appendLogCharLocked(char c) {
     }
 
     if (logCurrentLen == 0) {
-        int prefixLen = snprintf(logCurrentLine, sizeof(logCurrentLine), "[%10lu] ", millis());
+        int prefixLen = snprintf(logCurrentLine, sizeof(logCurrentLine), "[%10lu] ", timestampMs);
         if (prefixLen < 0) prefixLen = 0;
         if (prefixLen >= LOG_LINE_MAX_CHARS) prefixLen = LOG_LINE_MAX_CHARS - 1;
         logCurrentLen = (uint16_t)prefixLen;
@@ -437,9 +441,10 @@ static void appendLogCharLocked(char c) {
 static void appendLogText(const char* text) {
     if (text == nullptr) return;
 
+    unsigned long timestampMs = millis();
     portENTER_CRITICAL(&logBufferMux);
     while (*text != '\0') {
-        appendLogCharLocked(*text++);
+        appendLogCharLocked(*text++, timestampMs);
     }
     portEXIT_CRITICAL(&logBufferMux);
 }
@@ -1421,9 +1426,11 @@ static void clearPendingRebootInfo() {
 static bool isBatteryContributing(int index, unsigned long nowMs) {
     if (!isBatteryEnabled(index)) return false;
     const BatteryState& battery = batteries[index];
+    unsigned long ageMs = nowMs - battery.lastGoodDataMs;
     return battery.hasData &&
            battery.lastGoodDataMs != 0 &&
-           (nowMs - battery.lastGoodDataMs) <= DATA_FRESH_MS;
+           (int32_t)(nowMs - battery.lastGoodDataMs) >= 0 &&
+           ageMs <= DATA_FRESH_MS;
 }
 
 static bool tryParseBatteryIndex(const String& input, int& index) {
@@ -1440,12 +1447,13 @@ static bool tryParseBatteryIndex(const String& input, int& index) {
 
 static void servicePeriodicReboot(unsigned long nowMs) {
     if (PERIODIC_REBOOT_INTERVAL_MS == 0) return;
-    if (nowMs < PERIODIC_REBOOT_INTERVAL_MS) return;
+    unsigned long uptimeMs = nowMs - bootStartMs;
+    if (uptimeMs < PERIODIC_REBOOT_INTERVAL_MS) return;
 
     LogSerial.printf("[SYSTEM] periodic reboot due after %lu ms uptime (interval=%lu ms)\n",
-                  nowMs,
+                  uptimeMs,
                   (unsigned long)PERIODIC_REBOOT_INTERVAL_MS);
-    rememberPendingReboot("periodic_4h", nowMs);
+    rememberPendingReboot("periodic_4h", uptimeMs);
     LogSerial.flush();
     delay(50);
     ESP.restart();
@@ -1815,13 +1823,14 @@ static String formatSolisCardValue(const SolisState& snapshot,
 
 static String buildStatusJson() {
     unsigned long now = millis();
+    unsigned long uptimeMs = now - bootStartMs;
     AggregateSnapshot snap = buildAggregateSnapshot(now);
 
     String json;
     json.reserve(2800);
     json += "{";
     json += "\"uptimeMs\":";
-    json += String(now);
+    json += String(uptimeMs);
     json += ",\"enabledBatteryCount\":";
     json += String(enabledBatteryCount());
     json += ",\"connectedBatteryCount\":";
@@ -1829,9 +1838,9 @@ static String buildStatusJson() {
     json += ",\"periodicRebootIntervalMs\":";
     json += String((unsigned long)PERIODIC_REBOOT_INTERVAL_MS);
     json += ",\"nextPeriodicRebootInMs\":";
-    json += (PERIODIC_REBOOT_INTERVAL_MS == 0 || now >= PERIODIC_REBOOT_INTERVAL_MS)
+    json += (PERIODIC_REBOOT_INTERVAL_MS == 0 || uptimeMs >= PERIODIC_REBOOT_INTERVAL_MS)
           ? String(0)
-          : String((unsigned long)(PERIODIC_REBOOT_INTERVAL_MS - now));
+          : String((unsigned long)(PERIODIC_REBOOT_INTERVAL_MS - uptimeMs));
     json += ",\"resetReason\":\"";
     json += resetReasonToString(esp_reset_reason());
     json += "\"";
@@ -1842,7 +1851,7 @@ static String buildStatusJson() {
         json += jsonEscape(String(lastPersistedRebootReason));
         json += "\",\"uptimeMs\":";
         json += String(lastPersistedRebootUptimeMs);
-        json += ",\"recordedAtMs\":";
+        json += ",\"recordedUptimeMs\":";
         json += String(lastPersistedRebootAtMs);
         json += "}";
     } else {
@@ -2066,13 +2075,14 @@ static void handleInverter() {
 
 static void handleLogsApi() {
     unsigned long now = millis();
+    unsigned long uptimeMs = now - bootStartMs;
     uint16_t lineCount = getLogLineCount();
 
     String json;
     json.reserve(1200 + lineCount * 96);
     json += "{";
     json += "\"uptimeMs\":";
-    json += String(now);
+    json += String(uptimeMs);
     json += ",\"lineCount\":";
     json += String(lineCount);
     json += ",\"resetReason\":\"";
@@ -2085,7 +2095,7 @@ static void handleLogsApi() {
         json += jsonEscape(String(lastPersistedRebootReason));
         json += "\",\"uptimeMs\":";
         json += String(lastPersistedRebootUptimeMs);
-        json += ",\"recordedAtMs\":";
+        json += ",\"recordedUptimeMs\":";
         json += String(lastPersistedRebootAtMs);
         json += "}";
     } else {
@@ -2106,6 +2116,7 @@ static void handleLogsApi() {
 
 static void handleLogs() {
     unsigned long now = millis();
+    unsigned long uptimeMs = now - bootStartMs;
     uint16_t lineCount = getLogLineCount();
 
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -2129,7 +2140,7 @@ static void handleLogs() {
     server.sendContent(F("<div class='grid'>"));
     sendCard("Captured lines", String(lineCount));
     sendCard("Reset reason", String(resetReasonToString(esp_reset_reason())));
-    sendCard("Uptime", String(now / 1000UL) + " s");
+    sendCard("Uptime", String(uptimeMs / 1000UL) + " s");
     if (lastPersistedRebootPresent) {
         sendCard("Previous requested reboot",
                  String(lastPersistedRebootReason) + " @ " + String(lastPersistedRebootUptimeMs / 1000UL) + " s");
@@ -2158,6 +2169,7 @@ static void handleBatteryToggle() {
     }
 
     String enabledArg = server.arg("enabled");
+    enabledArg.toLowerCase();
     bool enabled = enabledArg == "1" || enabledArg == "true" || enabledArg == "on";
     if (!setBatteryEnabled(index, enabled)) {
         server.send(500, "text/plain", "Failed to persist battery config");
@@ -2170,6 +2182,7 @@ static void handleBatteryToggle() {
 
 static void handleRoot() {
     unsigned long now = millis();
+    unsigned long uptimeMs = now - bootStartMs;
     AggregateSnapshot snap = buildAggregateSnapshot(now);
 
     LogSerial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
@@ -2203,9 +2216,9 @@ static void handleRoot() {
     sendCard("Periodic reboot", PERIODIC_REBOOT_INTERVAL_MS == 0 ? String("disabled")
                                                                 : String(PERIODIC_REBOOT_INTERVAL_MS / 3600000UL) + " h");
     sendCard("Next reboot", PERIODIC_REBOOT_INTERVAL_MS == 0 ? String("n/a")
-                                                            : (now >= PERIODIC_REBOOT_INTERVAL_MS
+                                                            : (uptimeMs >= PERIODIC_REBOOT_INTERVAL_MS
                                                                    ? String("due")
-                                                                   : String((PERIODIC_REBOOT_INTERVAL_MS - now) / 60000UL) + " min"));
+                                                                   : String((PERIODIC_REBOOT_INTERVAL_MS - uptimeMs) / 60000UL) + " min"));
 
     if (snap.valid) {
         sendCard("Aggregate Voltage", String(snap.voltage, 2) + " V");
@@ -2405,6 +2418,7 @@ static void logBMSData() {
 
 void setup() {
     LogSerial.begin(115200);
+    bootStartMs = millis();
     delay(500);
     LogSerial.println();
     LogSerial.println("=== JBD BMS -> Solis CAN Bridge (persistent classic BLE multi-battery) ===");
