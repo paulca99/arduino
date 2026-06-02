@@ -13,7 +13,9 @@
 //   0x35E — Manufacturer name ("PYLONTEC")
 //   0x305 — Network alive / keep-alive counter
 //
-// All sent every 100ms. Solis expects 500 kbps.
+// Use a conservative cadence to reduce repeated duplicate traffic while
+// keeping the control frames regular enough for inverter compatibility.
+// Solis expects 500 kbps on the bus.
 // Wiring: SN65HVD230 TX→GPIO11, RX→GPIO12
 //         Solis RJ45 pin4=CAN-H, pin5=CAN-L
 // -----------------------------------------------------------------------
@@ -42,6 +44,10 @@
 #define MAX_DISCHARGE_CURRENT   400   // 40.0A  (x10)
 
 static uint32_t aliveCounter = 0;
+
+#define CAN_LIVE_FRAME_INTERVAL_MS          500UL   // Keep control/telemetry fresh without the old 100 ms burst rate.
+#define CAN_STATUS_FRAME_INTERVAL_MS       1000UL   // Protection/status changes are slower, so send them less often.
+#define CAN_MANUFACTURER_FRAME_INTERVAL_MS 5000UL   // Static identification text does not need repeating quickly.
 
 // -----------------------------------------------------------------------
 // SOC_EMA_TAU_S — EMA time constant for the voltage-based SoC filter.
@@ -323,7 +329,13 @@ static void can_send_alive() {
 }
 
 // -----------------------------------------------------------------------
-// Send all Pylontech frames — call every 100ms from main loop
+// Send Pylontech frames on a split schedule:
+// - 0x351/0x355/0x356/0x35C/0x305 every 500 ms for live control + telemetry
+// - 0x359 every 1000 ms because it changes less often
+// - 0x35E every 5000 ms because it is static identification text
+//
+// The sketch can still call this helper regularly from loop(); the helper
+// itself keeps the frame cadence conservative and easy to revert.
 // -----------------------------------------------------------------------
 void sendCANFrames(float voltage,
                    float current,
@@ -331,11 +343,28 @@ void sendCANFrames(float voltage,
                    float temperature,
                    bool chargeAllowed,
                    bool dischargeAllowed) {
-    can_send_limits();
-    can_send_soc(voltage, soc);
-    can_send_measurements(voltage, current, temperature);
-    can_send_alarms(voltage, temperature);
-    can_send_request(chargeAllowed, dischargeAllowed);
-    can_send_manufacturer();
-    can_send_alive();
+    static unsigned long lastLiveFrameMs = 0;
+    static unsigned long lastStatusFrameMs = 0;
+    static unsigned long lastManufacturerFrameMs = 0;
+
+    unsigned long nowMs = millis();
+
+    if (lastLiveFrameMs == 0 || (nowMs - lastLiveFrameMs) >= CAN_LIVE_FRAME_INTERVAL_MS) {
+        lastLiveFrameMs = nowMs;
+        can_send_limits();
+        can_send_soc(voltage, soc);
+        can_send_measurements(voltage, current, temperature);
+        can_send_request(chargeAllowed, dischargeAllowed);
+        can_send_alive();
+    }
+
+    if (lastStatusFrameMs == 0 || (nowMs - lastStatusFrameMs) >= CAN_STATUS_FRAME_INTERVAL_MS) {
+        lastStatusFrameMs = nowMs;
+        can_send_alarms(voltage, temperature);
+    }
+
+    if (lastManufacturerFrameMs == 0 || (nowMs - lastManufacturerFrameMs) >= CAN_MANUFACTURER_FRAME_INTERVAL_MS) {
+        lastManufacturerFrameMs = nowMs;
+        can_send_manufacturer();
+    }
 }

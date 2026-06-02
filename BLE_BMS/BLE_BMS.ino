@@ -36,9 +36,10 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
 #define SOLIS_MODBUS_TIMEOUT_MS     180
-#define SOLIS_POLL_INTERVAL_MS     5000
+#define SOLIS_POLL_INTERVAL_MS     8000  // Conservative RS485 cadence: poll less often than the 5 s baseline.
 #define SOLIS_INTER_REGISTER_DELAY_MS 15
 #define SOLIS_MIN_POLL_WAIT_MS      100
+#define SOLIS_FAILED_POLL_MIN_WAIT_MS 2000  // Avoid immediate retry churn after a fully failed poll pass.
 #define SOLIS_STALE_POLL_MULTIPLIER   2
 #define SOLIS_DIVISOR_EPSILON   1.0e-6f
 #define SOLIS_TASK_STACK_SIZE      4096
@@ -1229,6 +1230,12 @@ static void solisPollTask(void* pv) {
         unsigned long waitMs = remainingMs <= 0
                              ? SOLIS_MIN_POLL_WAIT_MS
                              : static_cast<unsigned long>(remainingMs);
+        if (!anySuccess && waitMs < SOLIS_FAILED_POLL_MIN_WAIT_MS) {
+            // If a full pass failed, leave a little more breathing room before
+            // retrying so RS485 trouble does not immediately turn into a tight
+            // retry loop that competes with BLE, CAN, and the web handlers.
+            waitMs = SOLIS_FAILED_POLL_MIN_WAIT_MS;
+        }
         vTaskDelay(pdMS_TO_TICKS(waitMs));
     }
 }
@@ -1428,7 +1435,7 @@ static void handleInverter() {
                          "</style></head><body>"));
     server.sendContent(F("<p><a href='/'>Back to summary</a></p>"));
     server.sendContent(F("<h1>Solis inverter monitor</h1>"));
-    server.sendContent(F("<p>Cached RS485 data only. Modbus polling runs in a dedicated FreeRTOS task every ~5 seconds so BLE/CAN/web work stays responsive.</p>"));
+    server.sendContent(F("<p>Cached RS485 data only. Modbus polling runs in a dedicated FreeRTOS task on a conservative cadence so BLE/CAN/web work stays responsive.</p>"));
 
     server.sendContent(F("<div class='grid'>"));
     sendCard(stale ? "Last good poll (stale)" : "Last good poll (fresh)",
