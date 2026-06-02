@@ -37,6 +37,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RUNTIME_LOG_LINE_LEN      144
 #define WEB_REQUEST_LOG_THROTTLE_MS 60000UL
 #define WEB_CONTENT_CHUNK_SIZE    768
+#define LOG_YIELD_INTERVAL          8
 
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
@@ -1792,7 +1793,7 @@ static void handleLog() {
 
             server.sendContent(htmlEscape(String(line)));
             server.sendContent(F("\n"));
-            if ((i & 0x07U) == 0x07U) delay(0);  // Yield to keep loop/task watchdogs happy on long dumps.
+            if (((i + 1U) % LOG_YIELD_INTERVAL) == 0U) delay(0);  // Yield to keep loop/task watchdogs happy on long dumps.
         }
     }
 
