@@ -1205,6 +1205,8 @@ static bool readSolisDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) 
 static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues) {
     // Statically allocated to avoid a large stack frame; this function is only
     // ever called from the single solisPollTask FreeRTOS task.
+    // Layout: 1 byte slave + 1 byte func + 1 byte byteCount + (count × 2) data bytes + 2 CRC bytes.
+    // For 93 registers: 3 + 186 + 2 = 191 bytes.
     static uint8_t buf[3 + SOLIS_BLOCK_REG_COUNT * 2 + 2];  // 191 bytes for 93 registers
 
     const int expectedLen = 3 + count * 2 + 2;
@@ -1251,10 +1253,15 @@ static void solisPollTask(void* pv) {
             uint32_t now = millis();
             if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
                 // Extract only the registers the sketch currently cares about from the
-                // full snapshot.  All entries in SOLIS_REGISTER_SPECS lie within the
-                // block span, so the offset is always in bounds.
+                // full snapshot.  All entries in SOLIS_REGISTER_SPECS are expected to lie
+                // within the block span; the bounds check below guards against future
+                // additions that inadvertently fall outside 33050..33142.
                 for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
                     const uint16_t docReg = SOLIS_REGISTER_SPECS[i].reg;
+                    if (docReg < SOLIS_BLOCK_START_REG || docReg > SOLIS_BLOCK_END_REG) {
+                        // Register outside block span; skip (entry stays invalid).
+                        continue;
+                    }
                     const uint16_t offset = docReg - SOLIS_BLOCK_START_REG;
                     solisState.values[i].raw   = blockValues[offset];
                     solisState.values[i].valid = true;
