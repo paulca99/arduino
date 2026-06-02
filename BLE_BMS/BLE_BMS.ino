@@ -36,8 +36,17 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
 #define SOLIS_MODBUS_TIMEOUT_MS     180
-#define SOLIS_POLL_INTERVAL_MS     5000
-#define SOLIS_INTER_REGISTER_DELAY_MS 15
+// Single full-span block read once every 2 seconds (previously 5 s with 21 individual reads).
+#define SOLIS_POLL_INTERVAL_MS     2000
+// SOLIS_INTER_REGISTER_DELAY_MS removed: no per-register delays with block read.
+// Conservative inter-byte timeout for the 93-register block response.
+// readRS485Reply() resets this timer on every byte received, so 300 ms gives
+// ample headroom beyond the ~200 ms wire time for 191 bytes at 9600 baud.
+#define SOLIS_BLOCK_READ_TIMEOUT_MS 300
+// Full-span block: doc registers 33050..33142 inclusive (33142 - 33050 + 1 = 93).
+#define SOLIS_BLOCK_START_REG     33050
+#define SOLIS_BLOCK_END_REG       33142
+#define SOLIS_BLOCK_REG_COUNT        93
 #define SOLIS_MIN_POLL_WAIT_MS      100
 #define SOLIS_STALE_POLL_MULTIPLIER   2
 #define SOLIS_DIVISOR_EPSILON   1.0e-6f
@@ -246,6 +255,7 @@ static String buildInverterJson();
 static String htmlEscape(const String& input);
 static void handleInverter();
 static void handleInverterApi();
+static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues);
 static void solisPollTask(void* pv);
 
 // CAN API from CAN_Pylontech.ino
@@ -1184,43 +1194,87 @@ static bool readSolisDocRegU16(uint8_t slave, uint16_t docReg, uint16_t& value) 
     return true;
 }
 
+// Reads a contiguous block of 'count' Modbus input registers (FC 0x04) starting
+// at doc register 'startDocReg', using the same docReg-1 raw-address convention
+// as readSolisDocRegU16().  On success the decoded 16-bit values are written to
+// outValues[0..count-1] and true is returned.
+//
+// For the full 93-register span (33050..33142) the Modbus response is:
+//   1 byte slave  +  1 byte func  +  1 byte byteCount  +  186 data bytes  +  2 CRC bytes  =  191 bytes.
+// The receive buffer below is sized for exactly this maximum.
+static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues) {
+    // Statically allocated to avoid a large stack frame; this function is only
+    // ever called from the single solisPollTask FreeRTOS task.
+    static uint8_t buf[3 + SOLIS_BLOCK_REG_COUNT * 2 + 2];  // 191 bytes for 93 registers
+
+    const int expectedLen = 3 + count * 2 + 2;
+    if (expectedLen > static_cast<int>(sizeof(buf))) return false;
+
+    const uint16_t rawAddr = startDocReg - 1;  // docReg-1 convention, same as readSolisDocRegU16
+
+    flushRS485Input();
+    sendReadInput(slave, rawAddr, count);
+
+    const int len = readRS485Reply(buf, sizeof(buf), SOLIS_BLOCK_READ_TIMEOUT_MS);
+    if (len < expectedLen) return false;
+    if (!validModbusCRC(buf, len)) return false;
+    if (buf[0] != slave || buf[1] != 0x04) return false;
+    if (buf[2] != static_cast<uint8_t>(count * 2)) return false;
+
+    for (uint16_t i = 0; i < count; i++) {
+        const int offset = 3 + (i * 2);
+        outValues[i] = (static_cast<uint16_t>(buf[offset]) << 8) | buf[offset + 1];
+    }
+    return true;
+}
+
 static void solisPollTask(void* pv) {
     (void)pv;
 
+    // Snapshot buffer for the full 93-register block (33050..33142).
+    uint16_t blockValues[SOLIS_BLOCK_REG_COUNT];
+
     for (;;) {
         uint32_t pollStartMs = millis();
-        uint32_t errorsThisPass = 0;
         uint32_t lockTimeoutsThisPass = 0;
-        bool anySuccess = false;
 
-        for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
-            uint16_t raw = 0;
-            if (readSolisDocRegU16(SOLIS_SLAVE_ID, SOLIS_REGISTER_SPECS[i].reg, raw)) {
-                uint32_t now = millis();
-                if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-                    solisState.values[i].raw = raw;
+        // Single Modbus FC04 read covering doc registers 33050..33142 inclusive.
+        // This replaces the previous loop of 21 individual one-register reads,
+        // reducing RS485 transaction overhead and improving responsiveness.
+        // The full block is a consistent snapshot taken at a single point in time.
+        bool blockOk = readSolisBlockU16(SOLIS_SLAVE_ID,
+                                         SOLIS_BLOCK_START_REG,
+                                         SOLIS_BLOCK_REG_COUNT,
+                                         blockValues);
+
+        if (blockOk) {
+            uint32_t now = millis();
+            if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+                // Extract only the registers the sketch currently cares about from the
+                // full snapshot.  All entries in SOLIS_REGISTER_SPECS lie within the
+                // block span, so the offset is always in bounds.
+                for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
+                    const uint16_t docReg = SOLIS_REGISTER_SPECS[i].reg;
+                    const uint16_t offset = docReg - SOLIS_BLOCK_START_REG;
+                    solisState.values[i].raw   = blockValues[offset];
                     solisState.values[i].valid = true;
-                    solisState.lastSuccessMs = now;
-                    xSemaphoreGive(solisMutex);
-                    anySuccess = true;
-                } else {
-                    lockTimeoutsThisPass++;
                 }
+                solisState.lastSuccessMs = now;
+                xSemaphoreGive(solisMutex);
             } else {
-                errorsThisPass++;
+                lockTimeoutsThisPass++;
             }
-            vTaskDelay(pdMS_TO_TICKS(SOLIS_INTER_REGISTER_DELAY_MS));
         }
 
         if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
             solisState.lastPollMs = millis();
             solisState.pollCount++;
-            solisState.readErrors += errorsThisPass;
+            if (!blockOk) solisState.readErrors++;
             solisState.lockTimeouts += lockTimeoutsThisPass;
             xSemaphoreGive(solisMutex);
         }
 
-        if (!anySuccess) {
+        if (!blockOk) {
             Serial.println("Solis poll pass had no successful reads");
         }
 
@@ -1428,7 +1482,7 @@ static void handleInverter() {
                          "</style></head><body>"));
     server.sendContent(F("<p><a href='/'>Back to summary</a></p>"));
     server.sendContent(F("<h1>Solis inverter monitor</h1>"));
-    server.sendContent(F("<p>Cached RS485 data only. Modbus polling runs in a dedicated FreeRTOS task every ~5 seconds so BLE/CAN/web work stays responsive.</p>"));
+    server.sendContent(F("<p>Cached RS485 data only. Single 93-register Modbus block read (33050..33142) runs in a dedicated FreeRTOS task every ~2 seconds so BLE/CAN/web work stays responsive.</p>"));
 
     server.sendContent(F("<div class='grid'>"));
     sendCard(stale ? "Last good poll (stale)" : "Last good poll (fresh)",
