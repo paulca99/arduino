@@ -1424,9 +1424,27 @@ static void blePollTask(void* pv) {
 
             if (isBatteryConnected(i)) {
                 serviceBatteryPolling(i, now);
-            } else if (shouldAttemptReconnect(i, now)) {
-                bool ok = reconnectBattery(i);
-                Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
+            } else {
+                BatteryState& battery = batteries[i];
+                // Defensive recovery: sometimes NimBLE can stop responding
+                // without firing onDisconnect(). Ensure polling state is reset
+                // and a reconnect is scheduled instead of staying stuck forever.
+                if (battery.connected || battery.requestInFlight) {
+                    Serial.printf("[DBG] [%s] unhealthy link detected; forcing reconnect path\n",
+                                  batteryConfigs[i].name);
+                    battery.connected = false;
+                    battery.requestInFlight = false;
+                    battery.requestDeadlineMs = 0;
+                    battery.requestStage = REQUEST_STAGE_IDLE;
+                    resetPacketAssembly(battery);
+                    if (battery.nextReconnectMs == 0) battery.nextReconnectMs = now;
+                    logBatteryDebugState(i, "[DBG unhealthy link]");
+                }
+
+                if (shouldAttemptReconnect(i, now)) {
+                    bool ok = reconnectBattery(i);
+                    Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
+                }
             }
         }
 
