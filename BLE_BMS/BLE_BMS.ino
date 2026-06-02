@@ -54,15 +54,37 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define CAN_MUTEX_TIMEOUT_MS        100
 #define SOLIS_SLAVE_ID                1
 #define CAN_TASK_STACK_SIZE        4096
-#define CAN_TASK_PRIORITY             1
+// CAN task sits on the Arduino/web core (Core 1) at priority 2, one level
+// above the Arduino loop (priority 1).  This achieves two things:
+//   1. CAN is on a DIFFERENT core from the BLE task (Core 0), so long BLE
+//      blocking operations (scan, connect, reconnect) physically cannot
+//      delay CAN transmission.
+//   2. CAN preempts web-server work on Core 1 for its brief ~100 ms
+//      transmit windows, but spends 99% of its time sleeping so web
+//      performance is not meaningfully affected.
+#define CAN_TASK_PRIORITY             2
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
 #else
 #ifndef CONFIG_ARDUINO_RUNNING_CORE
-#define CONFIG_ARDUINO_RUNNING_CORE 1
+#define CONFIG_ARDUINO_RUNNING_CORE  1
 #endif
-#define CAN_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
+// Same core as the Arduino loop / web server.
+#define CAN_TASK_CORE  CONFIG_ARDUINO_RUNNING_CORE
 #endif
+
+// BLE poll task — handles scan, connect, reconnect, and per-battery polling.
+// Pinned to Core 0 where the Bluedroid BLE stack runs.  All BLE blocking
+// I/O is confined to this task; it never holds any shared mutex during I/O.
+#define BLE_TASK_STACK_SIZE     8192
+#define BLE_TASK_PRIORITY          2
+#define BLE_TASK_CORE              0
+
+// RS485 (Solis) poll task — blocking Modbus reads, also on Core 0 so that
+// Core 1 is left for CAN and web serving.
+#define RS485_TASK_STACK_SIZE   4096
+#define RS485_TASK_PRIORITY        1
+#define RS485_TASK_CORE            0
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
@@ -269,6 +291,8 @@ static void handleInverterApi();
 static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues);
 static void pollSolisOnce(unsigned long nowMs);
 static void canTxTask(void* pv);
+static void solisPollTask(void* pv);
+static void blePollTask(void* pv);
 
 // CAN API from CAN_Pylontech.ino
 void setupCAN();
@@ -319,6 +343,9 @@ static bool isBatteryEnabled(int index) {
     return index >= 0 && index < BATTERY_COUNT && batteryConfigs[index].enabled;
 }
 
+// NOTE: Only call isBatteryConnected() from the BLE task (Core 0).
+// It dereferences battery.client which the BLE task can free at any time.
+// For cross-core reads use battery.connected (atomic bool) instead.
 static bool isBatteryConnected(int index) {
     if (!isBatteryEnabled(index)) return false;
 
@@ -338,8 +365,11 @@ static bool shouldAttemptReconnect(int index, unsigned long nowMs) {
 }
 
 static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs) {
-    if (snap.valid) return true;
-    return snap.lastFreshMs != 0 && (nowMs - snap.lastFreshMs < BLE_TIMEOUT_MS);
+    // Stale-data policy: CAN must not transmit battery data older than BLE_TIMEOUT_MS
+    // (3 minutes).  Both snap.valid and a recent lastFreshMs are required — checking
+    // only snap.valid is not enough because a valid snapshot can age indefinitely if
+    // the BLE task stops updating (e.g. all batteries disconnect).
+    return snap.valid && snap.lastFreshMs != 0 && (nowMs - snap.lastFreshMs < BLE_TIMEOUT_MS);
 }
 
 static int enabledBatteryCount() {
@@ -358,10 +388,12 @@ static int seenBatteryCount() {
     return count;
 }
 
+// Safe to call from any core: uses battery.connected (atomic bool) rather
+// than isBatteryConnected() which dereferences battery.client pointers.
 static int connectedBatteryCount() {
     int count = 0;
     for (int i = 0; i < BATTERY_COUNT; i++) {
-        if (isBatteryConnected(i)) count++;
+        if (batteryConfigs[i].enabled && batteries[i].connected) count++;
     }
     return count;
 }
@@ -383,7 +415,7 @@ static void logBatteryDebugState(int index, const char* prefix) {
         batteryConfigs[index].name,
         batteryConfigs[index].enabled ? "yes" : "no",
         battery.seen ? "yes" : "no",
-        isBatteryConnected(index) ? "yes" : "no",
+        isBatteryConnected(index) ? "yes" : "no",  // BLE-task-only call; logBatteryDebugState is called only from Core 0
         battery.hasData ? "yes" : "no",
         battery.hasCellData ? "yes" : "no",
         battery.requestInFlight ? "yes" : "no",
@@ -763,8 +795,6 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
 
         pBLEScan->start(scanDurationSeconds(sliceMs), false);
         pBLEScan->clearResults();
-
-        if (wifiReady) server.handleClient();
     }
 
     return seenBatteryCount() == enabledBatteryCount();
@@ -795,8 +825,6 @@ static bool scanForBattery(int index, unsigned long timeoutMs) {
 
         pBLEScan->start(scanDurationSeconds(sliceMs), false);
         pBLEScan->clearResults();
-
-        if (wifiReady) server.handleClient();
     }
 
     return battery.seen;
@@ -1337,6 +1365,80 @@ static void canTxTask(void* pv) {
     }
 }
 
+// -----------------------------------------------------------------------
+// RS485 (Solis) poll task — runs independently on Core 0.
+// Writes to solisState under solisMutex; web handlers read it without
+// blocking this path.
+// -----------------------------------------------------------------------
+static void solisPollTask(void* pv) {
+    (void)pv;
+    TickType_t lastWake = xTaskGetTickCount();
+    for (;;) {
+        unsigned long now = millis();
+        pollSolisOnce(now);
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(SOLIS_POLL_INTERVAL_MS));
+    }
+}
+
+// -----------------------------------------------------------------------
+// BLE poll task — runs independently on Core 0 (BLE stack core).
+// Owns batteries[] exclusively.  Writes canAggregate under
+// canAggregateMutex so the CAN task and web handlers can read it safely
+// without ever blocking BLE I/O.
+// -----------------------------------------------------------------------
+static void blePollTask(void* pv) {
+    (void)pv;
+
+    // Startup: discover and connect all enabled batteries.
+    Serial.println("[BLE] task started; running startup scan...");
+    bool allSeen = scanForAllEnabledBatteries(STARTUP_SCAN_TIMEOUT_MS);
+    Serial.printf("[BLE] startup discovery: seen=%d/%d\n", seenBatteryCount(), enabledBatteryCount());
+    if (!allSeen) {
+        Serial.println("[BLE] some batteries not found at startup.");
+    }
+
+    for (int i = 0; i < BATTERY_COUNT; i++) {
+        if (!batteryConfigs[i].enabled) continue;
+        if (!batteries[i].seen) {
+            batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+            Serial.printf("[%s] startup connect skipped (not discovered)\n", batteryConfigs[i].name);
+            continue;
+        }
+        bool ok = connectBattery(i);
+        Serial.printf("[%s] startup connect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
+        if (!ok) batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+    }
+
+    // Seed the CAN aggregate with whatever data we have so far.
+    aggregate = buildAggregateSnapshot(millis());
+    updateCanAggregateSnapshot(aggregate);
+    logSystemDebugSummary("[DBG BLE task startup complete]");
+
+    // Main poll loop: service polling and reconnects, then refresh the
+    // shared aggregate snapshot used by the CAN task.
+    for (;;) {
+        unsigned long now = millis();
+
+        for (int i = 0; i < BATTERY_COUNT; i++) {
+            if (!batteryConfigs[i].enabled) continue;
+
+            if (isBatteryConnected(i)) {
+                serviceBatteryPolling(i, now);
+            } else if (shouldAttemptReconnect(i, now)) {
+                bool ok = reconnectBattery(i);
+                Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
+            }
+        }
+
+        // Rebuild and publish the aggregate snapshot.  The CAN task reads
+        // this under a mutex; we never hold the mutex during BLE I/O above.
+        aggregate = buildAggregateSnapshot(millis());
+        updateCanAggregateSnapshot(aggregate);
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
 static String htmlEscape(const String& input) {
     String out;
     out.reserve(input.length() + 16);
@@ -1580,7 +1682,9 @@ static void handleInverter() {
 
 static void handleRoot() {
     unsigned long now = millis();
-    AggregateSnapshot snap = buildAggregateSnapshot(now);
+    // Read aggregate from the shared CAN snapshot (updated by the BLE task).
+    // This is safe to call from any task; the lock is taken internally.
+    AggregateSnapshot snap = copyCanAggregateSnapshot();
 
     Serial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
                   ESP.getFreeHeap(),
@@ -1643,7 +1747,7 @@ static void handleRoot() {
         String row;
         row.reserve(512);
         row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
-                     String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
+              String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (battery.connected ? "green'>yes" : "red'>no") +
                       "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
                       "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
                       "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
@@ -1715,7 +1819,7 @@ static void handleBatteryDetail() {
     server.sendContent(String("<div class='card'><div>MAC: <span class='mono'>") +
                        htmlEscape(String(cfg.mac)) +
                        "</span></div>");
-    server.sendContent(String("<div>Connected: ") + (isBatteryConnected(index) ? "yes" : "no") + "</div>");
+    server.sendContent(String("<div>Connected: ") + (battery.connected ? "yes" : "no") + "</div>");
     server.sendContent(String("<div>Cell data age: ") + cellDataAge + "</div></div>");
 
     if (!battery.hasCellData || battery.cellCount == 0) {
@@ -1749,7 +1853,9 @@ static bool tryConnectWiFi(const char* ssid, const char* password) {
 
 static void logBMSData() {
     unsigned long now = millis();
-    AggregateSnapshot snap = buildAggregateSnapshot(now);
+    // Read aggregate from the shared CAN snapshot; avoids reading batteries[]
+    // from the main loop while the BLE task may be writing it.
+    AggregateSnapshot snap = copyCanAggregateSnapshot();
 
     Serial.println("\n========== BMS STATUS ==========");
     Serial.printf("Connected batteries: %d/%d\n", connectedBatteryCount(), enabledBatteryCount());
@@ -1777,7 +1883,7 @@ static void logBMSData() {
 
         Serial.printf("[%s] connected=%s seen=%s ok=%lu fail=%lu timeouts=%lu drops=%lu age=%lus reqInFlight=%s pkt=%d/%d",
                       batteryConfigs[i].name,
-                      isBatteryConnected(i) ? "yes" : "no",
+                      battery.connected ? "yes" : "no",
                       battery.seen ? "yes" : "no",
                       battery.okReads,
                       battery.failedReads,
@@ -1807,35 +1913,42 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println();
-    Serial.println("=== JBD BMS -> Solis CAN Bridge (persistent classic BLE multi-battery) ===");
+    Serial.println("=== JBD BMS -> Solis CAN Bridge (async task architecture) ===");
+    Serial.println("Core layout: BLE+RS485 on Core 0 | CAN+Web on Core 1");
 
     setupCAN();
 
+    // RS485 mutex + task (Core 0).  RS485 never holds the mutex during UART I/O.
     solisMutex = xSemaphoreCreateMutex();
     if (solisMutex == nullptr) {
-        Serial.println("Failed to create Solis mutex; inverter polling disabled");
+        Serial.println("Failed to create Solis mutex; RS485 polling disabled");
     } else {
         RS485.begin(9600, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-        Serial.printf("Solis RS485 polling will run in loop() on RX=%d TX=%d\n", RS485_RX_PIN, RS485_TX_PIN);
+        if (xTaskCreatePinnedToCore(solisPollTask, "SolisPoll",
+                                    RS485_TASK_STACK_SIZE, nullptr,
+                                    RS485_TASK_PRIORITY, nullptr,
+                                    RS485_TASK_CORE) != pdPASS) {
+            Serial.println("Failed to start RS485 poll task");
+        } else {
+            Serial.printf("RS485 poll task started on core %d\n", RS485_TASK_CORE);
+        }
     }
 
+    // CAN aggregate mutex + task (Core 1 — different core from BLE task).
+    // All mutex acquisitions use CAN_MUTEX_TIMEOUT_MS timeouts so a slow
+    // holder never blocks another task permanently.
     canAggregateMutex = xSemaphoreCreateMutex();
     if (canAggregateMutex == nullptr) {
-        Serial.println("Failed to create CAN aggregate mutex");
-        Serial.println("CAN TX task disabled (missing aggregate mutex)");
+        Serial.println("Failed to create CAN aggregate mutex; CAN TX disabled");
     } else {
-        BaseType_t canTaskOk = xTaskCreatePinnedToCore(
-            canTxTask,
-            "CanTx",
-            CAN_TASK_STACK_SIZE,
-            nullptr,
-            CAN_TASK_PRIORITY,
-            nullptr,
-            CAN_TASK_CORE);
-        if (canTaskOk != pdPASS) {
+        if (xTaskCreatePinnedToCore(canTxTask, "CanTx",
+                                    CAN_TASK_STACK_SIZE, nullptr,
+                                    CAN_TASK_PRIORITY, nullptr,
+                                    CAN_TASK_CORE) != pdPASS) {
             Serial.println("Failed to start CAN TX task");
         } else {
-            Serial.printf("CAN TX task started on core %d\n", CAN_TASK_CORE);
+            Serial.printf("CAN TX task started on core %d (priority %d)\n",
+                          CAN_TASK_CORE, CAN_TASK_PRIORITY);
         }
     }
 
@@ -1860,6 +1973,8 @@ void setup() {
         Serial.println("WiFi failed - continuing without web server");
     }
 
+    // BLE init then task (Core 0).  The task handles all scanning, connecting,
+    // and polling; setup() returns immediately after starting it.
     BLEDevice::init("");
     BLEDevice::setPower(ESP_PWR_LVL_P9);
 
@@ -1875,32 +1990,17 @@ void setup() {
                       batteryConfigs[i].enabled ? "true" : "false");
     }
 
-    bool allSeen = scanForAllEnabledBatteries(STARTUP_SCAN_TIMEOUT_MS);
-    Serial.printf("Startup discovery: seen=%d/%d\n", seenBatteryCount(), enabledBatteryCount());
-    if (!allSeen) {
-        Serial.println("Some enabled batteries were not discovered at startup.");
+    if (xTaskCreatePinnedToCore(blePollTask, "BLEPoll",
+                                BLE_TASK_STACK_SIZE, nullptr,
+                                BLE_TASK_PRIORITY, nullptr,
+                                BLE_TASK_CORE) != pdPASS) {
+        Serial.println("Failed to start BLE poll task");
+    } else {
+        Serial.printf("BLE poll task started on core %d (priority %d)\n",
+                      BLE_TASK_CORE, BLE_TASK_PRIORITY);
     }
-
-    for (int i = 0; i < BATTERY_COUNT; i++) {
-        if (!batteryConfigs[i].enabled) continue;
-
-        if (!batteries[i].seen) {
-            Serial.printf("[%s] startup connect skipped (not discovered)\n", batteryConfigs[i].name);
-            batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
-            continue;
-        }
-
-        bool ok = connectBattery(i);
-        Serial.printf("[%s] startup connect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
-        if (!ok) batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
-    }
-
-    aggregate = buildAggregateSnapshot(millis());
-    updateCanAggregateSnapshot(aggregate);
-    logSystemDebugSummary("[DBG setup complete]");
 }
 
-static unsigned long lastSolisPoll = 0;
 static unsigned long lastLog = 0;
 static unsigned long lastHeartbeat = 0;
 
@@ -1918,27 +2018,6 @@ void loop() {
     }
 
     if (wifiReady) server.handleClient();
-
-    for (int i = 0; i < BATTERY_COUNT; i++) {
-        if (!batteryConfigs[i].enabled) continue;
-
-        if (isBatteryConnected(i)) {
-            serviceBatteryPolling(i, now);
-        } else if (shouldAttemptReconnect(i, now)) {
-            bool ok = reconnectBattery(i);
-            Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
-        }
-
-        if (wifiReady) server.handleClient();
-    }
-
-    if (solisMutex != nullptr && (now - lastSolisPoll >= SOLIS_POLL_INTERVAL_MS)) {
-        pollSolisOnce(now);
-        lastSolisPoll = millis();
-    }
-
-    aggregate = buildAggregateSnapshot(now);
-    updateCanAggregateSnapshot(aggregate);
 
     if (now - lastLog >= LOG_INTERVAL_MS) {
         lastLog = now;
