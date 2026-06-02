@@ -323,7 +323,7 @@ static void can_send_alive() {
 }
 
 // -----------------------------------------------------------------------
-// Send all Pylontech frames — call every 100ms from main loop
+// Send all Pylontech frames — call every 100ms from CAN scheduler
 // -----------------------------------------------------------------------
 void sendCANFrames(float voltage,
                    float current,
