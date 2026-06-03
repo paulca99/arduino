@@ -374,7 +374,7 @@ public:
         if (len >= (int)sizeof(buffer)) len = sizeof(buffer) - 1;
 
         if (shouldSuppressLogLine(buffer)) {
-            return static_cast<size_t>(len);
+            return 0;
         }
 
         BaseSerial.print(buffer);
