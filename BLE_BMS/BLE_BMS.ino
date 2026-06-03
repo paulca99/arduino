@@ -75,6 +75,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define REQUEST_DELAY_MS            150
 #define REQUEST_INTERVAL_MS        2000
 #define RESPONSE_TIMEOUT_MS        1200
+#define TIMEOUT_RECOVERY_DELAY_MS   500
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
 #define MAX_CELLS                   24
@@ -152,6 +153,10 @@ struct BatteryState {
     bool gotPacket04 = false;
     bool requestInFlight = false;
     BatteryRequestStage requestStage = REQUEST_STAGE_IDLE;
+    uint32_t nextRequestGeneration = 1;
+    uint32_t activeRequestGeneration = 0;
+    uint32_t packetGeneration = 0;
+    uint32_t staleRequestGeneration = 0;
 };
 
 struct AggregateSnapshot {
@@ -439,6 +444,29 @@ static void releaseActivePollingBattery(int index) {
     portEXIT_CRITICAL(&activePollingBatteryMux);
 }
 
+static uint32_t beginBatteryRequestGeneration(BatteryState& battery) {
+    uint32_t generation = battery.nextRequestGeneration++;
+    if (battery.nextRequestGeneration == 0) {
+        battery.nextRequestGeneration = 1;
+    }
+    battery.activeRequestGeneration = generation;
+    battery.packetGeneration = 0;
+    battery.staleRequestGeneration = 0;
+    return generation;
+}
+
+static void clearBatteryRequestGeneration(BatteryState& battery) {
+    battery.activeRequestGeneration = 0;
+    battery.packetGeneration = 0;
+}
+
+static void markBatteryRequestGenerationStale(BatteryState& battery) {
+    if (battery.activeRequestGeneration != 0) {
+        battery.staleRequestGeneration = battery.activeRequestGeneration;
+    }
+    clearBatteryRequestGeneration(battery);
+}
+
 static void logBatteryDebugState(int index, const char* prefix) {
     if (index < 0 || index >= BATTERY_COUNT) return;
 
@@ -451,6 +479,7 @@ static void logBatteryDebugState(int index, const char* prefix) {
     Serial.printf(
         "%s [%s] enabled=%s seen=%s connected=%s hasData=%s hasCellData=%s reqInFlight=%s "
         "lastReqAge=%lu lastGoodAge=%lu deadlineIn=%ld packetLen=%d expectedLen=%d "
+        "reqGen=%lu packetGen=%lu staleGen=%lu "
         "packetError=%s stage=%u gotPacket03=%s gotPacket04=%s ok=%lu fail=%lu timeouts=%lu drops=%lu heap=%u wifi=%s\n",
         prefix,
         batteryConfigs[index].name,
@@ -465,6 +494,9 @@ static void logBatteryDebugState(int index, const char* prefix) {
         deadlineIn,
         battery.packetLen,
         battery.expectedLen,
+        (unsigned long)battery.activeRequestGeneration,
+        (unsigned long)battery.packetGeneration,
+        (unsigned long)battery.staleRequestGeneration,
         battery.packetError ? "yes" : "no",
         (unsigned)battery.requestStage,
         battery.gotPacket03 ? "yes" : "no",
@@ -501,6 +533,7 @@ static void resetPacketAssembly(BatteryState& battery) {
     battery.packetLen = 0;
     battery.expectedLen = 0;
     battery.packetError = false;
+    battery.packetGeneration = 0;
     battery.gotPacket03 = false;
     battery.gotPacket04 = false;
 }
@@ -615,10 +648,12 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     if (index < 0) return;
 
     BatteryState& battery = batteries[index];
+    if (!battery.requestInFlight || battery.activeRequestGeneration == 0) return;
     if (battery.packetError) return;
 
     if (battery.packetLen == 0) {
         if (length == 0 || pData[0] != 0xDD) return;
+        battery.packetGeneration = battery.activeRequestGeneration;
         battery.packetError = (pData[2] != 0x00);
         battery.expectedLen = pData[3] + 7;
         Serial.printf("[DBG] [%s] notify start chunkLen=%u expected=%d status=0x%02X\n",
@@ -641,6 +676,19 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
     battery.packetLen += (int)length;
 
     if (battery.packetError || battery.expectedLen <= 0 || battery.packetLen != battery.expectedLen) {
+        return;
+    }
+
+    if (battery.packetGeneration == 0 ||
+        battery.packetGeneration != battery.activeRequestGeneration ||
+        battery.packetGeneration == battery.staleRequestGeneration) {
+        Serial.printf("[DBG] [%s] stale packet dropped packetGen=%lu activeGen=%lu staleGen=%lu len=%d\n",
+                      batteryConfigs[index].name,
+                      (unsigned long)battery.packetGeneration,
+                      (unsigned long)battery.activeRequestGeneration,
+                      (unsigned long)battery.staleRequestGeneration,
+                      battery.packetLen);
+        resetPacketAssembly(battery);
         return;
     }
 
@@ -685,6 +733,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         if (packetType == 0x04) {
             // Count a successful full 0x03 -> 0x04 polling cycle once.
             battery.okReads++;
+            clearBatteryRequestGeneration(battery);
             releaseActivePollingBattery(index);
         }
 
@@ -727,6 +776,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.requestInFlight = false;
         battery.requestDeadlineMs = 0;
         battery.requestStage = REQUEST_STAGE_IDLE;
+        clearBatteryRequestGeneration(battery);
         releaseActivePollingBattery(index);
         clearCellData(battery);
         battery.lastDisconnectMs = millis();
@@ -807,6 +857,7 @@ static void cleanupBatteryClient(int index) {
     battery.requestInFlight = false;
     battery.requestDeadlineMs = 0;
     battery.requestStage = REQUEST_STAGE_IDLE;
+    clearBatteryRequestGeneration(battery);
     releaseActivePollingBattery(index);
     clearCellData(battery);
     resetPacketAssembly(battery);
@@ -986,6 +1037,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 
     if (battery.requestInFlight) {
         if (hasDeadlinePassed(battery.requestDeadlineMs)) {
+            uint32_t timedOutGeneration = battery.activeRequestGeneration;
             Serial.printf("[DBG] [%s] request timeout now=%lu deadline=%lu packetLen=%d expected=%d packetError=%s\n",
                           batteryConfigs[index].name,
                           nowMs,
@@ -1001,9 +1053,16 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
             battery.requestStage = REQUEST_STAGE_IDLE;
             battery.failedReads++;
             battery.requestTimeouts++;
+            markBatteryRequestGenerationStale(battery);
             resetPacketAssembly(battery);
             releaseActivePollingBattery(index);
             logBatteryDebugState(index, "[DBG timeout]");
+            cleanupBatteryClient(index);
+            battery.nextReconnectMs = millis() + TIMEOUT_RECOVERY_DELAY_MS;
+            Serial.printf("[DBG] [%s] timeout recovery generation=%lu reconnectIn=%u\n",
+                          batteryConfigs[index].name,
+                          (unsigned long)timedOutGeneration,
+                          (unsigned)TIMEOUT_RECOVERY_DELAY_MS);
         }
         return;
     }
@@ -1023,6 +1082,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     } else {
         // Keep interval timing anchored to the start of the 0x03 -> 0x04 cycle.
         battery.lastRequestMs = nowMs;
+        beginBatteryRequestGeneration(battery);
     }
 
     resetPacketAssembly(battery);
@@ -1052,6 +1112,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
         }
         battery.requestStage = REQUEST_STAGE_IDLE;
         battery.failedReads++;
+        clearBatteryRequestGeneration(battery);
         releaseActivePollingBattery(index);
         Serial.printf("[DBG] [%s] writeValue failed immediately for cmd=0x%02X\n",
                       batteryConfigs[index].name,
