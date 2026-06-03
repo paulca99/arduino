@@ -75,6 +75,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define REQUEST_DELAY_MS            150
 #define REQUEST_INTERVAL_MS        2000
 #define RESPONSE_TIMEOUT_MS        1200
+// Hold reconnect attempts after a timeout long enough for BLE stack disconnect
+// events/queues to drain before a new client is created.
 #define TIMEOUT_RECOVERY_DELAY_MS  4000
 #define RECONNECT_INTERVAL_MS     30000
 #define RECONNECT_SERIAL_GAP_MS     750
@@ -884,11 +886,16 @@ static void cleanupBatteryClient(int index) {
 
     if (battery.client != nullptr) {
         battery.client->setClientCallbacks(nullptr);
+        // Preserve any longer quarantine already in force and only extend it
+        // when teardown drain needs extra time.
+        unsigned long drainUntilMs = millis() + CLIENT_TEARDOWN_DRAIN_MS;
+        if ((int32_t)(drainUntilMs - battery.reconnectQuarantineUntilMs) > 0) {
+            battery.reconnectQuarantineUntilMs = drainUntilMs;
+        }
         if (battery.client->isConnected()) {
             Serial.printf("[DBG] [%s] before disconnect()\n", batteryConfigs[index].name);
             battery.client->disconnect();
             Serial.printf("[DBG] [%s] after disconnect()\n", batteryConfigs[index].name);
-            delay(CLIENT_TEARDOWN_DRAIN_MS);
         }
         delete battery.client;
         battery.client = nullptr;
@@ -1161,12 +1168,8 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 static bool reconnectBattery(int index) {
     if (isBatteryConnected(index)) return true;
 
-    unsigned long nowMs = millis();
-    if ((int32_t)(nowMs - reconnectSerializedUntilMs) < 0) return false;
-    if (activeReconnectBattery != -1 && activeReconnectBattery != index) return false;
-
     activeReconnectBattery = index;
-    bool ok = false;
+    bool reconnectSucceeded = false;
 
     Serial.printf("[%s] reconnect attempt\n", batteryConfigs[index].name);
     logBatteryDebugState(index, "[DBG before reconnect]");
@@ -1176,32 +1179,34 @@ static bool reconnectBattery(int index) {
             Serial.printf("[%s] not seen during reconnect scan\n", batteryConfigs[index].name);
             batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
             batteries[index].reconnectQuarantineUntilMs = batteries[index].nextReconnectMs;
-            goto done;
+        } else {
+            reconnectSucceeded = connectBattery(index);
+        }
+    } else {
+        reconnectSucceeded = connectBattery(index);
+    }
+
+    if (!reconnectSucceeded && batteries[index].advertisedDevice != nullptr) {
+        if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
+            Serial.printf("[%s] rediscovery failed\n", batteryConfigs[index].name);
+            batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+            batteries[index].reconnectQuarantineUntilMs = batteries[index].nextReconnectMs;
+        } else {
+            reconnectSucceeded = connectBattery(index);
+            if (!reconnectSucceeded) {
+                batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+                batteries[index].reconnectQuarantineUntilMs = batteries[index].nextReconnectMs;
+            }
         }
     }
 
-    if (connectBattery(index)) {
-        ok = true;
-        goto done;
-    }
-
-    if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
-        Serial.printf("[%s] rediscovery failed\n", batteryConfigs[index].name);
-        batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
-        batteries[index].reconnectQuarantineUntilMs = batteries[index].nextReconnectMs;
-        goto done;
-    }
-
-    ok = connectBattery(index);
-    if (!ok) {
+    if (!reconnectSucceeded && batteries[index].nextReconnectMs == 0) {
         batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
         batteries[index].reconnectQuarantineUntilMs = batteries[index].nextReconnectMs;
     }
-
-done:
     activeReconnectBattery = -1;
     reconnectSerializedUntilMs = millis() + RECONNECT_SERIAL_GAP_MS;
-    return ok;
+    return reconnectSucceeded;
 }
 
 static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
