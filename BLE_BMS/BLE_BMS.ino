@@ -6,6 +6,7 @@
 #include <BLERemoteService.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Preferences.h>
 #include <HardwareSerial.h>
 #include <math.h>
 #include <new>
@@ -104,6 +105,7 @@ static BatteryConfig batteryConfigs[] = {
 };
 
 static const int BATTERY_COUNT = sizeof(batteryConfigs) / sizeof(batteryConfigs[0]);
+static_assert(BATTERY_COUNT <= 32, "battery enabled-mask supports up to 32 batteries");
 
 struct BatteryState {
     BLEAdvertisedDevice* advertisedDevice = nullptr;
@@ -249,6 +251,11 @@ static volatile uint32_t canAggregateLockTimeouts = 0;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
+static Preferences configPrefs;
+static bool configPrefsReady = false;
+static const char* BMS_CFG_NAMESPACE = "bms_cfg";
+static const char* BMS_ENABLED_MASK_KEY = "enabled_mask";
+static const int ENABLED_MASK_BITS = 32;
 
 WebServer server(80);
 HardwareSerial RS485(2);
@@ -317,6 +324,45 @@ static uint32_t scanDurationSeconds(unsigned long durationMs) {
 
 static bool isBatteryEnabled(int index) {
     return index >= 0 && index < BATTERY_COUNT && batteryConfigs[index].enabled;
+}
+
+static uint32_t buildEnabledMaskFromConfig() {
+    uint32_t mask = 0;
+    for (int i = 0; i < BATTERY_COUNT && i < ENABLED_MASK_BITS; i++) {
+        if (batteryConfigs[i].enabled) {
+            mask |= (1UL << i);
+        }
+    }
+    return mask;
+}
+
+static void applyEnabledMaskToConfig(uint32_t mask) {
+    for (int i = 0; i < BATTERY_COUNT; i++) {
+        if (i < ENABLED_MASK_BITS) {
+            batteryConfigs[i].enabled = ((mask & (1UL << i)) != 0);
+        }
+    }
+}
+
+static void clearAdvertisedDevice(int index) {
+    if (index < 0 || index >= BATTERY_COUNT) return;
+    if (batteries[index].advertisedDevice != nullptr) {
+        delete batteries[index].advertisedDevice;
+        batteries[index].advertisedDevice = nullptr;
+    }
+}
+
+static void persistEnabledConfigToNvs() {
+    if (!configPrefsReady) return;
+    uint32_t mask = buildEnabledMaskFromConfig();
+    configPrefs.putUInt(BMS_ENABLED_MASK_KEY, mask);
+}
+
+static void loadEnabledConfigFromNvs() {
+    if (!configPrefsReady) return;
+    uint32_t defaultMask = buildEnabledMaskFromConfig();
+    uint32_t enabledMask = configPrefs.getUInt(BMS_ENABLED_MASK_KEY, defaultMask);
+    applyEnabledMaskToConfig(enabledMask);
 }
 
 static bool isBatteryConnected(int index) {
@@ -1623,7 +1669,7 @@ static void handleRoot() {
     server.sendContent(F("</div>"));
 
     server.sendContent(F("<h2>Per-battery status</h2><table><tr>"
-                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
+                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Action</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
                          "</tr>"));
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -1642,8 +1688,12 @@ static void handleRoot() {
 
         String row;
         row.reserve(512);
+        String action = String("<form method='POST' action='/battery/enabled' style='margin:0'>") +
+                       "<input type='hidden' name='index' value='" + String(i) + "'>" +
+                       "<input type='hidden' name='enabled' value='" + String(cfg.enabled ? "0" : "1") + "'>" +
+                       "<button type='submit'>" + String(cfg.enabled ? "Disable" : "Enable") + "</button></form>";
         row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
-                     String(cfg.enabled ? "yes" : "no") + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
+                     String(cfg.enabled ? "yes" : "no") + "</td><td>" + action + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
                       "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
                       "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
                       "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
@@ -1734,6 +1784,76 @@ static void handleBatteryDetail() {
     server.sendContent("");
 }
 
+static bool parseEnabledArg(const String& value, bool& enabled) {
+    String lowered = value;
+    lowered.toLowerCase();
+    if (lowered == "1" || lowered == "true" || lowered == "on" || lowered == "yes") {
+        enabled = true;
+        return true;
+    }
+    if (lowered == "0" || lowered == "false" || lowered == "off" || lowered == "no") {
+        enabled = false;
+        return true;
+    }
+    return false;
+}
+
+static void handleSetBatteryEnabled() {
+    if (!server.hasArg("index") || !server.hasArg("enabled")) {
+        server.send(400, "text/plain", "Missing index or enabled");
+        return;
+    }
+
+    String indexArg = server.arg("index");
+    if (indexArg.length() == 0) {
+        server.send(400, "text/plain", "Missing battery index");
+        return;
+    }
+    for (size_t i = 0; i < indexArg.length(); i++) {
+        if (!isDigit(indexArg.charAt(i))) {
+            server.send(400, "text/plain", "Invalid battery index");
+            return;
+        }
+    }
+
+    int index = indexArg.toInt();
+    if (index < 0 || index >= BATTERY_COUNT) {
+        server.send(404, "text/plain", "Battery not found");
+        return;
+    }
+
+    bool enabled = false;
+    if (!parseEnabledArg(server.arg("enabled"), enabled)) {
+        server.send(400, "text/plain", "Invalid enabled value");
+        return;
+    }
+
+    if (batteryConfigs[index].enabled != enabled) {
+        batteryConfigs[index].enabled = enabled;
+        if (enabled) {
+            batteries[index].seen = false;
+            clearAdvertisedDevice(index);
+            // Request immediate reconnect for newly-enabled batteries.
+            batteries[index].nextReconnectMs = millis();
+        } else {
+            cleanupBatteryClient(index);
+            batteries[index].seen = false;
+            // Disabled batteries should not be scheduled for reconnect.
+            batteries[index].nextReconnectMs = 0;
+            clearAdvertisedDevice(index);
+        }
+        persistEnabledConfigToNvs();
+        aggregate = buildAggregateSnapshot(millis());
+        updateCanAggregateSnapshot(aggregate);
+        Serial.printf("[WEB] [%s] enabled=%s (saved)\n",
+                      batteryConfigs[index].name,
+                      enabled ? "true" : "false");
+    }
+
+    server.sendHeader("Location", "/", true);
+    server.send(303, "text/plain", "");
+}
+
 static bool tryConnectWiFi(const char* ssid, const char* password) {
     Serial.printf("Trying WiFi: %s\n", ssid);
     WiFi.begin(ssid, password);
@@ -1809,6 +1929,13 @@ void setup() {
     Serial.println();
     Serial.println("=== JBD BMS -> Solis CAN Bridge (persistent classic BLE multi-battery) ===");
 
+    configPrefsReady = configPrefs.begin(BMS_CFG_NAMESPACE, false);
+    if (configPrefsReady) {
+        loadEnabledConfigFromNvs();
+    } else {
+        Serial.println("Failed to open NVS namespace bms_cfg; using compiled battery enables");
+    }
+
     setupCAN();
 
     solisMutex = xSemaphoreCreateMutex();
@@ -1850,6 +1977,7 @@ void setup() {
         Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
         server.on("/battery", handleBatteryDetail);
+        server.on("/battery/enabled", HTTP_POST, handleSetBatteryEnabled);
         server.on("/inverter", handleInverter);
         server.on("/api/inverter", handleInverterApi);
         server.on("/api/solis", handleInverterApi);
