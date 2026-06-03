@@ -105,6 +105,7 @@ static BatteryConfig batteryConfigs[] = {
 };
 
 static const int BATTERY_COUNT = sizeof(batteryConfigs) / sizeof(batteryConfigs[0]);
+static_assert(BATTERY_COUNT <= 32, "battery enabled-mask supports up to 32 batteries");
 
 struct BatteryState {
     BLEAdvertisedDevice* advertisedDevice = nullptr;
@@ -254,6 +255,7 @@ static Preferences configPrefs;
 static bool configPrefsReady = false;
 static const char* BMS_CFG_NAMESPACE = "bms_cfg";
 static const char* BMS_ENABLED_MASK_KEY = "enabled_mask";
+static const int ENABLED_MASK_BITS = 32;
 
 WebServer server(80);
 HardwareSerial RS485(2);
@@ -326,7 +328,7 @@ static bool isBatteryEnabled(int index) {
 
 static uint32_t buildEnabledMaskFromConfig() {
     uint32_t mask = 0;
-    for (int i = 0; i < BATTERY_COUNT && i < 32; i++) {
+    for (int i = 0; i < BATTERY_COUNT && i < ENABLED_MASK_BITS; i++) {
         if (batteryConfigs[i].enabled) {
             mask |= (1UL << i);
         }
@@ -336,9 +338,17 @@ static uint32_t buildEnabledMaskFromConfig() {
 
 static void applyEnabledMaskToConfig(uint32_t mask) {
     for (int i = 0; i < BATTERY_COUNT; i++) {
-        if (i < 32) {
+        if (i < ENABLED_MASK_BITS) {
             batteryConfigs[i].enabled = ((mask & (1UL << i)) != 0);
         }
+    }
+}
+
+static void clearAdvertisedDevice(int index) {
+    if (index < 0 || index >= BATTERY_COUNT) return;
+    if (batteries[index].advertisedDevice != nullptr) {
+        delete batteries[index].advertisedDevice;
+        batteries[index].advertisedDevice = nullptr;
     }
 }
 
@@ -1822,19 +1832,15 @@ static void handleSetBatteryEnabled() {
         batteryConfigs[index].enabled = enabled;
         if (enabled) {
             batteries[index].seen = false;
-            if (batteries[index].advertisedDevice != nullptr) {
-                delete batteries[index].advertisedDevice;
-                batteries[index].advertisedDevice = nullptr;
-            }
+            clearAdvertisedDevice(index);
+            // Request immediate reconnect for newly-enabled batteries.
             batteries[index].nextReconnectMs = millis();
         } else {
             cleanupBatteryClient(index);
             batteries[index].seen = false;
+            // Disabled batteries should not be scheduled for reconnect.
             batteries[index].nextReconnectMs = 0;
-            if (batteries[index].advertisedDevice != nullptr) {
-                delete batteries[index].advertisedDevice;
-                batteries[index].advertisedDevice = nullptr;
-            }
+            clearAdvertisedDevice(index);
         }
         persistEnabledConfigToNvs();
         aggregate = buildAggregateSnapshot(millis());
@@ -1971,7 +1977,6 @@ void setup() {
         Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
         server.on("/", handleRoot);
         server.on("/battery", handleBatteryDetail);
-        server.on("/battery/enabled", HTTP_GET, handleSetBatteryEnabled);
         server.on("/battery/enabled", HTTP_POST, handleSetBatteryEnabled);
         server.on("/inverter", handleInverter);
         server.on("/api/inverter", handleInverterApi);
