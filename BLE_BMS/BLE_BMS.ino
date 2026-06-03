@@ -108,6 +108,7 @@ struct BatteryConfig {
     char name[BATTERY_NAME_MAX_LEN];
     char mac[BATTERY_MAC_MAX_LEN];
     bool enabled;
+    bool inUse;
 };
 
 struct DefaultBatteryConfig {
@@ -120,6 +121,7 @@ struct PersistedBatteryConfig {
     char name[BATTERY_NAME_MAX_LEN];
     char mac[BATTERY_MAC_MAX_LEN];
     uint8_t enabled;
+    uint8_t inUse;
 };
 
 struct PersistedBatteryBlob {
@@ -530,6 +532,7 @@ static bool shouldSuppressLogLine(const char* text) {
 
 static int findBatteryByClient(BLEClient* client) {
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (batteries[i].client == client) return i;
     }
     return -1;
@@ -537,6 +540,7 @@ static int findBatteryByClient(BLEClient* client) {
 
 static int findBatteryByRx(BLERemoteCharacteristic* characteristic) {
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (batteries[i].rx == characteristic) return i;
     }
     return -1;
@@ -565,10 +569,15 @@ static void assignBatteryConfig(BatteryConfig& config, const char* name, const c
         config.mac[sizeof(config.mac) - 1] = '\0';
     }
     config.enabled = enabled;
+    config.inUse = true;
+}
+
+static bool isBatterySlotActive(int index) {
+    return index >= 0 && index < batteryCount && batteryConfigs[index].inUse;
 }
 
 static bool isBatteryEnabled(int index) {
-    return index >= 0 && index < batteryCount && batteryConfigs[index].enabled;
+    return isBatterySlotActive(index) && batteryConfigs[index].enabled;
 }
 
 static bool isBatteryConnected(int index) {
@@ -597,6 +606,7 @@ static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs
 static int enabledBatteryCount() {
     int count = 0;
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (batteryConfigs[i].enabled) count++;
     }
     return count;
@@ -605,6 +615,7 @@ static int enabledBatteryCount() {
 static int seenBatteryCount() {
     int count = 0;
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (batteryConfigs[i].enabled && batteries[i].seen) count++;
     }
     return count;
@@ -613,6 +624,7 @@ static int seenBatteryCount() {
 static int connectedBatteryCount() {
     int count = 0;
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (isBatteryConnected(i)) count++;
     }
     return count;
@@ -879,6 +891,7 @@ class DiscoveryCallbacks : public BLEAdvertisedDeviceCallbacks {
         seenMac.toLowerCase();
 
         for (int i = 0; i < batteryCount; i++) {
+            if (!batteryConfigs[i].inUse) continue;
             if (!batteryConfigs[i].enabled) continue;
 
             String targetMac = batteryConfigs[i].mac;
@@ -943,6 +956,7 @@ static void cleanupBatteryClient(int index) {
 
 static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         batteries[i].seen = false;
         if (batteries[i].advertisedDevice != nullptr) {
             delete batteries[i].advertisedDevice;
@@ -1226,6 +1240,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     bool dischargeAllowedInit = false;
 
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (!batteryConfigs[i].enabled) continue;
 
         const BatteryState& battery = batteries[i];
@@ -1349,6 +1364,12 @@ static bool normalizeBatteryMac(const String& input, char* output, size_t output
     return true;
 }
 
+static void trimBatteryCount() {
+    while (batteryCount > 0 && !batteryConfigs[batteryCount - 1].inUse) {
+        batteryCount--;
+    }
+}
+
 static void loadDefaultBatteryConfig() {
     batteryCount = DEFAULT_BATTERY_COUNT;
     for (int i = 0; i < MAX_BATTERIES; i++) {
@@ -1369,6 +1390,7 @@ static void applyLegacyEnabledMaskIfPresent() {
 
     uint32_t mask = configPrefs.getULong(CONFIG_KEY_ENABLED_MASK, 0);
     for (int i = 0; i < batteryCount && i < 32; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         batteryConfigs[i].enabled = (mask & (1UL << i)) != 0;
     }
 }
@@ -1383,6 +1405,7 @@ static bool persistBatteryConfig() {
         strncpy(blob.configs[i].name, batteryConfigs[i].name, sizeof(blob.configs[i].name) - 1);
         strncpy(blob.configs[i].mac, batteryConfigs[i].mac, sizeof(blob.configs[i].mac) - 1);
         blob.configs[i].enabled = batteryConfigs[i].enabled ? 1 : 0;
+        blob.configs[i].inUse = batteryConfigs[i].inUse ? 1 : 0;
     }
 
     size_t written = configPrefs.putBytes(CONFIG_KEY_BATTERY_CFG, &blob, sizeof(blob));
@@ -1405,11 +1428,13 @@ static void loadBatteryConfig() {
             clearBatteryConfig(batteryConfigs[i]);
         }
         for (int i = 0; i < batteryCount; i++) {
+            if (!blob.configs[i].inUse) continue;
             assignBatteryConfig(batteryConfigs[i],
                                 blob.configs[i].name,
                                 blob.configs[i].mac,
                                 blob.configs[i].enabled != 0);
         }
+        trimBatteryCount();
         return;
     }
 
@@ -1465,17 +1490,13 @@ static bool tryParseBatteryIndex(const String& input, int& index) {
     long parsed = strtol(input.c_str(), &endPtr, 10);
     if (endPtr == nullptr || *endPtr != '\0') return false;
     if (parsed < 0 || parsed >= batteryCount) return false;
+    if (!batteryConfigs[parsed].inUse) return false;
 
     index = (int)parsed;
     return true;
 }
 
 static bool addBatteryConfig(const String& nameInput, const String& macInput, bool enabled, String& errorMessage) {
-    if (batteryCount >= MAX_BATTERIES) {
-        errorMessage = "Battery list is full";
-        return false;
-    }
-
     String name = nameInput;
     name.trim();
     if (name.length() == 0) {
@@ -1489,26 +1510,41 @@ static bool addBatteryConfig(const String& nameInput, const String& macInput, bo
 
     char normalizedMac[BATTERY_MAC_MAX_LEN];
     if (!normalizeBatteryMac(macInput, normalizedMac, sizeof(normalizedMac))) {
-        errorMessage = "MAC must use format aa:bb:cc:dd:ee:ff";
+        errorMessage = "MAC must use format aa:bb:cc:dd:ee:ff (case-insensitive)";
         return false;
     }
 
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (strcmp(batteryConfigs[i].mac, normalizedMac) == 0) {
             errorMessage = "Battery MAC already exists";
             return false;
         }
     }
 
-    assignBatteryConfig(batteryConfigs[batteryCount], name.c_str(), normalizedMac, enabled);
-    batteries[batteryCount] = BatteryState();
-    if (enabled) batteries[batteryCount].nextReconnectMs = millis();
-    batteryCount++;
+    int slot = -1;
+    for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (batteryCount >= MAX_BATTERIES) {
+            errorMessage = "Battery list is full";
+            return false;
+        }
+        slot = batteryCount++;
+    }
+
+    assignBatteryConfig(batteryConfigs[slot], name.c_str(), normalizedMac, enabled);
+    batteries[slot] = BatteryState();
+    if (enabled) batteries[slot].nextReconnectMs = millis();
 
     if (!persistBatteryConfig()) {
-        batteryCount--;
-        clearBatteryConfig(batteryConfigs[batteryCount]);
-        batteries[batteryCount] = BatteryState();
+        clearBatteryConfig(batteryConfigs[slot]);
+        batteries[slot] = BatteryState();
+        trimBatteryCount();
         errorMessage = "Failed to persist battery config";
         return false;
     }
@@ -1518,6 +1554,7 @@ static bool addBatteryConfig(const String& nameInput, const String& macInput, bo
 
 static bool removeBatteryConfig(int index) {
     if (index < 0 || index >= batteryCount) return false;
+    if (!batteryConfigs[index].inUse) return false;
 
     BatteryState& battery = batteries[index];
     battery.seen = false;
@@ -1526,17 +1563,9 @@ static bool removeBatteryConfig(int index) {
         battery.advertisedDevice = nullptr;
     }
     cleanupBatteryClient(index);
-
-    for (int i = index; i < batteryCount - 1; i++) {
-        batteryConfigs[i] = batteryConfigs[i + 1];
-        batteries[i] = batteries[i + 1];
-    }
-
-    batteryCount--;
-    if (batteryCount >= 0 && batteryCount < MAX_BATTERIES) {
-        clearBatteryConfig(batteryConfigs[batteryCount]);
-        batteries[batteryCount] = BatteryState();
-    }
+    clearBatteryConfig(batteryConfigs[index]);
+    batteries[index] = BatteryState();
+    trimBatteryCount();
 
     if (!persistBatteryConfig()) return false;
     return true;
@@ -1938,8 +1967,11 @@ static String buildStatusJson() {
     json += (snap.valid && snap.hasTemperature) ? String(snap.temperature, 1) : String("null");
     json += "},\"batteries\":[";
 
+    bool firstBattery = true;
     for (int i = 0; i < batteryCount; i++) {
-        if (i != 0) json += ",";
+        if (!batteryConfigs[i].inUse) continue;
+        if (!firstBattery) json += ",";
+        firstBattery = false;
         const BatteryConfig& cfg = batteryConfigs[i];
         const BatteryState& battery = batteries[i];
         bool contributing = isBatteryContributing(i, now);
@@ -2317,7 +2349,7 @@ static void handleRoot() {
     server.sendContent(F("<div class='card'><h2>Add battery</h2>"
                          "<form method='POST' action='/battery-add'>"
                          "<p><label>Name<br><input name='name' maxlength='31' required></label></p>"
-                         "<p><label>MAC<br><input name='mac' maxlength='17' placeholder='aa:bb:cc:dd:ee:ff' required></label></p>"
+                         "<p><label>MAC<br><input name='mac' maxlength='17' pattern='[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}' placeholder='aa:bb:cc:dd:ee:ff' required></label></p>"
                          "<p><label><input type='checkbox' name='enabled' value='1' checked> Enable immediately</label></p>"
                          "<p><button type='submit'>Add battery</button></p>"
                          "</form></div>"));
@@ -2327,6 +2359,7 @@ static void handleRoot() {
                          "</tr>"));
 
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         const BatteryConfig& cfg = batteryConfigs[i];
         const BatteryState& battery = batteries[i];
 
@@ -2471,6 +2504,7 @@ static void logBMSData() {
     }
 
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (!batteryConfigs[i].enabled) continue;
 
         BatteryState& battery = batteries[i];
@@ -2588,6 +2622,7 @@ void setup() {
 
     LogSerial.printf("Configured batteries: %d\n", batteryCount);
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         LogSerial.printf("  [%d] %s %s enabled=%s\n",
                       i,
                       batteryConfigs[i].name,
@@ -2602,6 +2637,7 @@ void setup() {
     }
 
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (!batteryConfigs[i].enabled) continue;
 
         if (!batteries[i].seen) {
@@ -2640,6 +2676,7 @@ void loop() {
     if (wifiReady) server.handleClient();
 
     for (int i = 0; i < batteryCount; i++) {
+        if (!batteryConfigs[i].inUse) continue;
         if (!batteryConfigs[i].enabled) continue;
 
         if (isBatteryConnected(i)) {
