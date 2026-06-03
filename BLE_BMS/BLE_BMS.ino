@@ -1064,7 +1064,7 @@ static bool connectBattery(int index) {
     delay(SERVICE_DISCOVERY_DELAY_MS);
     if (wifiReady) server.handleClient();
 
-    if (!battery.client->isConnected()) {
+    if (battery.client == nullptr || !battery.client->isConnected()) {
         LogSerial.printf("[%s] disconnected before service discovery\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
@@ -1476,11 +1476,9 @@ static bool setBatteryEnabled(int index, bool enabled) {
 static bool isBatteryContributing(int index, unsigned long nowMs) {
     if (!isBatteryEnabled(index)) return false;
     const BatteryState& battery = batteries[index];
-    unsigned long ageMs = nowMs - battery.lastGoodDataMs;
     return battery.hasData &&
            battery.lastGoodDataMs != 0 &&
-           (int32_t)(nowMs - battery.lastGoodDataMs) >= 0 &&
-           ageMs <= DATA_FRESH_MS;
+           (nowMs - battery.lastGoodDataMs) <= DATA_FRESH_MS;
 }
 
 static bool tryParseBatteryIndex(const String& input, int& index) {
