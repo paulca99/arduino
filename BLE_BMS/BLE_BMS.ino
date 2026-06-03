@@ -256,6 +256,7 @@ static bool configPrefsReady = false;
 static const char* BMS_CFG_NAMESPACE = "bms_cfg";
 static const char* BMS_ENABLED_MASK_KEY = "enabled_mask";
 static const int ENABLED_MASK_BITS = 32;
+static int activePollingBattery = -1;
 
 WebServer server(80);
 HardwareSerial RS485(2);
@@ -410,6 +411,12 @@ static int connectedBatteryCount() {
         if (isBatteryConnected(i)) count++;
     }
     return count;
+}
+
+static void releaseActivePollingBattery(int index) {
+    if (activePollingBattery == index) {
+        activePollingBattery = -1;
+    }
 }
 
 static void logBatteryDebugState(int index, const char* prefix) {
@@ -658,6 +665,7 @@ static void notifyCallback(BLERemoteCharacteristic* characteristic,
         if (packetType == 0x04) {
             // Count a successful full 0x03 -> 0x04 polling cycle once.
             battery.okReads++;
+            releaseActivePollingBattery(index);
         }
 
         if (packetType == 0x03) {
@@ -699,6 +707,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.requestInFlight = false;
         battery.requestDeadlineMs = 0;
         battery.requestStage = REQUEST_STAGE_IDLE;
+        releaseActivePollingBattery(index);
         clearCellData(battery);
         battery.lastDisconnectMs = millis();
         battery.nextReconnectMs = battery.lastDisconnectMs + RECONNECT_INTERVAL_MS;
@@ -778,6 +787,7 @@ static void cleanupBatteryClient(int index) {
     battery.requestInFlight = false;
     battery.requestDeadlineMs = 0;
     battery.requestStage = REQUEST_STAGE_IDLE;
+    releaseActivePollingBattery(index);
     clearCellData(battery);
     resetPacketAssembly(battery);
 
@@ -943,6 +953,19 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     if (!isBatteryConnected(index)) return;
 
     BatteryState& battery = batteries[index];
+    bool readyFor04 = battery.requestStage == REQUEST_STAGE_READY_04;
+    bool readyFor03 = battery.requestStage == REQUEST_STAGE_IDLE &&
+                      (nowMs - battery.lastRequestMs) >= REQUEST_INTERVAL_MS;
+
+    if (!battery.requestInFlight && !readyFor04 && !readyFor03) {
+        releaseActivePollingBattery(index);
+        return;
+    }
+
+    if (activePollingBattery == -1) {
+        activePollingBattery = index;
+    }
+    if (activePollingBattery != index) return;
 
     if (battery.requestInFlight) {
         if (hasDeadlinePassed(battery.requestDeadlineMs)) {
@@ -962,6 +985,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
             battery.failedReads++;
             battery.requestTimeouts++;
             resetPacketAssembly(battery);
+            releaseActivePollingBattery(index);
             logBatteryDebugState(index, "[DBG timeout]");
         }
         return;
@@ -972,12 +996,12 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     BatteryRequestStage nextStage = REQUEST_STAGE_WAIT_03;
     bool partOfCurrentCycle = false;
 
-    if (battery.requestStage == REQUEST_STAGE_READY_04) {
+    if (readyFor04) {
         cmd = cmd4;
         cmdLen = sizeof(cmd4);
         nextStage = REQUEST_STAGE_WAIT_04;
         partOfCurrentCycle = true;
-    } else if ((nowMs - battery.lastRequestMs) < REQUEST_INTERVAL_MS) {
+    } else if (!readyFor03) {
         return;
     } else {
         // Keep interval timing anchored to the start of the 0x03 -> 0x04 cycle.
@@ -1011,6 +1035,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
         }
         battery.requestStage = REQUEST_STAGE_IDLE;
         battery.failedReads++;
+        releaseActivePollingBattery(index);
         Serial.printf("[DBG] [%s] writeValue failed immediately for cmd=0x%02X\n",
                       batteryConfigs[index].name,
                       cmd[2]);
@@ -2052,7 +2077,7 @@ void loop() {
 
         if (isBatteryConnected(i)) {
             serviceBatteryPolling(i, now);
-        } else if (shouldAttemptReconnect(i, now)) {
+        } else if (activePollingBattery == -1 && shouldAttemptReconnect(i, now)) {
             bool ok = reconnectBattery(i);
             Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
