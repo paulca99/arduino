@@ -163,6 +163,7 @@ struct BatteryState {
     uint32_t packetGeneration = 0;
     uint32_t staleRequestGeneration = 0;
     bool teardownInProgress = false;
+    bool pendingConnect = false;
 };
 
 struct AggregateSnapshot {
@@ -271,6 +272,9 @@ static const char* BMS_ENABLED_MASK_KEY = "enabled_mask";
 static const int ENABLED_MASK_BITS = 32;
 static portMUX_TYPE activePollingBatteryMux = portMUX_INITIALIZER_UNLOCKED;
 static int activePollingBattery = -1;
+static portMUX_TYPE bleLifecycleMux = portMUX_INITIALIZER_UNLOCKED;
+static int bleLifecycleOwner = -1;
+static uint32_t bleLifecycleDepth = 0;
 
 WebServer server(80);
 HardwareSerial RS485(2);
@@ -288,6 +292,7 @@ static String buildInverterJson();
 static String htmlEscape(const String& input);
 static void handleInverter();
 static void handleInverterApi();
+static int readActivePollingBattery();
 static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues);
 static void pollSolisOnce(unsigned long nowMs);
 static void canTxTask(void* pv);
@@ -391,9 +396,73 @@ static bool isBatteryConnected(int index) {
            battery.tx != nullptr;
 }
 
+static bool anyBatteryRequestInFlight() {
+    for (int i = 0; i < BATTERY_COUNT; i++) {
+        if (!batteryConfigs[i].enabled) continue;
+        if (batteries[i].requestInFlight) return true;
+    }
+    return false;
+}
+
+static bool beginBleLifecycleOperation(int ownerIndex) {
+    bool acquired = false;
+    portENTER_CRITICAL(&bleLifecycleMux);
+    if (bleLifecycleDepth == 0) {
+        bleLifecycleOwner = ownerIndex;
+        bleLifecycleDepth = 1;
+        acquired = true;
+    } else if (bleLifecycleOwner == ownerIndex) {
+        bleLifecycleDepth++;
+        acquired = true;
+    }
+    portEXIT_CRITICAL(&bleLifecycleMux);
+    return acquired;
+}
+
+static void endBleLifecycleOperation(int ownerIndex) {
+    portENTER_CRITICAL(&bleLifecycleMux);
+    if (bleLifecycleDepth > 0 && bleLifecycleOwner == ownerIndex) {
+        bleLifecycleDepth--;
+        if (bleLifecycleDepth == 0) {
+            bleLifecycleOwner = -1;
+        }
+    }
+    portEXIT_CRITICAL(&bleLifecycleMux);
+}
+
+class BleLifecycleScope {
+public:
+    explicit BleLifecycleScope(int ownerIndex)
+        : owner(ownerIndex), active(beginBleLifecycleOperation(ownerIndex)) {}
+    ~BleLifecycleScope() {
+        if (active) endBleLifecycleOperation(owner);
+    }
+    bool ok() const { return active; }
+
+private:
+    int owner;
+    bool active;
+};
+
+static bool isBleLifecycleOperationActive() {
+    portENTER_CRITICAL(&bleLifecycleMux);
+    bool active = bleLifecycleDepth != 0;
+    portEXIT_CRITICAL(&bleLifecycleMux);
+    return active;
+}
+
+static bool isBleSubsystemIdle() {
+    if (isBleLifecycleOperationActive()) return false;
+    if (activeReconnectBattery != -1) return false;
+    if (readActivePollingBattery() != -1) return false;
+    if (anyBatteryRequestInFlight()) return false;
+    return true;
+}
+
 static bool shouldAttemptReconnect(int index, unsigned long nowMs) {
     if (!isBatteryEnabled(index)) return false;
     if (isBatteryConnected(index)) return false;
+    if (!isBleSubsystemIdle()) return false;
     if (batteries[index].nextReconnectMs == 0) return false;
     if ((int32_t)(nowMs - batteries[index].reconnectQuarantineUntilMs) < 0) return false;
     if ((int32_t)(nowMs - reconnectSerializedUntilMs) < 0) return false;
@@ -488,7 +557,7 @@ static void logBatteryDebugState(int index, const char* prefix) {
     long deadlineIn = battery.requestInFlight ? (long)(battery.requestDeadlineMs - now) : 0L;
 
     Serial.printf(
-        "%s [%s] enabled=%s seen=%s connected=%s hasData=%s hasCellData=%s reqInFlight=%s "
+        "%s [%s] enabled=%s seen=%s pendingConnect=%s connected=%s hasData=%s hasCellData=%s reqInFlight=%s "
         "lastReqAge=%lu lastGoodAge=%lu deadlineIn=%ld packetLen=%d expectedLen=%d "
         "reqGen=%lu packetGen=%lu staleGen=%lu "
         "packetError=%s stage=%u gotPacket03=%s gotPacket04=%s ok=%lu fail=%lu timeouts=%lu drops=%lu heap=%u wifi=%s\n",
@@ -496,6 +565,7 @@ static void logBatteryDebugState(int index, const char* prefix) {
         batteryConfigs[index].name,
         batteryConfigs[index].enabled ? "yes" : "no",
         battery.seen ? "yes" : "no",
+        battery.pendingConnect ? "yes" : "no",
         isBatteryConnected(index) ? "yes" : "no",
         battery.hasData ? "yes" : "no",
         battery.hasCellData ? "yes" : "no",
@@ -769,6 +839,7 @@ class ClientCallbacks : public BLEClientCallbacks {
 
         BatteryState& battery = batteries[index];
         battery.connected = true;
+        battery.pendingConnect = false;
         battery.connectedAtMs = millis();
         battery.nextReconnectMs = 0;
         battery.reconnectQuarantineUntilMs = 0;
@@ -861,6 +932,12 @@ static ClientCallbacks clientCallbacks;
 static DiscoveryCallbacks discoveryCallbacks;
 
 static void cleanupBatteryClient(int index) {
+    BleLifecycleScope bleScope(index);
+    if (!bleScope.ok()) {
+        Serial.printf("[DBG] cleanupBatteryClient skipped [%s] BLE lifecycle busy\n", batteryConfigs[index].name);
+        return;
+    }
+
     BatteryState& battery = batteries[index];
 
     if (battery.teardownInProgress) {
@@ -906,6 +983,12 @@ static void cleanupBatteryClient(int index) {
 }
 
 static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
+    BleLifecycleScope bleScope(-1);
+    if (!bleScope.ok()) {
+        Serial.println("[DBG] scanForAllEnabledBatteries skipped: BLE lifecycle busy");
+        return false;
+    }
+
     for (int i = 0; i < BATTERY_COUNT; i++) {
         batteries[i].seen = false;
         if (batteries[i].advertisedDevice != nullptr) {
@@ -938,6 +1021,12 @@ static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
 }
 
 static bool scanForBattery(int index, unsigned long timeoutMs) {
+    BleLifecycleScope bleScope(index);
+    if (!bleScope.ok()) {
+        Serial.printf("[DBG] [%s] scanForBattery skipped: BLE lifecycle busy\n", batteryConfigs[index].name);
+        return false;
+    }
+
     BatteryState& battery = batteries[index];
     battery.seen = false;
 
@@ -970,6 +1059,12 @@ static bool scanForBattery(int index, unsigned long timeoutMs) {
 }
 
 static bool connectBattery(int index) {
+    BleLifecycleScope bleScope(index);
+    if (!bleScope.ok()) {
+        Serial.printf("[DBG] [%s] connect skipped: BLE lifecycle busy\n", batteryConfigs[index].name);
+        return false;
+    }
+
     if (!isBatteryEnabled(index)) return false;
     if (isBatteryConnected(index)) return true;
 
@@ -1051,6 +1146,7 @@ static bool connectBattery(int index) {
     battery.lastRequestMs = millis() - REQUEST_INTERVAL_MS;
     battery.nextReconnectMs = 0;
     battery.reconnectQuarantineUntilMs = 0;
+    battery.pendingConnect = false;
 
     if (battery.connected) {
         Serial.printf("[%s] ready: connected + notifications registered\n", batteryConfigs[index].name);
@@ -1065,6 +1161,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     static uint8_t cmd4[7] = {0xDD, 0xA5, 0x04, 0x00, 0xFF, 0xFC, 0x77};
 
     if (!isBatteryConnected(index)) return;
+    if (isBleLifecycleOperationActive()) return;
 
     BatteryState& battery = batteries[index];
     bool readyFor04 = battery.requestStage == REQUEST_STAGE_READY_04;
@@ -1166,6 +1263,12 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 }
 
 static bool reconnectBattery(int index) {
+    BleLifecycleScope bleScope(index);
+    if (!bleScope.ok()) {
+        Serial.printf("[DBG] [%s] reconnect skipped: BLE lifecycle busy\n", batteryConfigs[index].name);
+        return false;
+    }
+
     if (isBatteryConnected(index)) return true;
 
     activeReconnectBattery = index;
@@ -1996,11 +2099,13 @@ static void handleSetBatteryEnabled() {
         batteryConfigs[index].enabled = enabled;
         if (enabled) {
             batteries[index].seen = false;
+            batteries[index].pendingConnect = true;
             clearAdvertisedDevice(index);
-            // Request immediate reconnect for newly-enabled batteries.
-            batteries[index].nextReconnectMs = millis();
+            // New web-enabled batteries connect from loop() only when BLE is idle.
+            batteries[index].nextReconnectMs = 0;
             batteries[index].reconnectQuarantineUntilMs = 0;
         } else {
+            batteries[index].pendingConnect = false;
             cleanupBatteryClient(index);
             batteries[index].seen = false;
             // Disabled batteries should not be scheduled for reconnect.
@@ -2219,6 +2324,17 @@ void loop() {
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
         if (!batteryConfigs[i].enabled) continue;
+
+        BatteryState& battery = batteries[i];
+        if (battery.pendingConnect) {
+            if (isBleSubsystemIdle()) {
+                battery.pendingConnect = false;
+                battery.nextReconnectMs = now;
+                battery.reconnectQuarantineUntilMs = now;
+                Serial.printf("[DBG] [%s] pending web-enable connect released to reconnect queue\n",
+                              batteryConfigs[i].name);
+            }
+        }
 
         if (isBatteryConnected(i)) {
             serviceBatteryPolling(i, now);
