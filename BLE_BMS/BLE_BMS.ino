@@ -75,8 +75,10 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define REQUEST_DELAY_MS            150
 #define REQUEST_INTERVAL_MS        2000
 #define RESPONSE_TIMEOUT_MS        1200
-#define TIMEOUT_RECOVERY_DELAY_MS   500
+#define TIMEOUT_RECOVERY_DELAY_MS  4000
 #define RECONNECT_INTERVAL_MS     30000
+#define RECONNECT_SERIAL_GAP_MS     750
+#define CLIENT_TEARDOWN_DRAIN_MS    250
 #define MAX_PACKET_LEN             128
 #define MAX_CELLS                   24
 #define PACKET03_MIN_LEN            24
@@ -126,6 +128,7 @@ struct BatteryState {
     unsigned long lastGoodDataMs = 0;
     unsigned long lastDisconnectMs = 0;
     unsigned long nextReconnectMs = 0;
+    unsigned long reconnectQuarantineUntilMs = 0;
     unsigned long lastRequestMs = 0;
     unsigned long requestDeadlineMs = 0;
     unsigned long lastRequestStartedMs = 0;
@@ -157,6 +160,7 @@ struct BatteryState {
     uint32_t activeRequestGeneration = 0;
     uint32_t packetGeneration = 0;
     uint32_t staleRequestGeneration = 0;
+    bool teardownInProgress = false;
 };
 
 struct AggregateSnapshot {
@@ -258,6 +262,8 @@ static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
 static Preferences configPrefs;
 static bool configPrefsReady = false;
+static int activeReconnectBattery = -1;
+static unsigned long reconnectSerializedUntilMs = 0;
 static const char* BMS_CFG_NAMESPACE = "bms_cfg";
 static const char* BMS_ENABLED_MASK_KEY = "enabled_mask";
 static const int ENABLED_MASK_BITS = 32;
@@ -387,6 +393,9 @@ static bool shouldAttemptReconnect(int index, unsigned long nowMs) {
     if (!isBatteryEnabled(index)) return false;
     if (isBatteryConnected(index)) return false;
     if (batteries[index].nextReconnectMs == 0) return false;
+    if ((int32_t)(nowMs - batteries[index].reconnectQuarantineUntilMs) < 0) return false;
+    if ((int32_t)(nowMs - reconnectSerializedUntilMs) < 0) return false;
+    if (activeReconnectBattery != -1 && activeReconnectBattery != index) return false;
     return (int32_t)(nowMs - batteries[index].nextReconnectMs) >= 0;
 }
 
@@ -760,6 +769,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         battery.connected = true;
         battery.connectedAtMs = millis();
         battery.nextReconnectMs = 0;
+        battery.reconnectQuarantineUntilMs = 0;
         Serial.printf("[%s] connected\n", batteryConfigs[index].name);
         logBatteryDebugState(index, "[DBG onConnect]");
     }
@@ -769,6 +779,19 @@ class ClientCallbacks : public BLEClientCallbacks {
         if (index < 0) return;
 
         BatteryState& battery = batteries[index];
+        if (battery.teardownInProgress) {
+            battery.connected = false;
+            battery.service = nullptr;
+            battery.rx = nullptr;
+            battery.tx = nullptr;
+            battery.requestInFlight = false;
+            battery.requestDeadlineMs = 0;
+            battery.requestStage = REQUEST_STAGE_IDLE;
+            clearBatteryRequestGeneration(battery);
+            releaseActivePollingBattery(index);
+            return;
+        }
+
         battery.connected = false;
         battery.service = nullptr;
         battery.rx = nullptr;
@@ -781,6 +804,7 @@ class ClientCallbacks : public BLEClientCallbacks {
         clearCellData(battery);
         battery.lastDisconnectMs = millis();
         battery.nextReconnectMs = battery.lastDisconnectMs + RECONNECT_INTERVAL_MS;
+        battery.reconnectQuarantineUntilMs = battery.nextReconnectMs;
         battery.disconnectCount++;
 
         Serial.printf("[%s] disconnected (drops=%lu)\n",
@@ -837,18 +861,14 @@ static DiscoveryCallbacks discoveryCallbacks;
 static void cleanupBatteryClient(int index) {
     BatteryState& battery = batteries[index];
 
+    if (battery.teardownInProgress) {
+        Serial.printf("[DBG] cleanupBatteryClient skipped [%s] teardown already running\n", batteryConfigs[index].name);
+        return;
+    }
+
+    battery.teardownInProgress = true;
     Serial.printf("[DBG] cleanupBatteryClient start [%s]\n", batteryConfigs[index].name);
     logBatteryDebugState(index, "[DBG before cleanup]");
-
-    if (battery.client != nullptr) {
-        if (battery.client->isConnected()) {
-            Serial.printf("[DBG] [%s] before disconnect()\n", batteryConfigs[index].name);
-            battery.client->disconnect();
-            Serial.printf("[DBG] [%s] after disconnect()\n", batteryConfigs[index].name);
-        }
-        delete battery.client;
-        battery.client = nullptr;
-    }
 
     battery.connected = false;
     battery.service = nullptr;
@@ -861,6 +881,19 @@ static void cleanupBatteryClient(int index) {
     releaseActivePollingBattery(index);
     clearCellData(battery);
     resetPacketAssembly(battery);
+
+    if (battery.client != nullptr) {
+        battery.client->setClientCallbacks(nullptr);
+        if (battery.client->isConnected()) {
+            Serial.printf("[DBG] [%s] before disconnect()\n", batteryConfigs[index].name);
+            battery.client->disconnect();
+            Serial.printf("[DBG] [%s] after disconnect()\n", batteryConfigs[index].name);
+            delay(CLIENT_TEARDOWN_DRAIN_MS);
+        }
+        delete battery.client;
+        battery.client = nullptr;
+    }
+    battery.teardownInProgress = false;
 
     logBatteryDebugState(index, "[DBG after cleanup]");
 }
@@ -937,6 +970,7 @@ static bool connectBattery(int index) {
     if (battery.advertisedDevice == nullptr) {
         Serial.printf("[DBG] [%s] connect skipped: no advertisedDevice\n", batteryConfigs[index].name);
         battery.nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+        battery.reconnectQuarantineUntilMs = battery.nextReconnectMs;
         return false;
     }
 
@@ -1008,6 +1042,8 @@ static bool connectBattery(int index) {
     battery.requestInFlight = false;
     battery.requestDeadlineMs = 0;
     battery.lastRequestMs = millis() - REQUEST_INTERVAL_MS;
+    battery.nextReconnectMs = 0;
+    battery.reconnectQuarantineUntilMs = 0;
 
     if (battery.connected) {
         Serial.printf("[%s] ready: connected + notifications registered\n", batteryConfigs[index].name);
@@ -1058,7 +1094,8 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
             releaseActivePollingBattery(index);
             logBatteryDebugState(index, "[DBG timeout]");
             cleanupBatteryClient(index);
-            battery.nextReconnectMs = millis() + TIMEOUT_RECOVERY_DELAY_MS;
+            battery.reconnectQuarantineUntilMs = millis() + TIMEOUT_RECOVERY_DELAY_MS;
+            battery.nextReconnectMs = battery.reconnectQuarantineUntilMs;
             Serial.printf("[DBG] [%s] timeout recovery generation=%lu reconnectIn=%u\n",
                           batteryConfigs[index].name,
                           (unsigned long)timedOutGeneration,
@@ -1124,6 +1161,13 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
 static bool reconnectBattery(int index) {
     if (isBatteryConnected(index)) return true;
 
+    unsigned long nowMs = millis();
+    if ((int32_t)(nowMs - reconnectSerializedUntilMs) < 0) return false;
+    if (activeReconnectBattery != -1 && activeReconnectBattery != index) return false;
+
+    activeReconnectBattery = index;
+    bool ok = false;
+
     Serial.printf("[%s] reconnect attempt\n", batteryConfigs[index].name);
     logBatteryDebugState(index, "[DBG before reconnect]");
 
@@ -1131,20 +1175,32 @@ static bool reconnectBattery(int index) {
         if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
             Serial.printf("[%s] not seen during reconnect scan\n", batteryConfigs[index].name);
             batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
-            return false;
+            batteries[index].reconnectQuarantineUntilMs = batteries[index].nextReconnectMs;
+            goto done;
         }
     }
 
-    if (connectBattery(index)) return true;
+    if (connectBattery(index)) {
+        ok = true;
+        goto done;
+    }
 
     if (!scanForBattery(index, RECONNECT_SCAN_TIMEOUT_MS)) {
         Serial.printf("[%s] rediscovery failed\n", batteryConfigs[index].name);
         batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
-        return false;
+        batteries[index].reconnectQuarantineUntilMs = batteries[index].nextReconnectMs;
+        goto done;
     }
 
-    bool ok = connectBattery(index);
-    if (!ok) batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+    ok = connectBattery(index);
+    if (!ok) {
+        batteries[index].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+        batteries[index].reconnectQuarantineUntilMs = batteries[index].nextReconnectMs;
+    }
+
+done:
+    activeReconnectBattery = -1;
+    reconnectSerializedUntilMs = millis() + RECONNECT_SERIAL_GAP_MS;
     return ok;
 }
 
@@ -1938,11 +1994,13 @@ static void handleSetBatteryEnabled() {
             clearAdvertisedDevice(index);
             // Request immediate reconnect for newly-enabled batteries.
             batteries[index].nextReconnectMs = millis();
+            batteries[index].reconnectQuarantineUntilMs = 0;
         } else {
             cleanupBatteryClient(index);
             batteries[index].seen = false;
             // Disabled batteries should not be scheduled for reconnect.
             batteries[index].nextReconnectMs = 0;
+            batteries[index].reconnectQuarantineUntilMs = 0;
             clearAdvertisedDevice(index);
         }
         persistEnabledConfigToNvs();
@@ -2118,12 +2176,16 @@ void setup() {
         if (!batteries[i].seen) {
             Serial.printf("[%s] startup connect skipped (not discovered)\n", batteryConfigs[i].name);
             batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+            batteries[i].reconnectQuarantineUntilMs = batteries[i].nextReconnectMs;
             continue;
         }
 
         bool ok = connectBattery(i);
         Serial.printf("[%s] startup connect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
-        if (!ok) batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+        if (!ok) {
+            batteries[i].nextReconnectMs = millis() + RECONNECT_INTERVAL_MS;
+            batteries[i].reconnectQuarantineUntilMs = batteries[i].nextReconnectMs;
+        }
     }
 
     aggregate = buildAggregateSnapshot(millis());
