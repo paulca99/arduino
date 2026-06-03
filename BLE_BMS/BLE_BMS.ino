@@ -256,6 +256,7 @@ static bool configPrefsReady = false;
 static const char* BMS_CFG_NAMESPACE = "bms_cfg";
 static const char* BMS_ENABLED_MASK_KEY = "enabled_mask";
 static const int ENABLED_MASK_BITS = 32;
+static portMUX_TYPE activePollingBatteryMux = portMUX_INITIALIZER_UNLOCKED;
 static int activePollingBattery = -1;
 
 WebServer server(80);
@@ -413,10 +414,29 @@ static int connectedBatteryCount() {
     return count;
 }
 
+static int readActivePollingBattery() {
+    portENTER_CRITICAL(&activePollingBatteryMux);
+    int activeIndex = activePollingBattery;
+    portEXIT_CRITICAL(&activePollingBatteryMux);
+    return activeIndex;
+}
+
+static bool claimActivePollingBattery(int index) {
+    portENTER_CRITICAL(&activePollingBatteryMux);
+    if (activePollingBattery == -1) {
+        activePollingBattery = index;
+    }
+    bool claimed = activePollingBattery == index;
+    portEXIT_CRITICAL(&activePollingBatteryMux);
+    return claimed;
+}
+
 static void releaseActivePollingBattery(int index) {
+    portENTER_CRITICAL(&activePollingBatteryMux);
     if (activePollingBattery == index) {
         activePollingBattery = -1;
     }
+    portEXIT_CRITICAL(&activePollingBatteryMux);
 }
 
 static void logBatteryDebugState(int index, const char* prefix) {
@@ -962,10 +982,7 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
         return;
     }
 
-    if (activePollingBattery == -1) {
-        activePollingBattery = index;
-    }
-    if (activePollingBattery != index) return;
+    if (!claimActivePollingBattery(index)) return;
 
     if (battery.requestInFlight) {
         if (hasDeadlinePassed(battery.requestDeadlineMs)) {
@@ -2077,7 +2094,7 @@ void loop() {
 
         if (isBatteryConnected(i)) {
             serviceBatteryPolling(i, now);
-        } else if (activePollingBattery == -1 && shouldAttemptReconnect(i, now)) {
+        } else if (readActivePollingBattery() == -1 && shouldAttemptReconnect(i, now)) {
             bool ok = reconnectBattery(i);
             Serial.printf("[%s] reconnect %s\n", batteryConfigs[i].name, ok ? "OK" : "FAIL");
         }
