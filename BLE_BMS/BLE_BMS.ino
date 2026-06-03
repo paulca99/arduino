@@ -72,7 +72,9 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
 #define CONNECT_DELAY_MS            100
-#define REQUEST_DELAY_MS            150
+#define REQUEST_DELAY_MS            300
+// Brief drain between disconnect() and delete client -- matches WORKING_BMS_BLE_PERSISTENT.
+#define DISCONNECT_CLEANUP_DELAY_MS  50
 #define REQUEST_INTERVAL_MS        2000
 #define RESPONSE_TIMEOUT_MS        1200
 // Hold reconnect attempts after a timeout long enough for BLE stack disconnect
@@ -398,14 +400,6 @@ static bool isBatteryConnected(int index) {
            battery.tx != nullptr;
 }
 
-static bool anyBatteryRequestInFlight() {
-    for (int i = 0; i < BATTERY_COUNT; i++) {
-        if (!batteryConfigs[i].enabled) continue;
-        if (batteries[i].requestInFlight) return true;
-    }
-    return false;
-}
-
 static bool beginBleLifecycleOperation(int ownerIndex) {
     bool acquired = false;
     portENTER_CRITICAL(&bleLifecycleMux);
@@ -460,8 +454,9 @@ static bool isBleLifecycleOperationActive() {
 static bool isBleSubsystemIdle() {
     if (isBleLifecycleOperationActive()) return false;
     if (activeReconnectBattery != -1) return false;
+    // activePollingBattery is claimed exactly while requestInFlight is true for
+    // that battery, so this single check subsumes anyBatteryRequestInFlight().
     if (readActivePollingBattery() != -1) return false;
-    if (anyBatteryRequestInFlight()) return false;
     return true;
 }
 
@@ -938,14 +933,10 @@ static ClientCallbacks clientCallbacks;
 static DiscoveryCallbacks discoveryCallbacks;
 
 static void cleanupBatteryClient(int index) {
-    BleLifecycleScope bleScope(index);
-    if (!bleScope.ok()) {
-        Serial.printf("[DBG] cleanupBatteryClient skipped [%s] BLE lifecycle busy\n", batteryConfigs[index].name);
-        return;
-    }
-
     BatteryState& battery = batteries[index];
 
+    // Guard against re-entrant teardown (onDisconnect fires from BLE task while
+    // we are already running cleanup on the Arduino task).
     if (battery.teardownInProgress) {
         Serial.printf("[DBG] cleanupBatteryClient skipped [%s] teardown already running\n", batteryConfigs[index].name);
         return;
@@ -978,6 +969,10 @@ static void cleanupBatteryClient(int index) {
         if (battery.client->isConnected()) {
             Serial.printf("[DBG] [%s] before disconnect()\n", batteryConfigs[index].name);
             battery.client->disconnect();
+            // Brief settle delay after disconnect() before deleting the client
+            // object -- matches WORKING_BMS_BLE_PERSISTENT to give the BLE stack
+            // time to drain the disconnect event before the object is freed.
+            delay(DISCONNECT_CLEANUP_DELAY_MS);
             Serial.printf("[DBG] [%s] after disconnect()\n", batteryConfigs[index].name);
         }
         delete battery.client;
@@ -1167,20 +1162,16 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
     static uint8_t cmd4[7] = {0xDD, 0xA5, 0x04, 0x00, 0xFF, 0xFC, 0x77};
 
     if (!isBatteryConnected(index)) return;
-    if (isBleLifecycleOperationActive()) return;
 
     BatteryState& battery = batteries[index];
     bool readyFor04 = battery.requestStage == REQUEST_STAGE_READY_04;
     bool readyFor03 = battery.requestStage == REQUEST_STAGE_IDLE &&
                       (nowMs - battery.lastRequestMs) >= REQUEST_INTERVAL_MS;
 
-    if (!battery.requestInFlight && !readyFor04 && !readyFor03) {
-        releaseActivePollingBattery(index);
-        return;
-    }
-
-    if (!claimActivePollingBattery(index)) return;
-
+    // Always evaluate a timeout even when another battery's lifecycle op is active.
+    // The timeout path must run to release activePollingBattery and un-stick the
+    // system -- matching the sequential discipline of WORKING_BMS_BLE_PERSISTENT
+    // where cleanup is never deferred.
     if (battery.requestInFlight) {
         if (hasDeadlinePassed(battery.requestDeadlineMs)) {
             uint32_t timedOutGeneration = battery.activeRequestGeneration;
@@ -1213,6 +1204,18 @@ static void serviceBatteryPolling(int index, unsigned long nowMs) {
         }
         return;
     }
+
+    // Do not issue new BLE commands while any lifecycle op (connect/scan/cleanup)
+    // is in progress for any battery.  This preserves the sequential discipline of
+    // WORKING_BMS_BLE_PERSISTENT without blocking timeout detection above.
+    if (isBleLifecycleOperationActive()) return;
+
+    if (!readyFor04 && !readyFor03) {
+        releaseActivePollingBattery(index);
+        return;
+    }
+
+    if (!claimActivePollingBattery(index)) return;
 
     uint8_t* cmd = cmd3;
     size_t cmdLen = sizeof(cmd3);
