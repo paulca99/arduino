@@ -72,6 +72,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
 #define CONNECT_DELAY_MS            100
+// Post-registerForNotify settle time; matches WORKING_BMS_BLE_PERSISTENT.
 #define REQUEST_DELAY_MS            300
 // Brief drain between disconnect() and delete client -- matches WORKING_BMS_BLE_PERSISTENT.
 #define DISCONNECT_CLEANUP_DELAY_MS  50
@@ -454,8 +455,8 @@ static bool isBleLifecycleOperationActive() {
 static bool isBleSubsystemIdle() {
     if (isBleLifecycleOperationActive()) return false;
     if (activeReconnectBattery != -1) return false;
-    // activePollingBattery is claimed exactly while requestInFlight is true for
-    // that battery, so this single check subsumes anyBatteryRequestInFlight().
+    // activePollingBattery is claimed for the entire duration a request is in
+    // flight, so this check subsumes a separate anyBatteryRequestInFlight() scan.
     if (readActivePollingBattery() != -1) return false;
     return true;
 }
@@ -935,8 +936,11 @@ static DiscoveryCallbacks discoveryCallbacks;
 static void cleanupBatteryClient(int index) {
     BatteryState& battery = batteries[index];
 
-    // Guard against re-entrant teardown (onDisconnect fires from BLE task while
-    // we are already running cleanup on the Arduino task).
+    // teardownInProgress is the sole re-entry guard now that the BleLifecycleScope
+    // gate has been removed.  The lifecycle scope was removed because it silently
+    // no-oped when another battery's scope was held, leaving this battery in an
+    // inconsistent half-connected state.  teardownInProgress is still needed to
+    // gate against the onDisconnect BLE-task callback firing concurrently.
     if (battery.teardownInProgress) {
         Serial.printf("[DBG] cleanupBatteryClient skipped [%s] teardown already running\n", batteryConfigs[index].name);
         return;
