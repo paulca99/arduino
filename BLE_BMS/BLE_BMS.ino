@@ -30,18 +30,11 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define HEARTBEAT_INTERVAL_MS     1000
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
 #define DATA_FRESH_MS            15000UL
-// Operational safety valve: reboot every 4 hours to recover from long-lived
-// BLE/Wi-Fi stack wedging. Adjust this single constant in code if needed.
-#define MS_PER_HOUR                3600000UL
-#define PERIODIC_REBOOT_INTERVAL_MS (4UL * MS_PER_HOUR)
 #define LOG_HISTORY_LINES             120
 #define LOG_LINE_MAX_CHARS            160
 #define LOG_PRINTF_BUFFER             320
 #define CONFIG_NAMESPACE           "bms_cfg"
 #define CONFIG_KEY_ENABLED_MASK "enabled_mask"
-#define CONFIG_KEY_REBOOT_REASON "reboot_reason"
-#define CONFIG_KEY_REBOOT_UPTIME "reboot_uptime"
-#define CONFIG_KEY_REBOOT_AT_MS  "reboot_at_ms"
 
 #define WIFI_SSID           "TP-LINK_73F3"
 #define WIFI_PASSWORD_UPPER "DEADBEEF"
@@ -273,10 +266,6 @@ static char logCurrentLine[LOG_LINE_MAX_CHARS];
 static uint16_t logCurrentLen = 0;
 static portMUX_TYPE logBufferMux = portMUX_INITIALIZER_UNLOCKED;
 
-static char lastPersistedRebootReason[32] = "";
-static unsigned long lastPersistedRebootUptimeMs = 0;
-static unsigned long lastPersistedRebootAtMs = 0;
-static bool lastPersistedRebootPresent = false;
 static unsigned long bootStartMs = 0;
 
 static BLEScan* pBLEScan = nullptr;
@@ -287,7 +276,6 @@ HardwareSerial RS485(2);
 static HardwareSerial& BaseSerial = Serial;
 
 static void appendLogText(const char* text);
-static const char* REBOOT_REASON_PERIODIC = "periodic_interval";
 
 class LoggedSerialProxy {
 public:
@@ -382,10 +370,6 @@ static const char* resetReasonToString(esp_reset_reason_t reason);
 static void loadBatteryEnabledConfig();
 static bool persistBatteryEnabledConfig();
 static bool setBatteryEnabled(int index, bool enabled);
-static void loadPersistedRebootInfo();
-static void rememberPendingReboot(const char* reason, unsigned long nowMs);
-static void clearPendingRebootInfo();
-static void servicePeriodicReboot(unsigned long nowMs);
 static bool isBatteryContributing(int index, unsigned long nowMs);
 static bool tryParseBatteryIndex(const String& input, int& index);
 static void handleBatteryToggle();
@@ -1390,42 +1374,6 @@ static bool setBatteryEnabled(int index, bool enabled) {
     return true;
 }
 
-static void loadPersistedRebootInfo() {
-    lastPersistedRebootPresent = false;
-    lastPersistedRebootReason[0] = '\0';
-    lastPersistedRebootUptimeMs = 0;
-    lastPersistedRebootAtMs = 0;
-
-    if (!prefsReady) return;
-    if (!configPrefs.isKey(CONFIG_KEY_REBOOT_REASON)) return;
-
-    String reason = configPrefs.getString(CONFIG_KEY_REBOOT_REASON, "");
-    if (reason.length() == 0) {
-        clearPendingRebootInfo();
-        return;
-    }
-
-    reason.toCharArray(lastPersistedRebootReason, sizeof(lastPersistedRebootReason));
-    lastPersistedRebootUptimeMs = configPrefs.getULong(CONFIG_KEY_REBOOT_UPTIME, 0);
-    lastPersistedRebootAtMs = configPrefs.getULong(CONFIG_KEY_REBOOT_AT_MS, 0);
-    lastPersistedRebootPresent = true;
-    clearPendingRebootInfo();
-}
-
-static void rememberPendingReboot(const char* reason, unsigned long nowMs) {
-    if (!prefsReady || reason == nullptr) return;
-    configPrefs.putString(CONFIG_KEY_REBOOT_REASON, reason);
-    configPrefs.putULong(CONFIG_KEY_REBOOT_UPTIME, nowMs);
-    configPrefs.putULong(CONFIG_KEY_REBOOT_AT_MS, nowMs);
-}
-
-static void clearPendingRebootInfo() {
-    if (!prefsReady) return;
-    configPrefs.remove(CONFIG_KEY_REBOOT_REASON);
-    configPrefs.remove(CONFIG_KEY_REBOOT_UPTIME);
-    configPrefs.remove(CONFIG_KEY_REBOOT_AT_MS);
-}
-
 static bool isBatteryContributing(int index, unsigned long nowMs) {
     if (!isBatteryEnabled(index)) return false;
     const BatteryState& battery = batteries[index];
@@ -1446,20 +1394,6 @@ static bool tryParseBatteryIndex(const String& input, int& index) {
 
     index = (int)parsed;
     return true;
-}
-
-static void servicePeriodicReboot(unsigned long nowMs) {
-    if (PERIODIC_REBOOT_INTERVAL_MS == 0) return;
-    unsigned long uptimeMs = nowMs - bootStartMs;
-    if (uptimeMs < PERIODIC_REBOOT_INTERVAL_MS) return;
-
-    LogSerial.printf("[SYSTEM] periodic reboot due after %lu ms uptime (interval=%lu ms)\n",
-                  uptimeMs,
-                  (unsigned long)PERIODIC_REBOOT_INTERVAL_MS);
-    rememberPendingReboot(REBOOT_REASON_PERIODIC, uptimeMs);
-    LogSerial.flush();
-    delay(50);
-    ESP.restart();
 }
 
 static RegisterValue getSolisRegisterValue(const SolisState& state, uint16_t docReg) {
@@ -1838,28 +1772,9 @@ static String buildStatusJson() {
     json += String(enabledBatteryCount());
     json += ",\"connectedBatteryCount\":";
     json += String(connectedBatteryCount());
-    json += ",\"periodicRebootIntervalMs\":";
-    json += String((unsigned long)PERIODIC_REBOOT_INTERVAL_MS);
-    json += ",\"nextPeriodicRebootInMs\":";
-    json += (PERIODIC_REBOOT_INTERVAL_MS == 0 || uptimeMs >= PERIODIC_REBOOT_INTERVAL_MS)
-          ? String(0)
-          : String((unsigned long)(PERIODIC_REBOOT_INTERVAL_MS - uptimeMs));
     json += ",\"resetReason\":\"";
     json += resetReasonToString(esp_reset_reason());
     json += "\"";
-    json += ",\"lastRequestedReboot\":";
-    if (lastPersistedRebootPresent) {
-        json += "{";
-        json += "\"reason\":\"";
-        json += jsonEscape(String(lastPersistedRebootReason));
-        json += "\",\"uptimeMs\":";
-        json += String(lastPersistedRebootUptimeMs);
-        json += ",\"recordedUptimeMs\":";
-        json += String(lastPersistedRebootAtMs);
-        json += "}";
-    } else {
-        json += "null";
-    }
     json += ",\"aggregate\":{";
     json += "\"valid\":";
     json += jsonBool(snap.valid);
@@ -2091,19 +2006,6 @@ static void handleLogsApi() {
     json += ",\"resetReason\":\"";
     json += resetReasonToString(esp_reset_reason());
     json += "\"";
-    json += ",\"lastRequestedReboot\":";
-    if (lastPersistedRebootPresent) {
-        json += "{";
-        json += "\"reason\":\"";
-        json += jsonEscape(String(lastPersistedRebootReason));
-        json += "\",\"uptimeMs\":";
-        json += String(lastPersistedRebootUptimeMs);
-        json += ",\"recordedUptimeMs\":";
-        json += String(lastPersistedRebootAtMs);
-        json += "}";
-    } else {
-        json += "null";
-    }
     json += ",\"lines\":[";
     for (uint16_t i = 0; i < lineCount; i++) {
         char line[LOG_LINE_MAX_CHARS];
@@ -2144,10 +2046,6 @@ static void handleLogs() {
     sendCard("Captured lines", String(lineCount));
     sendCard("Reset reason", String(resetReasonToString(esp_reset_reason())));
     sendCard("Uptime", String(uptimeMs / 1000UL) + " s");
-    if (lastPersistedRebootPresent) {
-        sendCard("Previous requested reboot",
-                 String(lastPersistedRebootReason) + " @ " + String(lastPersistedRebootUptimeMs / 1000UL) + " s");
-    }
     server.sendContent(F("</div><pre class='mono'>"));
     for (uint16_t i = 0; i < lineCount; i++) {
         char line[LOG_LINE_MAX_CHARS];
@@ -2185,7 +2083,6 @@ static void handleBatteryToggle() {
 
 static void handleRoot() {
     unsigned long now = millis();
-    unsigned long uptimeMs = now - bootStartMs;
     AggregateSnapshot snap = buildAggregateSnapshot(now);
 
     LogSerial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
@@ -2216,12 +2113,6 @@ static void handleRoot() {
     server.sendContent(F("<div class='grid'>"));
     sendCard("Enabled Batteries", String(enabledBatteryCount()));
     sendCard("Connected Batteries", String(connectedBatteryCount()));
-    sendCard("Periodic reboot", PERIODIC_REBOOT_INTERVAL_MS == 0 ? String("disabled")
-                                                                : String(PERIODIC_REBOOT_INTERVAL_MS / MS_PER_HOUR) + " h");
-    sendCard("Next reboot", PERIODIC_REBOOT_INTERVAL_MS == 0 ? String("n/a")
-                                                            : (uptimeMs >= PERIODIC_REBOOT_INTERVAL_MS
-                                                                   ? String("due")
-                                                                   : String((PERIODIC_REBOOT_INTERVAL_MS - uptimeMs) / 60000UL) + " min"));
 
     if (snap.valid) {
         sendCard("Aggregate Voltage", String(snap.voltage, 2) + " V");
@@ -2232,9 +2123,6 @@ static void handleRoot() {
         sendCard("Last Fresh Data", String((now - snap.lastFreshMs) / 1000UL) + " s ago");
     } else {
         sendCard("Aggregate", "No fresh data", "amber");
-    }
-    if (lastPersistedRebootPresent) {
-        sendCard("Prev reboot", String(lastPersistedRebootReason) + " @ " + String(lastPersistedRebootUptimeMs / 1000UL) + " s");
     }
 
     server.sendContent(F("</div>"));
@@ -2430,18 +2318,11 @@ void setup() {
     if (prefsReady) {
         LogSerial.printf("Preferences namespace '%s' ready\n", CONFIG_NAMESPACE);
         loadBatteryEnabledConfig();
-        loadPersistedRebootInfo();
     } else {
         LogSerial.printf("Failed to open Preferences namespace '%s'; using sketch defaults only\n", CONFIG_NAMESPACE);
     }
 
     LogSerial.printf("Reset reason: %s\n", resetReasonToString(esp_reset_reason()));
-    if (lastPersistedRebootPresent) {
-        LogSerial.printf("Previous requested reboot: %s after %lu ms uptime (recorded at %lu ms)\n",
-                      lastPersistedRebootReason,
-                      lastPersistedRebootUptimeMs,
-                      lastPersistedRebootAtMs);
-    }
 
     setupCAN();
 
@@ -2582,8 +2463,6 @@ void loop() {
         lastLog = now;
         logBMSData();
     }
-
-    servicePeriodicReboot(now);
 
     delay(5);
 }
