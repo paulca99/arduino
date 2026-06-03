@@ -79,6 +79,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BLE_SCAN_INTERVAL_UNITS    1349
 #define BLE_SCAN_WINDOW_UNITS       449
 #define CONNECT_DELAY_MS            100
+#define SERVICE_DISCOVERY_DELAY_MS  300
 #define REQUEST_DELAY_MS            150
 #define REQUEST_INTERVAL_MS        2000
 #define RESPONSE_TIMEOUT_MS        1200
@@ -1030,6 +1031,18 @@ static bool connectBattery(int index) {
 
     if (!connectOk) {
         LogSerial.printf("[%s] connect() failed\n", batteryConfigs[index].name);
+        cleanupBatteryClient(index);
+        return false;
+    }
+
+    LogSerial.printf("[DBG] [%s] post-connect settle %u ms before getService()\n",
+                  batteryConfigs[index].name,
+                  (unsigned)SERVICE_DISCOVERY_DELAY_MS);
+    delay(SERVICE_DISCOVERY_DELAY_MS);
+    if (wifiReady) server.handleClient();
+
+    if (!battery.client->isConnected()) {
+        LogSerial.printf("[%s] disconnected before service discovery\n", batteryConfigs[index].name);
         cleanupBatteryClient(index);
         return false;
     }
