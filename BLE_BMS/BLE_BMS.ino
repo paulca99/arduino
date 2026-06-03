@@ -267,13 +267,15 @@ static Preferences configPrefs;
 static bool configPrefsReady = false;
 static int activeReconnectBattery = -1;
 static unsigned long reconnectSerializedUntilMs = 0;
+static const int BLE_LIFECYCLE_OWNER_IDLE = -1;
+static const int BLE_LIFECYCLE_OWNER_SCAN = -2;
 static const char* BMS_CFG_NAMESPACE = "bms_cfg";
 static const char* BMS_ENABLED_MASK_KEY = "enabled_mask";
 static const int ENABLED_MASK_BITS = 32;
 static portMUX_TYPE activePollingBatteryMux = portMUX_INITIALIZER_UNLOCKED;
 static int activePollingBattery = -1;
 static portMUX_TYPE bleLifecycleMux = portMUX_INITIALIZER_UNLOCKED;
-static int bleLifecycleOwner = -1;
+static int bleLifecycleOwner = BLE_LIFECYCLE_OWNER_IDLE;
 static uint32_t bleLifecycleDepth = 0;
 
 WebServer server(80);
@@ -424,7 +426,7 @@ static void endBleLifecycleOperation(int ownerIndex) {
     if (bleLifecycleDepth > 0 && bleLifecycleOwner == ownerIndex) {
         bleLifecycleDepth--;
         if (bleLifecycleDepth == 0) {
-            bleLifecycleOwner = -1;
+            bleLifecycleOwner = BLE_LIFECYCLE_OWNER_IDLE;
         }
     }
     portEXIT_CRITICAL(&bleLifecycleMux);
@@ -437,6 +439,10 @@ public:
     ~BleLifecycleScope() {
         if (active) endBleLifecycleOperation(owner);
     }
+    BleLifecycleScope(const BleLifecycleScope&) = delete;
+    BleLifecycleScope& operator=(const BleLifecycleScope&) = delete;
+    BleLifecycleScope(BleLifecycleScope&&) = delete;
+    BleLifecycleScope& operator=(BleLifecycleScope&&) = delete;
     bool ok() const { return active; }
 
 private:
@@ -983,7 +989,7 @@ static void cleanupBatteryClient(int index) {
 }
 
 static bool scanForAllEnabledBatteries(unsigned long timeoutMs) {
-    BleLifecycleScope bleScope(-1);
+    BleLifecycleScope bleScope(BLE_LIFECYCLE_OWNER_SCAN);
     if (!bleScope.ok()) {
         Serial.println("[DBG] scanForAllEnabledBatteries skipped: BLE lifecycle busy");
         return false;
