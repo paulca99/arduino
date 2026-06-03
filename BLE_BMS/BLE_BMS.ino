@@ -373,12 +373,10 @@ public:
 
         if (len >= (int)sizeof(buffer)) len = sizeof(buffer) - 1;
 
-        if (shouldSuppressLogLine(buffer)) {
-            return 0;
-        }
-
         BaseSerial.print(buffer);
-        appendLogText(buffer);
+        if (!shouldSuppressLogLine(buffer)) {
+            appendLogText(buffer);
+        }
         return static_cast<size_t>(len);
     }
 };
@@ -1049,7 +1047,9 @@ static bool connectBattery(int index) {
     delay(CONNECT_DELAY_MS);
 
     LogSerial.printf("[DBG] [%s] before connect()\n", batteryConfigs[index].name);
+    LogSerial.printf("[%s] BLE connect() starting...\n", batteryConfigs[index].name);
     bool connectOk = battery.client->connect(battery.advertisedDevice);
+    LogSerial.printf("[%s] BLE connect() returned %s\n", batteryConfigs[index].name, connectOk ? "OK" : "FAIL");
     LogSerial.printf("[DBG] [%s] after connect() => %s\n", batteryConfigs[index].name, connectOk ? "OK" : "FAIL");
 
     if (!connectOk) {
@@ -1071,7 +1071,9 @@ static bool connectBattery(int index) {
     }
 
     LogSerial.printf("[DBG] [%s] before getService()\n", batteryConfigs[index].name);
+    LogSerial.printf("[%s] getService() starting...\n", batteryConfigs[index].name);
     battery.service = battery.client->getService(serviceUUID);
+    LogSerial.printf("[%s] getService() returned %s\n", batteryConfigs[index].name, battery.service ? "found" : "null");
     LogSerial.printf("[DBG] [%s] after getService() service=%p\n", batteryConfigs[index].name, battery.service);
 
     if (battery.service == nullptr) {
