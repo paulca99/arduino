@@ -1565,11 +1565,11 @@ static void handleInverter() {
     unsigned long webStart = millis();
     webLogRequest("/inverter");
 
-    unsigned long now = webStart;
+    unsigned long snapshotMs = webStart;
     SolisState snapshot = {};
     copySolisSnapshot(snapshot);
 
-    unsigned long ageMs = snapshot.lastSuccessMs == 0 ? 0 : (now - snapshot.lastSuccessMs);
+    unsigned long ageMs = snapshot.lastSuccessMs == 0 ? 0 : (snapshotMs - snapshot.lastSuccessMs);
     bool stale = snapshot.lastSuccessMs == 0 || ageMs > (SOLIS_POLL_INTERVAL_MS * SOLIS_STALE_POLL_MULTIPLIER);
 
     String batteryDirection = "unknown";
