@@ -1565,7 +1565,6 @@ static void handleInverter() {
     server.sendContent(F("<!DOCTYPE html><html><head>"
                          "<meta charset='UTF-8'>"
                          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                         "<meta http-equiv='refresh' content='5'>"
                          "<title>Solis inverter monitor</title>"
                          "<style>"
                          "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
@@ -1600,26 +1599,8 @@ static void handleInverter() {
     sendCard("PV total power",
              (havePv1Power && havePv2Power) ? (String(pv1PowerW + pv2PowerW, 1) + " W") : String("--"));
     server.sendContent(F("</div>"));
-
-    server.sendContent(F("<h2>Register snapshot</h2><table><tr>"
-                         "<th>Label</th><th>Register</th><th>Display</th><th>Raw</th><th>Signed</th><th>Notes</th>"
-                         "</tr>"));
-    for (size_t i = 0; i < SOLIS_REGISTER_INFO_COUNT; i++) {
-        const SolisRegisterInfo& info = SOLIS_REGISTER_INFOS[i];
-        RegisterValue regValue = getSolisRegisterValue(snapshot, info.reg);
-
-        String row;
-        row.reserve(320);
-        row = "<tr><td>" + htmlEscape(String(info.label)) +
-              "</td><td class='mono'>" + String(info.reg) +
-              "</td><td>" + htmlEscape(formatSolisRegisterDisplay(info.reg, regValue)) +
-              "</td><td>" + (regValue.valid ? String(regValue.raw) : String("--")) +
-              "</td><td>" + (regValue.valid ? String(static_cast<int16_t>(regValue.raw)) : String("--")) +
-              "</td><td>" + htmlEscape(String(info.note)) + "</td></tr>";
-        server.sendContent(row);
-    }
-    server.sendContent(F("</table>"));
-    server.sendContent(F("<p>JSON endpoints: <a href='/api/inverter'>/api/inverter</a> · <a href='/api/solis'>/api/solis</a></p>"));
+    server.sendContent(F("<p>Detailed register data is available in JSON: "
+                         "<a href='/api/inverter'>/api/inverter</a> and <a href='/api/solis'>/api/solis</a>.</p>"));
     server.sendContent(F("</body></html>"));
     server.sendContent("");
 }
@@ -1640,76 +1621,36 @@ static void handleRoot() {
     server.sendContent(F("<!DOCTYPE html><html><head>"
                          "<meta charset='UTF-8'>"
                          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                         "<meta http-equiv='refresh' content='5'>"
                          "<title>BMS Multi-Battery Monitor</title>"
                          "<style>"
                          "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
                          "h1{color:#e0c97f;margin-bottom:4px}h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px}"
-                         "table{width:100%;border-collapse:collapse}th,td{padding:8px 10px;text-align:center;border-bottom:1px solid #2a2a4a}"
-                         "th{background:#16213e;color:#a0b4cc}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}"
+                         ".summary{margin:12px 0;padding:12px;background:#16213e;border-radius:8px;line-height:1.6}"
                          ".card{background:#16213e;border-radius:8px;padding:12px;text-align:center}.card .label{font-size:0.75em;color:#8899aa;margin-bottom:4px}"
                          ".card .value{font-size:1.4em;font-weight:bold}.green{color:#4caf50}.amber{color:#ff9800}.red{color:#f44336}.mono{font-family:monospace}"
+                         "a{color:#8ec5ff}"
                          "</style></head><body><h1>Battery BMS (Persistent BLE)</h1>"));
 
-    server.sendContent(F("<div class='grid'>"));
-    sendCard("Enabled Batteries", String(enabledBatteryCount()));
-    sendCard("Connected Batteries", String(connectedBatteryCount()));
-
+    server.sendContent(F("<div class='summary'>"));
+    server.sendContent(String("<div><b>Enabled batteries:</b> ") + String(enabledBatteryCount()) + "</div>");
+    server.sendContent(String("<div><b>Connected batteries:</b> ") + String(connectedBatteryCount()) + "</div>");
     if (snap.valid) {
-        sendCard("Aggregate Voltage", String(snap.voltage, 2) + " V");
-        sendCard("Aggregate Current", String(snap.current, 2) + " A");
-        sendCard("Aggregate SoC", String(snap.soc) + " %");
-        sendCard("Aggregate Temp", snap.hasTemperature ? (String(snap.temperature, 1) + " C") : String("n/a"));
-        sendCard("Fresh Batteries", String(snap.contributingBatteries));
-        sendCard("Last Fresh Data", String((now - snap.lastFreshMs) / 1000UL) + " s ago");
+        server.sendContent(String("<div><b>Aggregate voltage:</b> ") + String(snap.voltage, 2) + " V</div>");
+        server.sendContent(String("<div><b>Aggregate current:</b> ") + String(snap.current, 2) + " A</div>");
+        server.sendContent(String("<div><b>Aggregate SoC:</b> ") + String(snap.soc) + " %</div>");
+        server.sendContent(String("<div><b>Aggregate temperature:</b> ") +
+                          (snap.hasTemperature ? (String(snap.temperature, 1) + " C") : String("n/a")) + "</div>");
+        server.sendContent(String("<div><b>Fresh batteries:</b> ") + String(snap.contributingBatteries) + "</div>");
+        server.sendContent(String("<div><b>Last fresh data:</b> ") + String((now - snap.lastFreshMs) / 1000UL) + " s ago</div>");
     } else {
-        sendCard("Aggregate", "No fresh data", "amber");
+        server.sendContent(F("<div><b>Aggregate:</b> No fresh data</div>"));
     }
-
     server.sendContent(F("</div>"));
-
-    server.sendContent(F("<h2>Per-battery status</h2><table><tr>"
-                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Action</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
-                         "</tr>"));
-
-    for (int i = 0; i < BATTERY_COUNT; i++) {
-        const BatteryConfig& cfg = batteryConfigs[i];
-        const BatteryState& battery = batteries[i];
-
-        String age = battery.lastGoodDataMs == 0
-                   ? "-"
-                   : String((now - battery.lastGoodDataMs) / 1000UL);
-        uint8_t minCellIndex = 0;
-        uint8_t maxCellIndex = 0;
-        uint16_t minCellMv = 0;
-        uint16_t maxCellMv = 0;
-        bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
-        String batteryLink = "<a href='/battery?index=" + String(i) + "'>" + htmlEscape(String(cfg.name)) + "</a>";
-
-        String row;
-        row.reserve(512);
-        String action = String("<form method='POST' action='/battery/enabled' style='margin:0'>") +
-                       "<input type='hidden' name='index' value='" + String(i) + "'>" +
-                       "<input type='hidden' name='enabled' value='" + String(cfg.enabled ? "0" : "1") + "'>" +
-                       "<button type='submit'>" + String(cfg.enabled ? "Disable" : "Enable") + "</button></form>";
-        row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
-                     String(cfg.enabled ? "yes" : "no") + "</td><td>" + action + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
-                      "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
-                      "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
-                      "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
-                      "</td><td>" + (battery.hasTemperature ? String(battery.temperature, 1) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(minCellMv / 1000.0f, 3) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(minCellIndex + 1) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(maxCellMv / 1000.0f, 3) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(maxCellIndex + 1) : String("-")) +
-                      "</td><td>" + age +
-                      "</td><td>" + String(battery.disconnectCount) + "</td></tr>";
-
-        server.sendContent(row);
-    }
-
-    server.sendContent(F("</table><p><a href='/inverter'>Solis inverter monitor</a> · <a href='/api/inverter'>Inverter JSON</a></p>"
-                         "<p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
+    server.sendContent(F("<p>Detailed data endpoints: <a href='/api/inverter'>/api/inverter</a> · "
+                         "<a href='/api/solis'>/api/solis</a></p>"));
+    server.sendContent(F("<p>Optional HTML pages (manual refresh only): "
+                         "<a href='/inverter'>/inverter</a>, <a href='/battery?index=0'>/battery?index=0</a></p>"
+                         "</body></html>"));
     server.sendContent("");
 }
 
@@ -1750,7 +1691,6 @@ static void handleBatteryDetail() {
     server.sendContent(F("<!DOCTYPE html><html><head>"
                          "<meta charset='UTF-8'>"
                          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                         "<meta http-equiv='refresh' content='5'>"
                          "<title>Battery Cell Detail</title>"
                          "<style>"
                          "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
