@@ -39,9 +39,12 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define SOLIS_BLOCK_START_REG     33050
 #define SOLIS_BLOCK_END_REG       33142
 #define SOLIS_BLOCK_REG_COUNT        93
+#define SOLIS_MODBUS_HEADER_BYTES     3
+#define SOLIS_MODBUS_CRC_BYTES        2
+#define SOLIS_MODBUS_BYTES_PER_REG    2
 #define SOLIS_MUTEX_TIMEOUT_MS      100
 #define SOLIS_SLAVE_ID                1
-#define SOLIS_DIVISOR_EPSILON   1.0e-6f
+#define SOLIS_DIVISOR_ZERO_GUARD 1.0e-6f
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
 #else
@@ -154,6 +157,16 @@ struct SolisSnapshot {
     uint32_t lockTimeouts = 0;
 };
 
+static const uint16_t SOLIS_REG_PV1_VOLTAGE = 33050;
+static const uint16_t SOLIS_REG_PV1_CURRENT = 33051;
+static const uint16_t SOLIS_REG_PV2_VOLTAGE = 33052;
+static const uint16_t SOLIS_REG_PV2_CURRENT = 33053;
+static const uint16_t SOLIS_REG_GRID_POWER = 33132;
+static const uint16_t SOLIS_REG_BATTERY_CURRENT = 33135;
+static const uint16_t SOLIS_REG_BATTERY_DIRECTION = 33136;
+static const uint16_t SOLIS_REG_BATTERY_SOC = 33140;
+static const uint16_t SOLIS_REG_BATTERY_VOLTAGE = 33142;
+
 static BatteryState batteries[] = {
     {BMS1_NAME, BMS1_MAC, BMS1_ENABLED},
     {BMS2_NAME, BMS2_MAC, BMS2_ENABLED},
@@ -258,7 +271,7 @@ static bool tryGetSolisScaledValue(const SolisRegisterValue& regValue,
                                    float divisor,
                                    bool signedValue,
                                    float& value) {
-    if (!regValue.valid || fabsf(divisor) < SOLIS_DIVISOR_EPSILON) return false;
+    if (!regValue.valid || fabsf(divisor) < SOLIS_DIVISOR_ZERO_GUARD) return false;
 
     value = signedValue ? static_cast<float>(static_cast<int16_t>(regValue.raw)) / divisor
                         : static_cast<float>(regValue.raw) / divisor;
@@ -358,9 +371,13 @@ static void setSolisRegisterFromBlock(uint16_t docReg,
 }
 
 static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues) {
-    static uint8_t buf[3 + SOLIS_BLOCK_REG_COUNT * 2 + 2];
+    static uint8_t buf[SOLIS_MODBUS_HEADER_BYTES +
+                       (SOLIS_BLOCK_REG_COUNT * SOLIS_MODBUS_BYTES_PER_REG) +
+                       SOLIS_MODBUS_CRC_BYTES];
 
-    const int expectedLen = 3 + count * 2 + 2;
+    const int expectedLen = SOLIS_MODBUS_HEADER_BYTES +
+                            (count * SOLIS_MODBUS_BYTES_PER_REG) +
+                            SOLIS_MODBUS_CRC_BYTES;
     if (expectedLen > static_cast<int>(sizeof(buf))) return false;
 
     const uint16_t rawAddr = startDocReg - 1;
@@ -372,10 +389,10 @@ static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t coun
     if (len < expectedLen) return false;
     if (!validModbusCRC(buf, len)) return false;
     if (buf[0] != slave || buf[1] != 0x04) return false;
-    if (buf[2] != static_cast<uint8_t>(count * 2)) return false;
+    if (buf[2] != static_cast<uint8_t>(count * SOLIS_MODBUS_BYTES_PER_REG)) return false;
 
     for (uint16_t i = 0; i < count; i++) {
-        const int offset = 3 + (i * 2);
+        const int offset = SOLIS_MODBUS_HEADER_BYTES + (i * SOLIS_MODBUS_BYTES_PER_REG);
         outValues[i] = (static_cast<uint16_t>(buf[offset]) << 8) | buf[offset + 1];
     }
     return true;
@@ -393,15 +410,15 @@ static void pollSolisOnce(unsigned long nowMs) {
 
     if (blockOk) {
         if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            setSolisRegisterFromBlock(33050, blockValues, solisState.pv1Voltage);
-            setSolisRegisterFromBlock(33051, blockValues, solisState.pv1Current);
-            setSolisRegisterFromBlock(33052, blockValues, solisState.pv2Voltage);
-            setSolisRegisterFromBlock(33053, blockValues, solisState.pv2Current);
-            setSolisRegisterFromBlock(33132, blockValues, solisState.gridPower);
-            setSolisRegisterFromBlock(33135, blockValues, solisState.batteryCurrent);
-            setSolisRegisterFromBlock(33136, blockValues, solisState.batteryDirection);
-            setSolisRegisterFromBlock(33140, blockValues, solisState.batterySoc);
-            setSolisRegisterFromBlock(33142, blockValues, solisState.batteryVoltage);
+            setSolisRegisterFromBlock(SOLIS_REG_PV1_VOLTAGE, blockValues, solisState.pv1Voltage);
+            setSolisRegisterFromBlock(SOLIS_REG_PV1_CURRENT, blockValues, solisState.pv1Current);
+            setSolisRegisterFromBlock(SOLIS_REG_PV2_VOLTAGE, blockValues, solisState.pv2Voltage);
+            setSolisRegisterFromBlock(SOLIS_REG_PV2_CURRENT, blockValues, solisState.pv2Current);
+            setSolisRegisterFromBlock(SOLIS_REG_GRID_POWER, blockValues, solisState.gridPower);
+            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_CURRENT, blockValues, solisState.batteryCurrent);
+            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_DIRECTION, blockValues, solisState.batteryDirection);
+            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_SOC, blockValues, solisState.batterySoc);
+            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_VOLTAGE, blockValues, solisState.batteryVoltage);
             solisState.lastSuccessMs = nowMs;
             xSemaphoreGive(solisMutex);
         } else {
