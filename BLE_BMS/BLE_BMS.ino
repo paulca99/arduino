@@ -1513,9 +1513,10 @@ static void mainLoopWatchdogTask(void* pv) {
         armed = mainLoopWatchdogArmed;
         loopProgressMs = lastLoopProgressMs;
         portEXIT_CRITICAL(&mainLoopWatchdogMux);
-        if (armed && (nowMs - loopProgressMs) >= MAIN_LOOP_WATCHDOG_TIMEOUT_MS) {
+        unsigned long elapsedMs = (unsigned long)(nowMs - loopProgressMs);
+        if (armed && elapsedMs >= MAIN_LOOP_WATCHDOG_TIMEOUT_MS) {
             Serial.printf("[LOOP] no progress for %lu ms (timeout=%lu ms); restarting ESP32\n",
-                          nowMs - loopProgressMs,
+                          elapsedMs,
                           MAIN_LOOP_WATCHDOG_TIMEOUT_MS);
             Serial.flush();
             ESP.restart();
@@ -2188,7 +2189,10 @@ void setup() {
 
     aggregate = buildAggregateSnapshot(millis());
     updateCanAggregateSnapshot(aggregate);
+    portENTER_CRITICAL(&mainLoopWatchdogMux);
     lastLoopProgressMs = millis();
+    mainLoopWatchdogArmed = false;
+    portEXIT_CRITICAL(&mainLoopWatchdogMux);
     BaseType_t mainLoopWatchdogTaskOk = xTaskCreatePinnedToCore(
         mainLoopWatchdogTask,
         "LoopWd",
