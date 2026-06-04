@@ -52,8 +52,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define REQUEST_DELAY_MS            300
 #define RESPONSE_TIMEOUT_MS        2500
 #define RESPONSE_POLL_MS             20
-#define BETWEEN_BATTERIES_MS        200
-#define BETWEEN_CYCLES_MS          1000
+#define BETWEEN_BATTERIES_MS        50
+#define BETWEEN_CYCLES_MS          100
 #define LOG_INTERVAL_MS            5000
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
