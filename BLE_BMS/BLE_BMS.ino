@@ -300,6 +300,26 @@ static const char* wifiStatusToString(wl_status_t status) {
     }
 }
 
+// -----------------------------------------------------------------------
+// Web-handler diagnostic helpers
+// -----------------------------------------------------------------------
+static void webLogRequest(const char* handler) {
+    Serial.printf("[WEB] %s start heap=%u connected=%d/%d wifi=%s ms=%lu\n",
+                  handler,
+                  ESP.getFreeHeap(),
+                  connectedBatteryCount(),
+                  enabledBatteryCount(),
+                  wifiStatusToString(WiFi.status()),
+                  millis());
+}
+
+static void webLogElapsed(const char* handler, unsigned long startMs) {
+    Serial.printf("[WEB] %s done elapsed=%lums heap=%u\n",
+                  handler,
+                  millis() - startMs,
+                  ESP.getFreeHeap());
+}
+
 static int findBatteryByClient(BLEClient* client) {
     for (int i = 0; i < BATTERY_COUNT; i++) {
         if (batteries[i].client == client) return i;
@@ -1535,15 +1555,21 @@ static String buildInverterJson() {
 }
 
 static void handleInverterApi() {
+    unsigned long webStart = millis();
+    webLogRequest("/api/inverter");
     server.send(200, "application/json", buildInverterJson());
+    webLogElapsed("/api/inverter", webStart);
 }
 
 static void handleInverter() {
-    unsigned long now = millis();
+    unsigned long webStart = millis();
+    webLogRequest("/inverter");
+
+    unsigned long snapshotMs = webStart;
     SolisState snapshot = {};
     copySolisSnapshot(snapshot);
 
-    unsigned long ageMs = snapshot.lastSuccessMs == 0 ? 0 : (now - snapshot.lastSuccessMs);
+    unsigned long ageMs = snapshot.lastSuccessMs == 0 ? 0 : (snapshotMs - snapshot.lastSuccessMs);
     bool stale = snapshot.lastSuccessMs == 0 || ageMs > (SOLIS_POLL_INTERVAL_MS * SOLIS_STALE_POLL_MULTIPLIER);
 
     String batteryDirection = "unknown";
@@ -1561,6 +1587,7 @@ static void handleInverter() {
 
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "text/html", "");
+    Serial.printf("[WEB] /inverter header sent elapsed=%lums\n", millis() - webStart);
 
     server.sendContent(F("<!DOCTYPE html><html><head>"
                          "<meta charset='UTF-8'>"
@@ -1601,6 +1628,8 @@ static void handleInverter() {
              (havePv1Power && havePv2Power) ? (String(pv1PowerW + pv2PowerW, 1) + " W") : String("--"));
     server.sendContent(F("</div>"));
 
+    Serial.printf("[WEB] /inverter register table start rows=%u elapsed=%lums heap=%u\n",
+                  (unsigned)SOLIS_REGISTER_INFO_COUNT, millis() - webStart, ESP.getFreeHeap());
     server.sendContent(F("<h2>Register snapshot</h2><table><tr>"
                          "<th>Label</th><th>Register</th><th>Display</th><th>Raw</th><th>Signed</th><th>Notes</th>"
                          "</tr>"));
@@ -1618,24 +1647,26 @@ static void handleInverter() {
               "</td><td>" + htmlEscape(String(info.note)) + "</td></tr>";
         server.sendContent(row);
     }
+    Serial.printf("[WEB] /inverter register table done elapsed=%lums heap=%u\n",
+                  millis() - webStart, ESP.getFreeHeap());
     server.sendContent(F("</table>"));
+    Serial.printf("[WEB] /inverter footer sending elapsed=%lums\n", millis() - webStart);
     server.sendContent(F("<p>JSON endpoints: <a href='/api/inverter'>/api/inverter</a> · <a href='/api/solis'>/api/solis</a></p>"));
     server.sendContent(F("</body></html>"));
     server.sendContent("");
+    webLogElapsed("/inverter", webStart);
 }
 
 static void handleRoot() {
-    unsigned long now = millis();
-    AggregateSnapshot snap = buildAggregateSnapshot(now);
+    unsigned long webStart = millis();
+    unsigned long snapshotMs = webStart;
+    AggregateSnapshot snap = buildAggregateSnapshot(snapshotMs);
 
-    Serial.printf("[WEB] GET / heap=%u connected=%d/%d wifi=%s\n",
-                  ESP.getFreeHeap(),
-                  connectedBatteryCount(),
-                  enabledBatteryCount(),
-                  wifiStatusToString(WiFi.status()));
+    webLogRequest("/");
 
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "text/html", "");
+    Serial.printf("[WEB] / header sent elapsed=%lums\n", millis() - webStart);
 
     server.sendContent(F("<!DOCTYPE html><html><head>"
                          "<meta charset='UTF-8'>"
@@ -1661,13 +1692,15 @@ static void handleRoot() {
         sendCard("Aggregate SoC", String(snap.soc) + " %");
         sendCard("Aggregate Temp", snap.hasTemperature ? (String(snap.temperature, 1) + " C") : String("n/a"));
         sendCard("Fresh Batteries", String(snap.contributingBatteries));
-        sendCard("Last Fresh Data", String((now - snap.lastFreshMs) / 1000UL) + " s ago");
+        sendCard("Last Fresh Data", String((snapshotMs - snap.lastFreshMs) / 1000UL) + " s ago");
     } else {
         sendCard("Aggregate", "No fresh data", "amber");
     }
 
     server.sendContent(F("</div>"));
 
+    Serial.printf("[WEB] / battery loop start rows=%d elapsed=%lums heap=%u\n",
+                  BATTERY_COUNT, millis() - webStart, ESP.getFreeHeap());
     server.sendContent(F("<h2>Per-battery status</h2><table><tr>"
                          "<th>Name</th><th>MAC</th><th>Enabled</th><th>Action</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
                          "</tr>"));
@@ -1678,7 +1711,7 @@ static void handleRoot() {
 
         String age = battery.lastGoodDataMs == 0
                    ? "-"
-                   : String((now - battery.lastGoodDataMs) / 1000UL);
+                   : String((snapshotMs - battery.lastGoodDataMs) / 1000UL);
         uint8_t minCellIndex = 0;
         uint8_t maxCellIndex = 0;
         uint16_t minCellMv = 0;
@@ -1707,26 +1740,35 @@ static void handleRoot() {
 
         server.sendContent(row);
     }
+    Serial.printf("[WEB] / battery loop done elapsed=%lums heap=%u\n",
+                  millis() - webStart, ESP.getFreeHeap());
 
+    Serial.printf("[WEB] / footer sending elapsed=%lums\n", millis() - webStart);
     server.sendContent(F("</table><p><a href='/inverter'>Solis inverter monitor</a> · <a href='/api/inverter'>Inverter JSON</a></p>"
                          "<p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
     server.sendContent("");
+    webLogElapsed("/", webStart);
 }
 
 static void handleBatteryDetail() {
+    unsigned long webStart = millis();
+    webLogRequest("/battery");
     if (!server.hasArg("index")) {
         server.send(400, "text/plain", "Missing battery index");
+        webLogElapsed("/battery", webStart);
         return;
     }
 
     String indexArg = server.arg("index");
     if (indexArg.length() == 0) {
         server.send(400, "text/plain", "Missing battery index");
+        webLogElapsed("/battery", webStart);
         return;
     }
     for (size_t i = 0; i < indexArg.length(); i++) {
         if (!isDigit(indexArg.charAt(i))) {
             server.send(400, "text/plain", "Invalid battery index");
+            webLogElapsed("/battery", webStart);
             return;
         }
     }
@@ -1734,6 +1776,7 @@ static void handleBatteryDetail() {
     int index = indexArg.toInt();
     if (index < 0 || index >= BATTERY_COUNT) {
         server.send(404, "text/plain", "Battery not found");
+        webLogElapsed("/battery", webStart);
         return;
     }
 
@@ -1746,6 +1789,7 @@ static void handleBatteryDetail() {
 
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "text/html", "");
+    Serial.printf("[WEB] /battery header sent elapsed=%lums\n", millis() - webStart);
 
     server.sendContent(F("<!DOCTYPE html><html><head>"
                          "<meta charset='UTF-8'>"
@@ -1771,17 +1815,22 @@ static void handleBatteryDetail() {
     if (!battery.hasCellData || battery.cellCount == 0) {
         server.sendContent(F("<p class='muted'>No valid cell data available yet.</p></body></html>"));
         server.sendContent("");
+        webLogElapsed("/battery", webStart);
         return;
     }
 
+    Serial.printf("[WEB] /battery cell loop start cells=%u elapsed=%lums heap=%u\n",
+                  (unsigned)battery.cellCount, millis() - webStart, ESP.getFreeHeap());
     server.sendContent("<h2>Cell voltages (" + String(battery.cellCount) + ")</h2>");
     server.sendContent(F("<table><tr><th>Cell</th><th>Voltage (V)</th></tr>"));
     for (uint8_t i = 0; i < battery.cellCount; i++) {
         String row = "<tr><td>" + String(i + 1) + "</td><td>" + String(battery.cellMv[i] / 1000.0f, 3) + "</td></tr>";
         server.sendContent(row);
     }
+    Serial.printf("[WEB] /battery cell loop done elapsed=%lums\n", millis() - webStart);
     server.sendContent(F("</table></body></html>"));
     server.sendContent("");
+    webLogElapsed("/battery", webStart);
 }
 
 static bool parseEnabledArg(const String& value, bool& enabled) {
@@ -1799,19 +1848,24 @@ static bool parseEnabledArg(const String& value, bool& enabled) {
 }
 
 static void handleSetBatteryEnabled() {
+    unsigned long webStart = millis();
+    webLogRequest("/battery/enabled");
     if (!server.hasArg("index") || !server.hasArg("enabled")) {
         server.send(400, "text/plain", "Missing index or enabled");
+        webLogElapsed("/battery/enabled", webStart);
         return;
     }
 
     String indexArg = server.arg("index");
     if (indexArg.length() == 0) {
         server.send(400, "text/plain", "Missing battery index");
+        webLogElapsed("/battery/enabled", webStart);
         return;
     }
     for (size_t i = 0; i < indexArg.length(); i++) {
         if (!isDigit(indexArg.charAt(i))) {
             server.send(400, "text/plain", "Invalid battery index");
+            webLogElapsed("/battery/enabled", webStart);
             return;
         }
     }
@@ -1819,12 +1873,14 @@ static void handleSetBatteryEnabled() {
     int index = indexArg.toInt();
     if (index < 0 || index >= BATTERY_COUNT) {
         server.send(404, "text/plain", "Battery not found");
+        webLogElapsed("/battery/enabled", webStart);
         return;
     }
 
     bool enabled = false;
     if (!parseEnabledArg(server.arg("enabled"), enabled)) {
         server.send(400, "text/plain", "Invalid enabled value");
+        webLogElapsed("/battery/enabled", webStart);
         return;
     }
 
@@ -1852,6 +1908,7 @@ static void handleSetBatteryEnabled() {
 
     server.sendHeader("Location", "/", true);
     server.send(303, "text/plain", "");
+    webLogElapsed("/battery/enabled", webStart);
 }
 
 static bool tryConnectWiFi(const char* ssid, const char* password) {
