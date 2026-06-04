@@ -60,15 +60,21 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define WEB_REQUEST_WATCHDOG_CHECK_MS 2001UL
 #define WEB_REQUEST_TASK_STACK_SIZE 2048
 #define WEB_REQUEST_TASK_PRIORITY    1
+#define MAIN_LOOP_WATCHDOG_TIMEOUT_MS 10000UL
+#define MAIN_LOOP_WATCHDOG_CHECK_MS    250UL
+#define MAIN_LOOP_TASK_STACK_SIZE     2048
+#define MAIN_LOOP_TASK_PRIORITY          1
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
 #define WEB_REQUEST_TASK_CORE        0
+#define MAIN_LOOP_TASK_CORE          0
 #else
 #ifndef CONFIG_ARDUINO_RUNNING_CORE
 #define CONFIG_ARDUINO_RUNNING_CORE 1
 #endif
 #define CAN_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
 #define WEB_REQUEST_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
+#define MAIN_LOOP_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
 #endif
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
@@ -259,6 +265,9 @@ static volatile bool webRequestActive = false;
 static volatile unsigned long webRequestStartMs = 0;
 static volatile bool webRequestRestartTriggered = false;
 static const char* volatile webRequestHandlerName = nullptr;
+static portMUX_TYPE mainLoopWatchdogMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool mainLoopWatchdogArmed = false;
+static volatile unsigned long lastLoopProgressMs = 0;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
@@ -292,6 +301,7 @@ static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t coun
 static void pollSolisOnce(unsigned long nowMs);
 static void canTxTask(void* pv);
 static void webRequestWatchdogTask(void* pv);
+static void mainLoopWatchdogTask(void* pv);
 
 // CAN API from CAN_Pylontech.ino
 void setupCAN();
@@ -1491,6 +1501,30 @@ static void webRequestWatchdogTask(void* pv) {
     }
 }
 
+static void mainLoopWatchdogTask(void* pv) {
+    (void)pv;
+    TickType_t lastWake = xTaskGetTickCount();
+
+    for (;;) {
+        bool armed = false;
+        unsigned long nowMs = millis();
+        unsigned long loopProgressMs = 0;
+        portENTER_CRITICAL(&mainLoopWatchdogMux);
+        armed = mainLoopWatchdogArmed;
+        loopProgressMs = lastLoopProgressMs;
+        portEXIT_CRITICAL(&mainLoopWatchdogMux);
+        unsigned long elapsedMs = (unsigned long)(nowMs - loopProgressMs);
+        if (armed && elapsedMs >= MAIN_LOOP_WATCHDOG_TIMEOUT_MS) {
+            Serial.printf("[LOOP] no progress for %lu ms (timeout=%lu ms); restarting ESP32\n",
+                          elapsedMs,
+                          MAIN_LOOP_WATCHDOG_TIMEOUT_MS);
+            Serial.flush();
+            ESP.restart();
+        }
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(MAIN_LOOP_WATCHDOG_CHECK_MS));
+    }
+}
+
 static String htmlEscape(const String& input) {
     String out;
     out.reserve(input.length() + 16);
@@ -2155,6 +2189,23 @@ void setup() {
 
     aggregate = buildAggregateSnapshot(millis());
     updateCanAggregateSnapshot(aggregate);
+    portENTER_CRITICAL(&mainLoopWatchdogMux);
+    lastLoopProgressMs = millis();
+    mainLoopWatchdogArmed = false;
+    portEXIT_CRITICAL(&mainLoopWatchdogMux);
+    BaseType_t mainLoopWatchdogTaskOk = xTaskCreatePinnedToCore(
+        mainLoopWatchdogTask,
+        "LoopWd",
+        MAIN_LOOP_TASK_STACK_SIZE,
+        nullptr,
+        MAIN_LOOP_TASK_PRIORITY,
+        nullptr,
+        MAIN_LOOP_TASK_CORE);
+    if (mainLoopWatchdogTaskOk != pdPASS) {
+        Serial.println("Failed to start main loop watchdog task");
+    } else {
+        Serial.printf("Main loop watchdog task started on core %d\n", MAIN_LOOP_TASK_CORE);
+    }
     logSystemDebugSummary("[DBG setup complete]");
 }
 
@@ -2164,6 +2215,10 @@ static unsigned long lastHeartbeat = 0;
 
 void loop() {
     unsigned long now = millis();
+    portENTER_CRITICAL(&mainLoopWatchdogMux);
+    lastLoopProgressMs = now;
+    mainLoopWatchdogArmed = true;
+    portEXIT_CRITICAL(&mainLoopWatchdogMux);
 
     if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeat = now;
