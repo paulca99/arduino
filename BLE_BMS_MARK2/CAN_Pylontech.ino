@@ -108,6 +108,10 @@ static uint8_t voltageToSoc(float packV) {
     return 0;
 }
 
+uint8_t socFromVoltageTable(float packVoltage) {
+    return voltageToSoc(packVoltage);
+}
+
 // -----------------------------------------------------------------------
 // Helper — transmit one CAN frame, print warning if it fails
 // -----------------------------------------------------------------------

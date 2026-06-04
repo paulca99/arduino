@@ -141,6 +141,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now);
 static void updateCanAggregateSnapshot(const AggregateSnapshot& snap);
 static AggregateSnapshot copyCanAggregateSnapshot();
 static void canTxTask(void* pv);
+uint8_t socFromVoltageTable(float packVoltage);
 
 void setupCAN();
 void sendCANFrames(float voltage,
@@ -207,7 +208,6 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
 
     float sumVoltage = 0.0f;
     float sumCurrent = 0.0f;
-    float sumSoc = 0.0f;
     float sumTemp = 0.0f;
     uint8_t tempCount = 0;
     bool chargeAllowedInit = false;
@@ -222,7 +222,6 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
 
         sumVoltage += battery.voltage;
         sumCurrent += battery.current;
-        sumSoc += battery.soc;
 
         if (!chargeAllowedInit) {
             snap.chargeAllowed = battery.chargeMos;
@@ -251,7 +250,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         snap.valid = true;
         snap.voltage = sumVoltage / (float)snap.contributingBatteries;
         snap.current = sumCurrent;
-        snap.soc = (uint8_t)roundf(sumSoc / (float)snap.contributingBatteries);
+        snap.soc = socFromVoltageTable(snap.voltage);
         if (tempCount > 0) {
             snap.hasTemperature = true;
             snap.temperature = sumTemp / (float)tempCount;
