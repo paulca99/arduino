@@ -1572,7 +1572,7 @@ static void handleInverter() {
     unsigned long ageMs = snapshot.lastSuccessMs == 0 ? 0 : (snapshotMs - snapshot.lastSuccessMs);
     bool stale = snapshot.lastSuccessMs == 0 || ageMs > (SOLIS_POLL_INTERVAL_MS * SOLIS_STALE_POLL_MULTIPLIER);
 
-    String batteryDirection = "unknown";
+    const char* batteryDirection = "unknown";
     RegisterValue direction = getSolisRegisterValue(snapshot, SOLIS_REG_BATTERY_DIRECTION);
     if (direction.valid) {
         batteryDirection = isSolisBatteryDischarging(direction.valid, direction.raw) ? "discharging" : "charging";
@@ -1589,69 +1589,93 @@ static void handleInverter() {
     server.send(200, "text/html", "");
     Serial.printf("[WEB] /inverter header sent elapsed=%lums\n", millis() - webStart);
 
+    float gridPowerW = 0.0f;
+    float gridVoltageV = 0.0f;
+    float gridFrequencyHz = 0.0f;
+    float batterySoc = 0.0f;
+    float batteryVoltageV = 0.0f;
+    float batteryCurrentA = 0.0f;
+    bool haveGridPower = tryGetSolisScaledValue(snapshot, SOLIS_REG_GRID_POWER, 1.0f, true, gridPowerW);
+    bool haveGridVoltage = tryGetSolisScaledValue(snapshot, SOLIS_REG_GRID_VOLTAGE, 10.0f, false, gridVoltageV);
+    bool haveGridFrequency = tryGetSolisScaledValue(snapshot, SOLIS_REG_GRID_FREQUENCY, 100.0f, false, gridFrequencyHz);
+    bool haveBatterySoc = tryGetSolisScaledValue(snapshot, SOLIS_REG_BATTERY_SOC, 1.0f, false, batterySoc);
+    bool haveBatteryVoltage = tryGetSolisScaledValue(snapshot, SOLIS_REG_BATTERY_VOLTAGE, 100.0f, false, batteryVoltageV);
+    bool haveBatteryCurrent = tryGetSolisScaledValue(snapshot, SOLIS_REG_BATTERY_CURRENT, 10.0f, false, batteryCurrentA);
+
     server.sendContent(F("<!DOCTYPE html><html><head>"
                          "<meta charset='UTF-8'>"
                          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                         "<meta http-equiv='refresh' content='5'>"
-                         "<title>Solis inverter monitor</title>"
-                         "<style>"
-                         "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
-                         "h1{color:#e0c97f;margin-bottom:4px}h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px}"
-                         "a{color:#8ec5ff}table{width:100%;border-collapse:collapse;margin-top:10px}"
-                         "th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #2a2a4a;vertical-align:top}"
-                         "th{background:#16213e;color:#a0b4cc}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-bottom:16px}"
-                         ".card{background:#16213e;border-radius:8px;padding:12px;text-align:center}.card .label{font-size:0.75em;color:#8899aa;margin-bottom:4px}"
-                         ".card .value{font-size:1.25em;font-weight:bold}.green{color:#4caf50}.amber{color:#ff9800}.mono{font-family:monospace}"
-                         "</style></head><body>"));
-    server.sendContent(F("<p><a href='/'>Back to summary</a></p>"));
-    server.sendContent(F("<h1>Solis inverter monitor</h1>"));
-    server.sendContent(F("<p>Cached RS485 data only. Single 93-register Modbus block read (33050..33142) runs in a dedicated FreeRTOS task every ~2 seconds so BLE/CAN/web work stays responsive.</p>"));
+                         "<title>Solis inverter summary</title>"
+                         "<style>body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}h1{color:#e0c97f;margin-bottom:4px}a{color:#8ec5ff}ul{padding-left:20px}</style>"
+                         "</head><body>"));
+    server.sendContent(F("<p><a href='/'>Back to summary</a></p>"
+                         "<h1>Solis inverter summary</h1>"
+                         "<p>Compact page for stability. Use JSON endpoints for full detail.</p><ul>"));
 
-    server.sendContent(F("<div class='grid'>"));
-    sendCard(stale ? "Last good poll (stale)" : "Last good poll (fresh)",
-             snapshot.lastSuccessMs == 0 ? String("Never") : String(ageMs / 1000UL) + " s ago",
-             stale ? "amber" : "green");
-    sendCard("Poll count", String(snapshot.pollCount));
-    sendCard("Read errors", String(snapshot.readErrors));
-    sendCard("Lock timeouts", String(snapshot.lockTimeouts));
-    sendCard("Grid power", formatSolisCardValue(snapshot, SOLIS_REG_GRID_POWER, 1.0f, true, 0, "W"));
-    sendCard("Grid voltage", formatSolisCardValue(snapshot, SOLIS_REG_GRID_VOLTAGE, 10.0f, false, 1, "V"));
-    sendCard("Grid frequency", formatSolisCardValue(snapshot, SOLIS_REG_GRID_FREQUENCY, 100.0f, false, 2, "Hz"));
-    sendCard("Battery SoC", formatSolisCardValue(snapshot, SOLIS_REG_BATTERY_SOC, 1.0f, false, 0, "%"));
-    sendCard("Battery voltage", formatSolisCardValue(snapshot, SOLIS_REG_BATTERY_VOLTAGE, 100.0f, false, 2, "V"));
-    sendCard("Battery current", formatSolisCardValue(snapshot, SOLIS_REG_BATTERY_CURRENT, 10.0f, false, 1, "A"));
-    sendCard("Battery direction", batteryDirection);
-    sendCard("Battery power", haveBatteryPower ? String(batteryPowerW, 1) + " W" : String("--"));
-    sendCard("PV1 power", havePv1Power ? String(pv1PowerW, 1) + " W" : String("--"));
-    sendCard("PV2 power", havePv2Power ? String(pv2PowerW, 1) + " W" : String("--"));
-    sendCard("PV total power",
-             (havePv1Power && havePv2Power) ? (String(pv1PowerW + pv2PowerW, 1) + " W") : String("--"));
-    server.sendContent(F("</div>"));
-
-    Serial.printf("[WEB] /inverter register table start rows=%u elapsed=%lums heap=%u\n",
-                  (unsigned)SOLIS_REGISTER_INFO_COUNT, millis() - webStart, ESP.getFreeHeap());
-    server.sendContent(F("<h2>Register snapshot</h2><table><tr>"
-                         "<th>Label</th><th>Register</th><th>Display</th><th>Raw</th><th>Signed</th><th>Notes</th>"
-                         "</tr>"));
-    for (size_t i = 0; i < SOLIS_REGISTER_INFO_COUNT; i++) {
-        const SolisRegisterInfo& info = SOLIS_REGISTER_INFOS[i];
-        RegisterValue regValue = getSolisRegisterValue(snapshot, info.reg);
-
-        String row;
-        row.reserve(320);
-        row = "<tr><td>" + htmlEscape(String(info.label)) +
-              "</td><td class='mono'>" + String(info.reg) +
-              "</td><td>" + htmlEscape(formatSolisRegisterDisplay(info.reg, regValue)) +
-              "</td><td>" + (regValue.valid ? String(regValue.raw) : String("--")) +
-              "</td><td>" + (regValue.valid ? String(static_cast<int16_t>(regValue.raw)) : String("--")) +
-              "</td><td>" + htmlEscape(String(info.note)) + "</td></tr>";
-        server.sendContent(row);
+    char line[160];
+    if (snapshot.lastSuccessMs == 0) {
+        snprintf(line, sizeof(line), "<li>Last good poll: never</li>");
+    } else {
+        snprintf(line, sizeof(line), "<li>Last good poll: %s (%lu s ago)</li>",
+                 stale ? "stale" : "fresh",
+                 ageMs / 1000UL);
     }
-    Serial.printf("[WEB] /inverter register table done elapsed=%lums heap=%u\n",
-                  millis() - webStart, ESP.getFreeHeap());
-    server.sendContent(F("</table>"));
-    Serial.printf("[WEB] /inverter footer sending elapsed=%lums\n", millis() - webStart);
-    server.sendContent(F("<p>JSON endpoints: <a href='/api/inverter'>/api/inverter</a> · <a href='/api/solis'>/api/solis</a></p>"));
+    server.sendContent(line);
+
+    snprintf(line, sizeof(line), "<li>Poll count: %lu</li>", snapshot.pollCount);
+    server.sendContent(line);
+    snprintf(line, sizeof(line), "<li>Read errors: %lu</li>", snapshot.readErrors);
+    server.sendContent(line);
+    snprintf(line, sizeof(line), "<li>Lock timeouts: %lu</li>", snapshot.lockTimeouts);
+    server.sendContent(line);
+
+    if (haveGridPower) {
+        snprintf(line, sizeof(line), "<li>Grid power: %.0f W</li>", gridPowerW);
+        server.sendContent(line);
+    }
+    if (haveGridVoltage) {
+        snprintf(line, sizeof(line), "<li>Grid voltage: %.1f V</li>", gridVoltageV);
+        server.sendContent(line);
+    }
+    if (haveGridFrequency) {
+        snprintf(line, sizeof(line), "<li>Grid frequency: %.2f Hz</li>", gridFrequencyHz);
+        server.sendContent(line);
+    }
+    if (haveBatterySoc) {
+        snprintf(line, sizeof(line), "<li>Battery SoC: %.0f %%</li>", batterySoc);
+        server.sendContent(line);
+    }
+    if (haveBatteryVoltage) {
+        snprintf(line, sizeof(line), "<li>Battery voltage: %.2f V</li>", batteryVoltageV);
+        server.sendContent(line);
+    }
+    if (haveBatteryCurrent) {
+        snprintf(line, sizeof(line), "<li>Battery current: %.1f A</li>", batteryCurrentA);
+        server.sendContent(line);
+    }
+
+    snprintf(line, sizeof(line), "<li>Battery direction: %s</li>", batteryDirection);
+    server.sendContent(line);
+
+    if (haveBatteryPower) {
+        snprintf(line, sizeof(line), "<li>Battery power: %.1f W</li>", batteryPowerW);
+        server.sendContent(line);
+    }
+    if (havePv1Power) {
+        snprintf(line, sizeof(line), "<li>PV1 power: %.1f W</li>", pv1PowerW);
+        server.sendContent(line);
+    }
+    if (havePv2Power) {
+        snprintf(line, sizeof(line), "<li>PV2 power: %.1f W</li>", pv2PowerW);
+        server.sendContent(line);
+    }
+    if (havePv1Power && havePv2Power) {
+        snprintf(line, sizeof(line), "<li>PV total power: %.1f W</li>", pv1PowerW + pv2PowerW);
+        server.sendContent(line);
+    }
+
+    Serial.printf("[WEB] /inverter compact footer sending elapsed=%lums\n", millis() - webStart);
+    server.sendContent(F("</ul><p>JSON endpoints: <a href='/api/inverter'>/api/inverter</a> · <a href='/api/solis'>/api/solis</a></p>"));
     server.sendContent(F("</body></html>"));
     server.sendContent("");
     webLogElapsed("/inverter", webStart);
@@ -1671,81 +1695,43 @@ static void handleRoot() {
     server.sendContent(F("<!DOCTYPE html><html><head>"
                          "<meta charset='UTF-8'>"
                          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                         "<meta http-equiv='refresh' content='5'>"
-                         "<title>BMS Multi-Battery Monitor</title>"
-                         "<style>"
-                         "body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}"
-                         "h1{color:#e0c97f;margin-bottom:4px}h2{color:#a0b4cc;margin-top:20px;margin-bottom:6px}"
-                         "table{width:100%;border-collapse:collapse}th,td{padding:8px 10px;text-align:center;border-bottom:1px solid #2a2a4a}"
-                         "th{background:#16213e;color:#a0b4cc}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}"
-                         ".card{background:#16213e;border-radius:8px;padding:12px;text-align:center}.card .label{font-size:0.75em;color:#8899aa;margin-bottom:4px}"
-                         ".card .value{font-size:1.4em;font-weight:bold}.green{color:#4caf50}.amber{color:#ff9800}.red{color:#f44336}.mono{font-family:monospace}"
-                         "</style></head><body><h1>Battery BMS (Persistent BLE)</h1>"));
+                         "<title>BMS summary</title>"
+                         "<style>body{font-family:sans-serif;margin:16px;background:#1a1a2e;color:#eee}h1{color:#e0c97f;margin-bottom:4px}a{color:#8ec5ff}ul{padding-left:20px}</style>"
+                         "</head><body><h1>Battery BMS summary</h1>"
+                         "<p>Compact page for stability. Use JSON endpoints for full detail.</p><ul>"));
 
-    server.sendContent(F("<div class='grid'>"));
-    sendCard("Enabled Batteries", String(enabledBatteryCount()));
-    sendCard("Connected Batteries", String(connectedBatteryCount()));
+    char line[192];
+    snprintf(line, sizeof(line), "<li>Enabled batteries: %d</li>", enabledBatteryCount());
+    server.sendContent(line);
+    snprintf(line, sizeof(line), "<li>Connected batteries: %d</li>", connectedBatteryCount());
+    server.sendContent(line);
+    snprintf(line, sizeof(line), "<li>Free heap: %u bytes</li>", ESP.getFreeHeap());
+    server.sendContent(line);
 
     if (snap.valid) {
-        sendCard("Aggregate Voltage", String(snap.voltage, 2) + " V");
-        sendCard("Aggregate Current", String(snap.current, 2) + " A");
-        sendCard("Aggregate SoC", String(snap.soc) + " %");
-        sendCard("Aggregate Temp", snap.hasTemperature ? (String(snap.temperature, 1) + " C") : String("n/a"));
-        sendCard("Fresh Batteries", String(snap.contributingBatteries));
-        sendCard("Last Fresh Data", String((snapshotMs - snap.lastFreshMs) / 1000UL) + " s ago");
+        snprintf(line, sizeof(line), "<li>Aggregate voltage: %.2f V</li>", snap.voltage);
+        server.sendContent(line);
+        snprintf(line, sizeof(line), "<li>Aggregate current: %.2f A</li>", snap.current);
+        server.sendContent(line);
+        snprintf(line, sizeof(line), "<li>Aggregate SoC: %u %%</li>", snap.soc);
+        server.sendContent(line);
+        if (snap.hasTemperature) {
+            snprintf(line, sizeof(line), "<li>Aggregate temp: %.1f C</li>", snap.temperature);
+        } else {
+            snprintf(line, sizeof(line), "<li>Aggregate temp: n/a</li>");
+        }
+        server.sendContent(line);
+        snprintf(line, sizeof(line), "<li>Fresh batteries: %u</li>", snap.contributingBatteries);
+        server.sendContent(line);
+        snprintf(line, sizeof(line), "<li>Last fresh data: %lu s ago</li>", (snapshotMs - snap.lastFreshMs) / 1000UL);
+        server.sendContent(line);
     } else {
-        sendCard("Aggregate", "No fresh data", "amber");
+        server.sendContent(F("<li>Aggregate: no fresh data</li>"));
     }
 
-    server.sendContent(F("</div>"));
-
-    Serial.printf("[WEB] / battery loop start rows=%d elapsed=%lums heap=%u\n",
-                  BATTERY_COUNT, millis() - webStart, ESP.getFreeHeap());
-    server.sendContent(F("<h2>Per-battery status</h2><table><tr>"
-                         "<th>Name</th><th>MAC</th><th>Enabled</th><th>Action</th><th>Connected</th><th>Voltage (V)</th><th>Current (A)</th><th>SoC (%)</th><th>Temp (C)</th><th>Min Cell (V)</th><th>Min Cell ID</th><th>Max Cell (V)</th><th>Max Cell ID</th><th>Data age (s)</th><th>Drops</th>"
-                         "</tr>"));
-
-    for (int i = 0; i < BATTERY_COUNT; i++) {
-        const BatteryConfig& cfg = batteryConfigs[i];
-        const BatteryState& battery = batteries[i];
-
-        String age = battery.lastGoodDataMs == 0
-                   ? "-"
-                   : String((snapshotMs - battery.lastGoodDataMs) / 1000UL);
-        uint8_t minCellIndex = 0;
-        uint8_t maxCellIndex = 0;
-        uint16_t minCellMv = 0;
-        uint16_t maxCellMv = 0;
-        bool hasCellStats = getCellMinMax(battery, minCellIndex, minCellMv, maxCellIndex, maxCellMv);
-        String batteryLink = "<a href='/battery?index=" + String(i) + "'>" + htmlEscape(String(cfg.name)) + "</a>";
-
-        String row;
-        row.reserve(512);
-        String action = String("<form method='POST' action='/battery/enabled' style='margin:0'>") +
-                       "<input type='hidden' name='index' value='" + String(i) + "'>" +
-                       "<input type='hidden' name='enabled' value='" + String(cfg.enabled ? "0" : "1") + "'>" +
-                       "<button type='submit'>" + String(cfg.enabled ? "Disable" : "Enable") + "</button></form>";
-        row = "<tr><td>" + batteryLink + "</td><td class='mono'>" + htmlEscape(String(cfg.mac)) + "</td><td>" +
-                     String(cfg.enabled ? "yes" : "no") + "</td><td>" + action + "</td><td class='" + (isBatteryConnected(i) ? "green'>yes" : "red'>no") +
-                      "</td><td>" + (battery.hasData ? String(battery.voltage, 2) : String("-")) +
-                      "</td><td>" + (battery.hasData ? String(battery.current, 2) : String("-")) +
-                      "</td><td>" + (battery.hasData ? String(battery.soc) : String("-")) +
-                      "</td><td>" + (battery.hasTemperature ? String(battery.temperature, 1) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(minCellMv / 1000.0f, 3) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(minCellIndex + 1) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(maxCellMv / 1000.0f, 3) : String("-")) +
-                      "</td><td>" + (hasCellStats ? String(maxCellIndex + 1) : String("-")) +
-                      "</td><td>" + age +
-                      "</td><td>" + String(battery.disconnectCount) + "</td></tr>";
-
-        server.sendContent(row);
-    }
-    Serial.printf("[WEB] / battery loop done elapsed=%lums heap=%u\n",
-                  millis() - webStart, ESP.getFreeHeap());
-
-    Serial.printf("[WEB] / footer sending elapsed=%lums\n", millis() - webStart);
-    server.sendContent(F("</table><p><a href='/inverter'>Solis inverter monitor</a> · <a href='/api/inverter'>Inverter JSON</a></p>"
-                         "<p>Auto-refreshes every 5s. Aggregate values use fresh enabled battery data only.</p></body></html>"));
+    Serial.printf("[WEB] / compact footer sending elapsed=%lums\n", millis() - webStart);
+    server.sendContent(F("</ul><p><a href='/inverter'>Solis inverter summary</a> · <a href='/api/inverter'>Inverter JSON</a> · <a href='/api/solis'>Solis JSON</a></p>"
+                         "<p>Detailed battery view remains available at <code>/battery?index=N</code>.</p></body></html>"));
     server.sendContent("");
     webLogElapsed("/", webStart);
 }
