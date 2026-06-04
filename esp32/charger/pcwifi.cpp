@@ -30,6 +30,8 @@ static const char *wifiPrefNamespace = "wifi_cfg";
 static const char *wifiPrefKey = "preferred_ssid";
 static const char *wifiPasswords[] = {"DEADBEEF", "deadbeef"};
 static const int wifiPasswordCount = sizeof(wifiPasswords) / sizeof(wifiPasswords[0]);
+static const unsigned long wifiAttemptResetDelayMs = 100;
+static const int wifiMaxScannedNetworks = 64;
 static bool wifiReconnectInProgress = false;
 
 // Set web server port number to 80
@@ -86,7 +88,7 @@ static bool tryConnectToSsid(const String &candidateSsid) {
     Serial.printf("Trying SSID '%s' with password option %d\n",
                   candidateSsid.c_str(), p + 1);
     WiFi.disconnect(false, true);
-    delay(100);
+    delay(wifiAttemptResetDelayMs);
     WiFi.begin(candidateSsid.c_str(), wifiPasswords[p]);
     if (waitForWifiConnection(10000)) {
       Serial.printf("Connected to '%s'\n", candidateSsid.c_str());
@@ -124,8 +126,11 @@ void connectToWifi(){
   if (!connected) {
     Serial.println("Scanning for WiFi networks...");
     int networkCount = WiFi.scanNetworks();
+    if (networkCount > wifiMaxScannedNetworks) {
+      networkCount = wifiMaxScannedNetworks;
+    }
     if (networkCount > 0) {
-      int *order = new int[networkCount];
+      int order[wifiMaxScannedNetworks];
       for (int i = 0; i < networkCount; i++) {
         order[i] = i;
       }
@@ -156,7 +161,6 @@ void connectToWifi(){
         }
         connected = tryConnectToSsid(candidate);
       }
-      delete[] order;
     }
   }
 
