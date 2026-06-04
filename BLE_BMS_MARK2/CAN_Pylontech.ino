@@ -13,8 +13,9 @@
 //   0x35E — Manufacturer name ("PYLONTEC")
 //   0x305 — Network alive / keep-alive counter
 //
-// All sent every 100ms. Solis expects 500 kbps.
-// Wiring: SN65HVD230 TX→GPIO11, RX→GPIO12
+// Sent at the cadence configured by the caller task (BLE_BMS_MARK2 sets 500 ms).
+// Solis expects 500 kbps.
+// Wiring: SN65HVD230 TX→CAN_TX_PIN, RX→CAN_RX_PIN
 //         Solis RJ45 pin4=CAN-H, pin5=CAN-L
 // -----------------------------------------------------------------------
 
@@ -23,7 +24,7 @@
 // All pack-voltage parameters are derived from this single constant.
 // -----------------------------------------------------------------------
 #ifndef PACK_SERIES_CELLS
-#define PACK_SERIES_CELLS       14      // default: 13S; set to 14 for 14S
+#define PACK_SERIES_CELLS       14      // default: 14S (set to 13 for 13S packs)
 #endif
 
 // Pack max charge voltage in decivolts: PACK_SERIES_CELLS × 4.20 V × 10
@@ -205,7 +206,10 @@ static void can_send_soc(float packVoltage, uint8_t measuredSoc) {
     // Blend measured and voltage-derived SoC when measuredSoC is non-zero so CAN
     // remains stable if one input briefly spikes; if measuredSoC is zero we keep
     // the voltage-derived value to avoid false "empty" drops from transient resets.
-    uint8_t soc = measuredSoc > 0 ? (uint8_t)roundf((socFromVoltage + measuredSoc) / 2.0f) : socFromVoltage;
+    uint8_t clampedMeasuredSoc = measuredSoc > 100 ? 100 : measuredSoc;
+    uint8_t soc = clampedMeasuredSoc > 0
+                ? (uint8_t)roundf((socFromVoltage + clampedMeasuredSoc) / 2.0f)
+                : socFromVoltage;
     uint8_t soh = 100; // JBD BMS doesn't report SoH — assume 100%
 
     twai_message_t msg;

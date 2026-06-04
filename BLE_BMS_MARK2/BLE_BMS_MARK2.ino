@@ -135,7 +135,6 @@ static unsigned long lastSummaryMs = 0;
 static AggregateSnapshot aggregate;
 static AggregateSnapshot canAggregate;
 static SemaphoreHandle_t canAggregateMutex = nullptr;
-static volatile uint32_t canAggregateLockTimeouts = 0;
 
 static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs);
 static AggregateSnapshot buildAggregateSnapshot(unsigned long now);
@@ -699,7 +698,6 @@ static void updateCanAggregateSnapshot(const AggregateSnapshot& snap) {
     SemaphoreHandle_t mutex = canAggregateMutex;
     if (mutex == nullptr) return;
     if (xSemaphoreTake(mutex, pdMS_TO_TICKS(CAN_MUTEX_TIMEOUT_MS)) != pdTRUE) {
-        canAggregateLockTimeouts++;
         return;
     }
     canAggregate = snap;
@@ -711,7 +709,6 @@ static AggregateSnapshot copyCanAggregateSnapshot() {
     SemaphoreHandle_t mutex = canAggregateMutex;
     if (mutex == nullptr) return snap;
     if (xSemaphoreTake(mutex, pdMS_TO_TICKS(CAN_MUTEX_TIMEOUT_MS)) != pdTRUE) {
-        canAggregateLockTimeouts++;
         snap.valid = false;
         snap.lastFreshMs = 0;
         return snap;
