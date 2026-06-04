@@ -56,13 +56,19 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define SOLIS_SLAVE_ID                1
 #define CAN_TASK_STACK_SIZE        4096
 #define CAN_TASK_PRIORITY             1
+#define WEB_REQUEST_TIMEOUT_MS    20000UL
+#define WEB_REQUEST_WATCHDOG_CHECK_MS 250UL
+#define WEB_REQUEST_TASK_STACK_SIZE 2048
+#define WEB_REQUEST_TASK_PRIORITY    1
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
+#define WEB_REQUEST_TASK_CORE        0
 #else
 #ifndef CONFIG_ARDUINO_RUNNING_CORE
 #define CONFIG_ARDUINO_RUNNING_CORE 1
 #endif
 #define CAN_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
+#define WEB_REQUEST_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
 #endif
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
@@ -248,6 +254,11 @@ static AggregateSnapshot aggregate;
 static AggregateSnapshot canAggregate;
 static SemaphoreHandle_t canAggregateMutex = nullptr;
 static volatile uint32_t canAggregateLockTimeouts = 0;
+static portMUX_TYPE webRequestWatchdogMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool webRequestActive = false;
+static volatile unsigned long webRequestStartMs = 0;
+static volatile bool webRequestRestartTriggered = false;
+static const char* volatile webRequestHandlerName = nullptr;
 
 static BLEScan* pBLEScan = nullptr;
 static bool wifiReady = false;
@@ -271,11 +282,16 @@ static bool tryBuildSolisPvPowerW(const SolisState& state, uint16_t voltageReg, 
 static bool copySolisSnapshot(SolisState& snapshot);
 static String buildInverterJson();
 static String htmlEscape(const String& input);
+static void handleRoot();
+static void handleBatteryDetail();
+static void handleSetBatteryEnabled();
 static void handleInverter();
 static void handleInverterApi();
+static void handleSolisApi();
 static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues);
 static void pollSolisOnce(unsigned long nowMs);
 static void canTxTask(void* pv);
+static void webRequestWatchdogTask(void* pv);
 
 // CAN API from CAN_Pylontech.ino
 void setupCAN();
@@ -319,6 +335,44 @@ static void webLogElapsed(const char* handler, unsigned long startMs) {
                   millis() - startMs,
                   ESP.getFreeHeap());
 }
+
+static void beginWebRequestWatchdog(const char* handler, unsigned long startMs) {
+    portENTER_CRITICAL(&webRequestWatchdogMux);
+    webRequestActive = true;
+    webRequestStartMs = startMs;
+    webRequestRestartTriggered = false;
+    webRequestHandlerName = handler;
+    portEXIT_CRITICAL(&webRequestWatchdogMux);
+    webLogRequest(handler);
+}
+
+static void endWebRequestWatchdog(const char* handler, unsigned long startMs) {
+    portENTER_CRITICAL(&webRequestWatchdogMux);
+    webRequestActive = false;
+    webRequestStartMs = 0;
+    webRequestRestartTriggered = false;
+    webRequestHandlerName = nullptr;
+    portEXIT_CRITICAL(&webRequestWatchdogMux);
+    webLogElapsed(handler, startMs);
+}
+
+struct ScopedWebRequestWatchdog {
+    explicit ScopedWebRequestWatchdog(const char* handlerName)
+        : handler(handlerName), startMs(millis()) {
+        beginWebRequestWatchdog(handler, startMs);
+    }
+
+    ~ScopedWebRequestWatchdog() {
+        endWebRequestWatchdog(handler, startMs);
+    }
+
+    unsigned long startedAt() const {
+        return startMs;
+    }
+
+    const char* handler;
+    unsigned long startMs;
+};
 
 static int findBatteryByClient(BLEClient* client) {
     for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -1403,6 +1457,40 @@ static void canTxTask(void* pv) {
     }
 }
 
+static void webRequestWatchdogTask(void* pv) {
+    (void)pv;
+    TickType_t lastWake = xTaskGetTickCount();
+
+    for (;;) {
+        bool shouldRestart = false;
+        unsigned long requestStartMs = 0;
+        const char* handlerName = nullptr;
+        unsigned long nowMs = millis();
+
+        portENTER_CRITICAL(&webRequestWatchdogMux);
+        if (webRequestActive &&
+            !webRequestRestartTriggered &&
+            (nowMs - webRequestStartMs) >= WEB_REQUEST_TIMEOUT_MS) {
+            webRequestRestartTriggered = true;
+            shouldRestart = true;
+            requestStartMs = webRequestStartMs;
+            handlerName = webRequestHandlerName;
+        }
+        portEXIT_CRITICAL(&webRequestWatchdogMux);
+
+        if (shouldRestart) {
+            Serial.printf("[WEB] %s exceeded %lu ms (elapsed=%lu ms); restarting ESP32\n",
+                          handlerName != nullptr ? handlerName : "(unknown)",
+                          WEB_REQUEST_TIMEOUT_MS,
+                          nowMs - requestStartMs);
+            Serial.flush();
+            ESP.restart();
+        }
+
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(WEB_REQUEST_WATCHDOG_CHECK_MS));
+    }
+}
+
 static String htmlEscape(const String& input) {
     String out;
     out.reserve(input.length() + 16);
@@ -1555,15 +1643,18 @@ static String buildInverterJson() {
 }
 
 static void handleInverterApi() {
-    unsigned long webStart = millis();
-    webLogRequest("/api/inverter");
+    ScopedWebRequestWatchdog requestWatchdog("/api/inverter");
     server.send(200, "application/json", buildInverterJson());
-    webLogElapsed("/api/inverter", webStart);
+}
+
+static void handleSolisApi() {
+    ScopedWebRequestWatchdog requestWatchdog("/api/solis");
+    server.send(200, "application/json", buildInverterJson());
 }
 
 static void handleInverter() {
-    unsigned long webStart = millis();
-    webLogRequest("/inverter");
+    ScopedWebRequestWatchdog requestWatchdog("/inverter");
+    unsigned long webStart = requestWatchdog.startedAt();
 
     unsigned long snapshotMs = webStart;
     SolisState snapshot = {};
@@ -1678,15 +1769,13 @@ static void handleInverter() {
     server.sendContent(F("</ul><p>JSON endpoints: <a href='/api/inverter'>/api/inverter</a> · <a href='/api/solis'>/api/solis</a></p>"));
     server.sendContent(F("</body></html>"));
     server.sendContent("");
-    webLogElapsed("/inverter", webStart);
 }
 
 static void handleRoot() {
-    unsigned long webStart = millis();
+    ScopedWebRequestWatchdog requestWatchdog("/");
+    unsigned long webStart = requestWatchdog.startedAt();
     unsigned long snapshotMs = webStart;
     AggregateSnapshot snap = buildAggregateSnapshot(snapshotMs);
-
-    webLogRequest("/");
 
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "text/html", "");
@@ -1733,28 +1822,24 @@ static void handleRoot() {
     server.sendContent(F("</ul><p><a href='/inverter'>Solis inverter summary</a> · <a href='/api/inverter'>Inverter JSON</a> · <a href='/api/solis'>Solis JSON</a></p>"
                          "<p>Detailed battery view remains available at <code>/battery?index=N</code>.</p></body></html>"));
     server.sendContent("");
-    webLogElapsed("/", webStart);
 }
 
 static void handleBatteryDetail() {
-    unsigned long webStart = millis();
-    webLogRequest("/battery");
+    ScopedWebRequestWatchdog requestWatchdog("/battery");
+    unsigned long webStart = requestWatchdog.startedAt();
     if (!server.hasArg("index")) {
         server.send(400, "text/plain", "Missing battery index");
-        webLogElapsed("/battery", webStart);
         return;
     }
 
     String indexArg = server.arg("index");
     if (indexArg.length() == 0) {
         server.send(400, "text/plain", "Missing battery index");
-        webLogElapsed("/battery", webStart);
         return;
     }
     for (size_t i = 0; i < indexArg.length(); i++) {
         if (!isDigit(indexArg.charAt(i))) {
             server.send(400, "text/plain", "Invalid battery index");
-            webLogElapsed("/battery", webStart);
             return;
         }
     }
@@ -1762,7 +1847,6 @@ static void handleBatteryDetail() {
     int index = indexArg.toInt();
     if (index < 0 || index >= BATTERY_COUNT) {
         server.send(404, "text/plain", "Battery not found");
-        webLogElapsed("/battery", webStart);
         return;
     }
 
@@ -1801,7 +1885,6 @@ static void handleBatteryDetail() {
     if (!battery.hasCellData || battery.cellCount == 0) {
         server.sendContent(F("<p class='muted'>No valid cell data available yet.</p></body></html>"));
         server.sendContent("");
-        webLogElapsed("/battery", webStart);
         return;
     }
 
@@ -1816,7 +1899,6 @@ static void handleBatteryDetail() {
     Serial.printf("[WEB] /battery cell loop done elapsed=%lums\n", millis() - webStart);
     server.sendContent(F("</table></body></html>"));
     server.sendContent("");
-    webLogElapsed("/battery", webStart);
 }
 
 static bool parseEnabledArg(const String& value, bool& enabled) {
@@ -1834,24 +1916,20 @@ static bool parseEnabledArg(const String& value, bool& enabled) {
 }
 
 static void handleSetBatteryEnabled() {
-    unsigned long webStart = millis();
-    webLogRequest("/battery/enabled");
+    ScopedWebRequestWatchdog requestWatchdog("/battery/enabled");
     if (!server.hasArg("index") || !server.hasArg("enabled")) {
         server.send(400, "text/plain", "Missing index or enabled");
-        webLogElapsed("/battery/enabled", webStart);
         return;
     }
 
     String indexArg = server.arg("index");
     if (indexArg.length() == 0) {
         server.send(400, "text/plain", "Missing battery index");
-        webLogElapsed("/battery/enabled", webStart);
         return;
     }
     for (size_t i = 0; i < indexArg.length(); i++) {
         if (!isDigit(indexArg.charAt(i))) {
             server.send(400, "text/plain", "Invalid battery index");
-            webLogElapsed("/battery/enabled", webStart);
             return;
         }
     }
@@ -1859,14 +1937,12 @@ static void handleSetBatteryEnabled() {
     int index = indexArg.toInt();
     if (index < 0 || index >= BATTERY_COUNT) {
         server.send(404, "text/plain", "Battery not found");
-        webLogElapsed("/battery/enabled", webStart);
         return;
     }
 
     bool enabled = false;
     if (!parseEnabledArg(server.arg("enabled"), enabled)) {
         server.send(400, "text/plain", "Invalid enabled value");
-        webLogElapsed("/battery/enabled", webStart);
         return;
     }
 
@@ -1891,10 +1967,8 @@ static void handleSetBatteryEnabled() {
                       batteryConfigs[index].name,
                       enabled ? "true" : "false");
     }
-
     server.sendHeader("Location", "/", true);
     server.send(303, "text/plain", "");
-    webLogElapsed("/battery/enabled", webStart);
 }
 
 static bool tryConnectWiFi(const char* ssid, const char* password) {
@@ -2023,9 +2097,22 @@ void setup() {
         server.on("/battery/enabled", HTTP_POST, handleSetBatteryEnabled);
         server.on("/inverter", handleInverter);
         server.on("/api/inverter", handleInverterApi);
-        server.on("/api/solis", handleInverterApi);
+        server.on("/api/solis", handleSolisApi);
         server.begin();
         Serial.println("Web server started on port 80");
+        BaseType_t webWatchdogTaskOk = xTaskCreatePinnedToCore(
+            webRequestWatchdogTask,
+            "WebReqWd",
+            WEB_REQUEST_TASK_STACK_SIZE,
+            nullptr,
+            WEB_REQUEST_TASK_PRIORITY,
+            nullptr,
+            WEB_REQUEST_TASK_CORE);
+        if (webWatchdogTaskOk != pdPASS) {
+            Serial.println("Failed to start web request watchdog task");
+        } else {
+            Serial.printf("Web request watchdog task started on core %d\n", WEB_REQUEST_TASK_CORE);
+        }
         wifiReady = true;
     } else {
         Serial.println("WiFi failed - continuing without web server");
