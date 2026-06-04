@@ -38,10 +38,10 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
 #ifndef WIFI_SSID
-#define WIFI_SSID ""
+#define WIFI_SSID "TP-LINK_73F3"
 #endif
 #ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD ""
+#define WIFI_PASSWORD "DEADBEEF"
 #endif
 #define WIFI_CONNECT_TIMEOUT_MS   5000
 #define SOLIS_POLL_INTERVAL_MS     3000
