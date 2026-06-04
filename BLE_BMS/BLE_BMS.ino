@@ -265,6 +265,8 @@ static volatile bool webRequestActive = false;
 static volatile unsigned long webRequestStartMs = 0;
 static volatile bool webRequestRestartTriggered = false;
 static const char* volatile webRequestHandlerName = nullptr;
+static portMUX_TYPE mainLoopWatchdogMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool mainLoopWatchdogArmed = false;
 static volatile unsigned long lastLoopProgressMs = 0;
 
 static BLEScan* pBLEScan = nullptr;
@@ -1504,9 +1506,14 @@ static void mainLoopWatchdogTask(void* pv) {
     TickType_t lastWake = xTaskGetTickCount();
 
     for (;;) {
+        bool armed = false;
         unsigned long nowMs = millis();
-        unsigned long loopProgressMs = lastLoopProgressMs;
-        if (loopProgressMs != 0 && (nowMs - loopProgressMs) >= MAIN_LOOP_WATCHDOG_TIMEOUT_MS) {
+        unsigned long loopProgressMs = 0;
+        portENTER_CRITICAL(&mainLoopWatchdogMux);
+        armed = mainLoopWatchdogArmed;
+        loopProgressMs = lastLoopProgressMs;
+        portEXIT_CRITICAL(&mainLoopWatchdogMux);
+        if (armed && (nowMs - loopProgressMs) >= MAIN_LOOP_WATCHDOG_TIMEOUT_MS) {
             Serial.printf("[LOOP] no progress for %lu ms (timeout=%lu ms); restarting ESP32\n",
                           nowMs - loopProgressMs,
                           MAIN_LOOP_WATCHDOG_TIMEOUT_MS);
@@ -2204,7 +2211,10 @@ static unsigned long lastHeartbeat = 0;
 
 void loop() {
     unsigned long now = millis();
+    portENTER_CRITICAL(&mainLoopWatchdogMux);
     lastLoopProgressMs = now;
+    mainLoopWatchdogArmed = true;
+    portEXIT_CRITICAL(&mainLoopWatchdogMux);
 
     if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeat = now;
