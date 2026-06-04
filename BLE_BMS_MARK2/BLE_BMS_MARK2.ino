@@ -5,6 +5,9 @@
 #include <BLERemoteCharacteristic.h>
 #include <BLERemoteService.h>
 #include <HardwareSerial.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 #include "driver/twai.h"
 #include <math.h>
 
@@ -34,6 +37,10 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define CAN_MUTEX_TIMEOUT_MS        100
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
+#define WIFI_SSID           "TP-LINK_73F3"
+#define WIFI_PASSWORD_UPPER "DEADBEEF"
+#define WIFI_PASSWORD_LOWER "deadbeef"
+#define WIFI_CONNECT_TIMEOUT_MS  10000
 #define SOLIS_POLL_INTERVAL_MS     3000
 #define SOLIS_BLOCK_READ_TIMEOUT_MS 300
 #define SOLIS_BLOCK_START_REG     33050
@@ -167,6 +174,17 @@ static const uint16_t SOLIS_REG_BATTERY_DIRECTION = 33136;
 static const uint16_t SOLIS_REG_BATTERY_SOC = 33140;
 static const uint16_t SOLIS_REG_BATTERY_VOLTAGE = 33142;
 
+struct RegisterSpec {
+    uint16_t reg;
+};
+
+static const RegisterSpec SOLIS_REGISTER_SPECS[] = {
+    {33050}, {33051}, {33052}, {33053}, {33059}, {33072}, {33074},
+    {33080}, {33081}, {33085}, {33095}, {33129}, {33130}, {33131},
+    {33132}, {33134}, {33135}, {33136}, {33137}, {33140}, {33142},
+};
+static const size_t SOLIS_REGISTER_COUNT = sizeof(SOLIS_REGISTER_SPECS) / sizeof(SOLIS_REGISTER_SPECS[0]);
+
 static BatteryState batteries[] = {
     {BMS1_NAME, BMS1_MAC, BMS1_ENABLED},
     {BMS2_NAME, BMS2_MAC, BMS2_ENABLED},
@@ -185,6 +203,7 @@ static SemaphoreHandle_t canAggregateMutex = nullptr;
 static SolisSnapshot solisState = {};
 static SemaphoreHandle_t solisMutex = nullptr;
 static HardwareSerial RS485(2);
+static AsyncWebServer server(80);
 
 static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs);
 static AggregateSnapshot buildAggregateSnapshot(unsigned long now);
@@ -210,6 +229,9 @@ static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t coun
 static void pollSolisOnce(unsigned long nowMs);
 static void maybePollSolis(unsigned long nowMs);
 static void printSolisSummary(unsigned long nowMs);
+static bool tryConnectWiFi(const char* ssid, const char* password);
+static bool tryGetSolisRegisterValue(const SolisSnapshot& snapshot, uint16_t docReg, SolisRegisterValue& regValue);
+static String buildSolisJson();
 uint8_t socFromVoltageTable(float packVoltage);
 
 void setupCAN();
@@ -503,6 +525,103 @@ static void printSolisSummary(unsigned long nowMs) {
         Serial.printf(" dir=%s", isSolisBatteryDischarging(snapshot.batteryDirection) ? "discharging" : "charging");
     }
     Serial.println();
+}
+
+static bool tryConnectWiFi(const char* ssid, const char* password) {
+    Serial.printf("Trying WiFi: %s\n", ssid);
+    WiFi.begin(ssid, password);
+
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+        delay(250);
+        Serial.print(".");
+    }
+    Serial.println();
+    return WiFi.status() == WL_CONNECTED;
+}
+
+static bool tryGetSolisRegisterValue(const SolisSnapshot& snapshot, uint16_t docReg, SolisRegisterValue& regValue) {
+    switch (docReg) {
+        case SOLIS_REG_PV1_VOLTAGE: regValue = snapshot.pv1Voltage; return true;
+        case SOLIS_REG_PV1_CURRENT: regValue = snapshot.pv1Current; return true;
+        case SOLIS_REG_PV2_VOLTAGE: regValue = snapshot.pv2Voltage; return true;
+        case SOLIS_REG_PV2_CURRENT: regValue = snapshot.pv2Current; return true;
+        case SOLIS_REG_GRID_POWER: regValue = snapshot.gridPower; return true;
+        case SOLIS_REG_BATTERY_CURRENT: regValue = snapshot.batteryCurrent; return true;
+        case SOLIS_REG_BATTERY_DIRECTION: regValue = snapshot.batteryDirection; return true;
+        case SOLIS_REG_BATTERY_SOC: regValue = snapshot.batterySoc; return true;
+        case SOLIS_REG_BATTERY_VOLTAGE: regValue = snapshot.batteryVoltage; return true;
+        default:
+            regValue = {};
+            return false;
+    }
+}
+
+static String buildSolisJson() {
+    SolisSnapshot snapshot = {};
+    copySolisSnapshot(snapshot);
+
+    String json;
+    json.reserve(1700);
+    json += "{";
+    json += "\"uptimeMs\":";
+    json += String(millis());
+    json += ",\"lastPollMs\":";
+    json += String(snapshot.lastPollMs);
+    json += ",\"lastSuccessMs\":";
+    json += String(snapshot.lastSuccessMs);
+    json += ",\"pollCount\":";
+    json += String(snapshot.pollCount);
+    json += ",\"readErrors\":";
+    json += String(snapshot.readErrors);
+    json += ",\"lockTimeouts\":";
+    json += String(snapshot.lockTimeouts);
+
+    json += ",\"batteryDirection\":";
+    if (snapshot.batteryDirection.valid) {
+        json += "\"";
+        json += isSolisBatteryDischarging(snapshot.batteryDirection) ? "discharging" : "charging";
+        json += "\"";
+    } else {
+        json += "null";
+    }
+
+    float derivedValue = 0.0f;
+    json += ",\"batteryPowerW\":";
+    json += tryBuildSignedSolisBatteryPowerW(snapshot, derivedValue) ? String(derivedValue, 1) : String("0");
+    json += ",\"pv1PowerW\":";
+    json += tryBuildSolisPowerW(snapshot.pv1Voltage, snapshot.pv1Current, 10.0f, 10.0f, derivedValue) ? String(derivedValue, 1) : String("0");
+    json += ",\"pv2PowerW\":";
+    json += tryBuildSolisPowerW(snapshot.pv2Voltage, snapshot.pv2Current, 10.0f, 10.0f, derivedValue) ? String(derivedValue, 1) : String("0");
+
+    float pv1Power = 0.0f;
+    float pv2Power = 0.0f;
+    json += ",\"pvTotalPowerW\":";
+    if (tryBuildSolisPowerW(snapshot.pv1Voltage, snapshot.pv1Current, 10.0f, 10.0f, pv1Power) &&
+        tryBuildSolisPowerW(snapshot.pv2Voltage, snapshot.pv2Current, 10.0f, 10.0f, pv2Power)) {
+        json += String(pv1Power + pv2Power, 1);
+    } else {
+        json += "0";
+    }
+
+    for (size_t i = 0; i < SOLIS_REGISTER_COUNT; i++) {
+        SolisRegisterValue regValue = {};
+        tryGetSolisRegisterValue(snapshot, SOLIS_REGISTER_SPECS[i].reg, regValue);
+
+        json += ",\"";
+        json += String(SOLIS_REGISTER_SPECS[i].reg);
+        json += "\":{";
+        json += "\"valid\":";
+        json += regValue.valid ? "true" : "false";
+        json += ",\"raw\":";
+        json += String(regValue.raw);
+        json += ",\"signed\":";
+        json += String(static_cast<int16_t>(regValue.raw));
+        json += "}";
+    }
+
+    json += "}";
+    return json;
 }
 
 static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs) {
@@ -1122,6 +1241,24 @@ void setup() {
                       RS485_RX_PIN,
                       RS485_TX_PIN,
                       (unsigned long)SOLIS_POLL_INTERVAL_MS);
+    }
+
+    WiFi.mode(WIFI_STA);
+    bool wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
+    if (!wifiOk) {
+        WiFi.disconnect(true);
+        delay(200);
+        wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
+    }
+    if (wifiOk) {
+        Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
+        server.on("/api/solis", HTTP_GET, [](AsyncWebServerRequest* request) {
+            request->send(200, "application/json", buildSolisJson());
+        });
+        server.begin();
+        Serial.println("Async web server started on port 80 (/api/solis)");
+    } else {
+        Serial.println("WiFi failed - continuing without web server");
     }
 
     BLEDevice::init("");
