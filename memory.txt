@@ -289,6 +289,10 @@ Project memory for BLE_BMS multi-battery work.
   - many short 5-byte CRC-valid artifacts appeared on the bus capture (for example `01 FF 01 A0 30`, `01 FE 01 A1 A0`, etc.)
   - these are not normal Modbus FC04 responses and were interpreted as bus noise/artifacts/adapter side effects rather than valid exceptions
   - practical conclusion: the current Pi passive tap is not electrically benign enough to trust in production without further hardware refinement
+- Follow-up electrical finding that changed the interpretation:
+  - the real issue was missing earth/common reference between the Raspberry Pi adapter and the inverter/bus
+  - after adding the common reference/ground, the sniffed Solis traffic became reliable and the inverter replied every time the ESP32 polled
+  - practical conclusion: passive Pi sniffing of the live RS485 bus is viable in this setup provided the common reference is connected correctly
 - Sniffer/tooling lessons learned:
   - naive chunk logging is not sufficient for RTU; buffering and frame reconstruction are required
   - a more stateful Python sniffer using expected Modbus lengths and relaxed idle-gap handling produced much cleaner captures
@@ -296,6 +300,10 @@ Project memory for BLE_BMS multi-battery work.
 - Data decode confidence from the captured 191-byte Solis response:
   - sample decoded values looked plausible for PV voltage/current and battery metrics
   - user-observed clean frame was sufficient to support writing a Pi-side decoder that reconstructs Solis fields and emits JSON in the same structure as `BLE_BMS/BLE_BMS.ino` `buildInverterJson()`/`/api/solis`
-- Future direction implied by today's findings:
-  - if the passive tap can be made electrically safe, the Pi may be able to decode live Solis traffic directly and feed Grafana/Influx without adding Wi-Fi back to the ESP32
-  - if not, safer alternatives remain: ESP32 serial/UART export to Pi, or redesign with Pi as sole Modbus master
+- Pi integration result:
+  - a root-level script `read_solis_python.py` was added on master as a Python replacement for `read_solis.sh`
+  - it listens on the RS485 tap, extracts valid 191-byte Solis FC04 block responses, reconstructs the same JSON-style fields expected by the existing shell pipeline, and writes InfluxDB measurements without needing ESP32 web calls
+- High-confidence architecture lesson from today's outcome:
+  - `BLE_BMS_MARK2` is rock solid specifically when Wi-Fi/web are left out
+  - keeping Mark 2 lean (persistent BLE + CAN task separation + RS485 polling, no Wi-Fi) is currently the winning architecture
+  - with the Pi now able to sniff/decode Solis traffic reliably, there is no strong need to put Wi-Fi/web back into Mark 2 for monitoring purposes
