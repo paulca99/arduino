@@ -13,13 +13,13 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BMS1_MAC  "a5:c2:37:49:c7:a2"
 #define BMS1_ENABLED false
 
-#define BMS2_NAME "Solax"
-#define BMS2_MAC  "a4:c1:37:20:4e:3b"
+#define BMS2_NAME "Growatt2"
+#define BMS2_MAC  "a5:c2:37:51:85:89"
 #define BMS2_ENABLED true
 
 #define BMS3_NAME "SP14S004P14S40A"
 #define BMS3_MAC  "a5:c2:37:51:85:7f"
-#define BMS3_ENABLED false
+#define BMS3_ENABLED true
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
 #define RECONNECT_SCAN_TIMEOUT_MS  6000
