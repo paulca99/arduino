@@ -5,6 +5,7 @@
 #include "pwmFunctions.h"
 #include "pcemon.h"
 #include <ESPAsyncWebSrv.h>
+#include <Preferences.h>
 
 extern bool GTIenabled;
 extern struct tm timeinfo;
@@ -24,11 +25,14 @@ extern float gtiPower;
 extern int chargerPLimit;
 extern int chargerPowerCreep;
 
-// Replace with your network credentials
-//const char* ssid = "TP-LINK_73F3";
-//const char* password = "DEADBEEF";
-const char* ssid = "mesh";
-const char* password = "deadbeef";
+static Preferences wifiPrefs;
+static const char *wifiPrefNamespace = "wifi_cfg";
+static const char *wifiPrefKey = "preferred_ssid";
+static const char *wifiPasswords[] = {"DEADBEEF", "deadbeef"};
+static const int wifiPasswordCount = sizeof(wifiPasswords) / sizeof(wifiPasswords[0]);
+static const unsigned long wifiAttemptResetDelayMs = 100;
+static const int wifiMaxScannedNetworks = 64;
+static bool wifiReconnectInProgress = false;
 
 // Set web server port number to 80
 WiFiServer server(80);
@@ -51,33 +55,127 @@ void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info){
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 }
+
+static void savePreferredSsid(const String &ssid) {
+  wifiPrefs.begin(wifiPrefNamespace, false);
+  wifiPrefs.putString(wifiPrefKey, ssid);
+  wifiPrefs.end();
+}
+
+static String loadPreferredSsid() {
+  wifiPrefs.begin(wifiPrefNamespace, true);
+  String ssid = wifiPrefs.getString(wifiPrefKey, "");
+  wifiPrefs.end();
+  return ssid;
+}
+
+static bool waitForWifiConnection(unsigned long timeoutMs) {
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  return WiFi.status() == WL_CONNECTED;
+}
+
+static bool tryConnectToSsid(const String &candidateSsid) {
+  if (candidateSsid.length() == 0) {
+    return false;
+  }
+
+  for (int p = 0; p < wifiPasswordCount; p++) {
+    Serial.printf("Trying SSID '%s' with password option %d\n",
+                  candidateSsid.c_str(), p + 1);
+    WiFi.disconnect(false, true);
+    delay(wifiAttemptResetDelayMs);
+    WiFi.begin(candidateSsid.c_str(), wifiPasswords[p]);
+    if (waitForWifiConnection(10000)) {
+      Serial.printf("Connected to '%s'\n", candidateSsid.c_str());
+      savePreferredSsid(candidateSsid);
+      return true;
+    }
+  }
+  return false;
+}
+
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info){
   Serial.println("Disconnected from WiFi access point");
   Serial.print("WiFi lost connection. Reason: ");
   Serial.println(info.wifi_sta_disconnected.reason);
   Serial.println("Trying to Reconnect");
-  WiFi.begin(ssid, password);
+  if (wifiReconnectInProgress) {
+    return;
+  }
+  connectToWifi();
 }
 
 void connectToWifi(){
-  int wifiwait=0;
-  WiFi.disconnect();
-  delay(2000);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED && wifiwait < 10 ) {
-    delay(2000);
-    Serial.print(".");
-    wifiwait++;
+  if (wifiReconnectInProgress) {
+    return;
+  }
+  wifiReconnectInProgress = true;
+
+  bool connected = false;
+  String preferredSsid = loadPreferredSsid();
+  if (preferredSsid.length() > 0) {
+    Serial.printf("Trying preferred SSID first: '%s'\n", preferredSsid.c_str());
+    connected = tryConnectToSsid(preferredSsid);
   }
 
+  if (!connected) {
+    Serial.println("Scanning for WiFi networks...");
+    int networkCount = WiFi.scanNetworks();
+    if (networkCount > wifiMaxScannedNetworks) {
+      networkCount = wifiMaxScannedNetworks;
+    }
+    if (networkCount > 0) {
+      int order[wifiMaxScannedNetworks];
+      for (int i = 0; i < networkCount; i++) {
+        order[i] = i;
+      }
+      for (int i = 0; i < networkCount - 1; i++) {
+        for (int j = i + 1; j < networkCount; j++) {
+          if (WiFi.RSSI(order[j]) > WiFi.RSSI(order[i])) {
+            int tmp = order[i];
+            order[i] = order[j];
+            order[j] = tmp;
+          }
+        }
+      }
+
+      for (int i = 0; i < networkCount && !connected; i++) {
+        String candidate = WiFi.SSID(order[i]);
+        if (candidate == preferredSsid) {
+          continue;
+        }
+        bool alreadyTried = false;
+        for (int j = 0; j < i; j++) {
+          if (candidate == WiFi.SSID(order[j])) {
+            alreadyTried = true;
+            break;
+          }
+        }
+        if (alreadyTried) {
+          continue;
+        }
+        connected = tryConnectToSsid(candidate);
+      }
+    }
+  }
+
+  if (!connected) {
+    Serial.println("No WiFi network connected after scan/pass attempts.");
+  }
+
+  wifiReconnectInProgress = false;
 }
 
 void wifiSetup() {
 
 
-  // Connect to Wi-Fi network with SSID and password
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+  // Connect to Wi-Fi network by preferred SSID or strongest scanned networks
+  Serial.println("Connecting to WiFi...");
   connectToWifi();
 
   WiFi.onEvent(WiFiStationDisconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
