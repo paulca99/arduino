@@ -4,6 +4,7 @@
 #include <BLEAdvertisedDevice.h>
 #include <BLERemoteCharacteristic.h>
 #include <BLERemoteService.h>
+#include <HardwareSerial.h>
 #include "driver/twai.h"
 #include <math.h>
 
@@ -31,6 +32,19 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define CAN_TASK_STACK_SIZE        4096
 #define CAN_TASK_PRIORITY             1
 #define CAN_MUTEX_TIMEOUT_MS        100
+#define RS485_RX_PIN                 16
+#define RS485_TX_PIN                 17
+#define SOLIS_POLL_INTERVAL_MS     3000
+#define SOLIS_BLOCK_READ_TIMEOUT_MS 300
+#define SOLIS_BLOCK_START_REG     33050
+#define SOLIS_BLOCK_END_REG       33142
+#define SOLIS_BLOCK_REG_COUNT        93
+#define SOLIS_MODBUS_HEADER_BYTES     3
+#define SOLIS_MODBUS_CRC_BYTES        2
+#define SOLIS_MODBUS_BYTES_PER_REG    2
+#define SOLIS_MUTEX_TIMEOUT_MS      100
+#define SOLIS_SLAVE_ID                1
+#define SOLIS_DIVISOR_ZERO_GUARD 1.0e-6f
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
 #else
@@ -121,6 +135,38 @@ struct AggregateSnapshot {
     unsigned long lastFreshMs = 0;
 };
 
+struct SolisRegisterValue {
+    uint16_t raw = 0;
+    bool valid = false;
+};
+
+struct SolisSnapshot {
+    SolisRegisterValue pv1Voltage;
+    SolisRegisterValue pv1Current;
+    SolisRegisterValue pv2Voltage;
+    SolisRegisterValue pv2Current;
+    SolisRegisterValue gridPower;
+    SolisRegisterValue batteryCurrent;
+    SolisRegisterValue batteryDirection;
+    SolisRegisterValue batterySoc;
+    SolisRegisterValue batteryVoltage;
+    uint32_t lastPollMs = 0;
+    uint32_t lastSuccessMs = 0;
+    uint32_t pollCount = 0;
+    uint32_t readErrors = 0;
+    uint32_t lockTimeouts = 0;
+};
+
+static const uint16_t SOLIS_REG_PV1_VOLTAGE = 33050;
+static const uint16_t SOLIS_REG_PV1_CURRENT = 33051;
+static const uint16_t SOLIS_REG_PV2_VOLTAGE = 33052;
+static const uint16_t SOLIS_REG_PV2_CURRENT = 33053;
+static const uint16_t SOLIS_REG_GRID_POWER = 33132;
+static const uint16_t SOLIS_REG_BATTERY_CURRENT = 33135;
+static const uint16_t SOLIS_REG_BATTERY_DIRECTION = 33136;
+static const uint16_t SOLIS_REG_BATTERY_SOC = 33140;
+static const uint16_t SOLIS_REG_BATTERY_VOLTAGE = 33142;
+
 static BatteryState batteries[] = {
     {BMS1_NAME, BMS1_MAC, BMS1_ENABLED},
     {BMS2_NAME, BMS2_MAC, BMS2_ENABLED},
@@ -132,15 +178,38 @@ static const int BATTERY_COUNT = sizeof(batteries) / sizeof(batteries[0]);
 static BLEScan* pBLEScan = nullptr;
 static unsigned long cycleCount = 0;
 static unsigned long lastSummaryMs = 0;
+static unsigned long lastSolisPollMs = 0;
 static AggregateSnapshot aggregate;
 static AggregateSnapshot canAggregate;
 static SemaphoreHandle_t canAggregateMutex = nullptr;
+static SolisSnapshot solisState = {};
+static SemaphoreHandle_t solisMutex = nullptr;
+static HardwareSerial RS485(2);
 
 static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs);
 static AggregateSnapshot buildAggregateSnapshot(unsigned long now);
 static void updateCanAggregateSnapshot(const AggregateSnapshot& snap);
 static AggregateSnapshot copyCanAggregateSnapshot();
 static void canTxTask(void* pv);
+static bool tryGetSolisScaledValue(const SolisRegisterValue& regValue,
+                                   float divisor,
+                                   bool signedValue,
+                                   float& value);
+static bool isSolisBatteryDischarging(const SolisRegisterValue& regValue);
+static bool tryBuildSolisPowerW(const SolisRegisterValue& voltageReg,
+                                const SolisRegisterValue& currentReg,
+                                float voltageDivisor,
+                                float currentDivisor,
+                                float& powerW);
+static bool tryBuildSignedSolisBatteryPowerW(const SolisSnapshot& snapshot, float& powerW);
+static void setSolisRegisterFromBlock(uint16_t docReg,
+                                      const uint16_t* blockValues,
+                                      SolisRegisterValue& regValue);
+static bool copySolisSnapshot(SolisSnapshot& snapshot);
+static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues);
+static void pollSolisOnce(unsigned long nowMs);
+static void maybePollSolis(unsigned long nowMs);
+static void printSolisSummary(unsigned long nowMs);
 uint8_t socFromVoltageTable(float packVoltage);
 
 void setupCAN();
@@ -196,6 +265,244 @@ static int seenBatteryCount() {
         if (batteries[i].enabled && batteries[i].seen) count++;
     }
     return count;
+}
+
+static bool tryGetSolisScaledValue(const SolisRegisterValue& regValue,
+                                   float divisor,
+                                   bool signedValue,
+                                   float& value) {
+    if (!regValue.valid || fabsf(divisor) < SOLIS_DIVISOR_ZERO_GUARD) return false;
+
+    value = signedValue ? static_cast<float>(static_cast<int16_t>(regValue.raw)) / divisor
+                        : static_cast<float>(regValue.raw) / divisor;
+    return true;
+}
+
+static bool isSolisBatteryDischarging(const SolisRegisterValue& regValue) {
+    return regValue.valid && regValue.raw == 1;
+}
+
+static bool tryBuildSolisPowerW(const SolisRegisterValue& voltageReg,
+                                const SolisRegisterValue& currentReg,
+                                float voltageDivisor,
+                                float currentDivisor,
+                                float& powerW) {
+    float voltageVolts = 0.0f;
+    float currentAmps = 0.0f;
+    if (!tryGetSolisScaledValue(voltageReg, voltageDivisor, false, voltageVolts) ||
+        !tryGetSolisScaledValue(currentReg, currentDivisor, false, currentAmps)) {
+        return false;
+    }
+
+    powerW = voltageVolts * currentAmps;
+    return true;
+}
+
+static bool tryBuildSignedSolisBatteryPowerW(const SolisSnapshot& snapshot, float& powerW) {
+    if (!tryBuildSolisPowerW(snapshot.batteryVoltage, snapshot.batteryCurrent, 100.0f, 10.0f, powerW)) {
+        return false;
+    }
+
+    if (isSolisBatteryDischarging(snapshot.batteryDirection)) {
+        powerW = -powerW;
+    }
+    return true;
+}
+
+static uint16_t modbusCRC(const uint8_t* buf, int len) {
+    uint16_t crc = 0xFFFF;
+    for (int pos = 0; pos < len; pos++) {
+        crc ^= buf[pos];
+        for (int i = 0; i < 8; i++) {
+            crc = (crc & 1U) ? (crc >> 1) ^ 0xA001U : (crc >> 1);
+        }
+    }
+    return crc;
+}
+
+static void flushRS485Input() {
+    while (RS485.available()) {
+        RS485.read();
+    }
+}
+
+static int readRS485Reply(uint8_t* buf, int maxLen, uint32_t timeoutMs) {
+    int len = 0;
+    uint32_t last = millis();
+    while (millis() - last < timeoutMs) {
+        while (RS485.available()) {
+            uint8_t byteValue = RS485.read();
+            if (len < maxLen) buf[len++] = byteValue;
+            last = millis();
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return len;
+}
+
+static bool validModbusCRC(const uint8_t* buf, int len) {
+    if (len < 4) return false;
+    uint16_t rxCRC = buf[len - 2] | (static_cast<uint16_t>(buf[len - 1]) << 8);
+    return rxCRC == modbusCRC(buf, len - 2);
+}
+
+static void sendReadInput(uint8_t slave, uint16_t rawAddr, uint16_t count) {
+    uint8_t frame[8];
+    frame[0] = slave;
+    frame[1] = 0x04;
+    frame[2] = rawAddr >> 8;
+    frame[3] = rawAddr & 0xFF;
+    frame[4] = count >> 8;
+    frame[5] = count & 0xFF;
+    uint16_t crc = modbusCRC(frame, 6);
+    frame[6] = crc & 0xFF;
+    frame[7] = crc >> 8;
+    RS485.write(frame, sizeof(frame));
+    RS485.flush();
+}
+
+static void setSolisRegisterFromBlock(uint16_t docReg,
+                                      const uint16_t* blockValues,
+                                      SolisRegisterValue& regValue) {
+    if (docReg < SOLIS_BLOCK_START_REG || docReg > SOLIS_BLOCK_END_REG) return;
+
+    regValue.raw = blockValues[docReg - SOLIS_BLOCK_START_REG];
+    regValue.valid = true;
+}
+
+static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues) {
+    static uint8_t buf[SOLIS_MODBUS_HEADER_BYTES +
+                       (SOLIS_BLOCK_REG_COUNT * SOLIS_MODBUS_BYTES_PER_REG) +
+                       SOLIS_MODBUS_CRC_BYTES];
+
+    const int expectedLen = SOLIS_MODBUS_HEADER_BYTES +
+                            (count * SOLIS_MODBUS_BYTES_PER_REG) +
+                            SOLIS_MODBUS_CRC_BYTES;
+    if (expectedLen > static_cast<int>(sizeof(buf))) return false;
+
+    const uint16_t rawAddr = startDocReg - 1;
+
+    flushRS485Input();
+    sendReadInput(slave, rawAddr, count);
+
+    const int len = readRS485Reply(buf, sizeof(buf), SOLIS_BLOCK_READ_TIMEOUT_MS);
+    if (len < expectedLen) return false;
+    if (!validModbusCRC(buf, len)) return false;
+    if (buf[0] != slave || buf[1] != 0x04) return false;
+    if (buf[2] != static_cast<uint8_t>(count * SOLIS_MODBUS_BYTES_PER_REG)) return false;
+
+    for (uint16_t i = 0; i < count; i++) {
+        const int offset = SOLIS_MODBUS_HEADER_BYTES + (i * SOLIS_MODBUS_BYTES_PER_REG);
+        outValues[i] = (static_cast<uint16_t>(buf[offset]) << 8) | buf[offset + 1];
+    }
+    return true;
+}
+
+static void pollSolisOnce(unsigned long nowMs) {
+    if (solisMutex == nullptr) return;
+
+    uint16_t blockValues[SOLIS_BLOCK_REG_COUNT];
+    uint32_t lockTimeoutsThisPass = 0;
+    bool blockOk = readSolisBlockU16(SOLIS_SLAVE_ID,
+                                     SOLIS_BLOCK_START_REG,
+                                     SOLIS_BLOCK_REG_COUNT,
+                                     blockValues);
+
+    if (blockOk) {
+        if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+            setSolisRegisterFromBlock(SOLIS_REG_PV1_VOLTAGE, blockValues, solisState.pv1Voltage);
+            setSolisRegisterFromBlock(SOLIS_REG_PV1_CURRENT, blockValues, solisState.pv1Current);
+            setSolisRegisterFromBlock(SOLIS_REG_PV2_VOLTAGE, blockValues, solisState.pv2Voltage);
+            setSolisRegisterFromBlock(SOLIS_REG_PV2_CURRENT, blockValues, solisState.pv2Current);
+            setSolisRegisterFromBlock(SOLIS_REG_GRID_POWER, blockValues, solisState.gridPower);
+            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_CURRENT, blockValues, solisState.batteryCurrent);
+            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_DIRECTION, blockValues, solisState.batteryDirection);
+            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_SOC, blockValues, solisState.batterySoc);
+            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_VOLTAGE, blockValues, solisState.batteryVoltage);
+            solisState.lastSuccessMs = nowMs;
+            xSemaphoreGive(solisMutex);
+        } else {
+            lockTimeoutsThisPass++;
+        }
+    }
+
+    if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        solisState.lastPollMs = nowMs;
+        solisState.pollCount++;
+        if (!blockOk) solisState.readErrors++;
+        solisState.lockTimeouts += lockTimeoutsThisPass;
+        xSemaphoreGive(solisMutex);
+    }
+
+    if (!blockOk) {
+        Serial.println("[Solis] poll pass had no successful reads");
+    }
+}
+
+static void maybePollSolis(unsigned long nowMs) {
+    if (solisMutex == nullptr) return;
+    if (lastSolisPollMs != 0 && (nowMs - lastSolisPollMs) < SOLIS_POLL_INTERVAL_MS) return;
+
+    lastSolisPollMs = nowMs;
+    pollSolisOnce(nowMs);
+}
+
+static bool copySolisSnapshot(SolisSnapshot& snapshot) {
+    if (solisMutex == nullptr) {
+        snapshot = {};
+        return false;
+    }
+
+    if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        snapshot = {};
+        return false;
+    }
+
+    snapshot = solisState;
+    xSemaphoreGive(solisMutex);
+    return true;
+}
+
+static void printSolisSummary(unsigned long nowMs) {
+    SolisSnapshot snapshot = {};
+    if (!copySolisSnapshot(snapshot) || snapshot.pollCount == 0) {
+        Serial.println("[Solis] no inverter polls yet");
+        return;
+    }
+
+    unsigned long ageSec = snapshot.lastSuccessMs == 0 ? 0 : (nowMs - snapshot.lastSuccessMs) / 1000UL;
+    float batteryVoltage = 0.0f;
+    float batteryCurrent = 0.0f;
+    float batterySoc = 0.0f;
+    float gridPower = 0.0f;
+    float batteryPower = 0.0f;
+    float pv1Power = 0.0f;
+    float pv2Power = 0.0f;
+
+    bool haveBatteryVoltage = tryGetSolisScaledValue(snapshot.batteryVoltage, 100.0f, false, batteryVoltage);
+    bool haveBatteryCurrent = tryGetSolisScaledValue(snapshot.batteryCurrent, 10.0f, false, batteryCurrent);
+    bool haveBatterySoc = tryGetSolisScaledValue(snapshot.batterySoc, 1.0f, false, batterySoc);
+    bool haveGridPower = tryGetSolisScaledValue(snapshot.gridPower, 1.0f, true, gridPower);
+    bool haveBatteryPower = tryBuildSignedSolisBatteryPowerW(snapshot, batteryPower);
+    bool havePv1Power = tryBuildSolisPowerW(snapshot.pv1Voltage, snapshot.pv1Current, 10.0f, 10.0f, pv1Power);
+    bool havePv2Power = tryBuildSolisPowerW(snapshot.pv2Voltage, snapshot.pv2Current, 10.0f, 10.0f, pv2Power);
+
+    Serial.printf("[Solis] age=%lus polls=%lu errors=%lu locks=%lu",
+                  ageSec,
+                  (unsigned long)snapshot.pollCount,
+                  (unsigned long)snapshot.readErrors,
+                  (unsigned long)snapshot.lockTimeouts);
+    if (haveBatteryVoltage) Serial.printf(" batt=%.2fV", batteryVoltage);
+    if (haveBatteryCurrent) Serial.printf(" %.1fA", batteryCurrent);
+    if (haveBatterySoc) Serial.printf(" soc=%.0f%%", batterySoc);
+    if (haveBatteryPower) Serial.printf(" battP=%.0fW", batteryPower);
+    if (haveGridPower) Serial.printf(" grid=%.0fW", gridPower);
+    if (havePv1Power) Serial.printf(" pv1=%.0fW", pv1Power);
+    if (havePv2Power) Serial.printf(" pv2=%.0fW", pv2Power);
+    if (snapshot.batteryDirection.valid) {
+        Serial.printf(" dir=%s", isSolisBatteryDischarging(snapshot.batteryDirection) ? "discharging" : "charging");
+    }
+    Serial.println();
 }
 
 static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs) {
@@ -772,6 +1079,7 @@ static void printSummary() {
         Serial.println();
     }
 
+    printSolisSummary(now);
     Serial.printf("Connected %d/%d enabled batteries\n",
                   connectedCount,
                   enabledBatteryCount());
@@ -803,6 +1111,17 @@ void setup() {
         } else {
             Serial.printf("CAN TX task started on core %d\n", CAN_TASK_CORE);
         }
+    }
+
+    solisMutex = xSemaphoreCreateMutex();
+    if (solisMutex == nullptr) {
+        Serial.println("Failed to create Solis mutex; inverter polling disabled");
+    } else {
+        RS485.begin(9600, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
+        Serial.printf("Solis RS485 polling enabled on RX=%d TX=%d every %lu ms\n",
+                      RS485_RX_PIN,
+                      RS485_TX_PIN,
+                      (unsigned long)SOLIS_POLL_INTERVAL_MS);
     }
 
     BLEDevice::init("");
@@ -855,6 +1174,7 @@ void setup() {
 void loop() {
     cycleCount++;
     Serial.printf("\n--- Persistent cycle %lu ---\n", cycleCount);
+    maybePollSolis(millis());
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
         BatteryState& battery = batteries[i];
@@ -893,6 +1213,7 @@ void loop() {
         }
 
         delay(BETWEEN_BATTERIES_MS);
+        maybePollSolis(millis());
     }
 
     if (millis() - lastSummaryMs >= LOG_INTERVAL_MS) {
