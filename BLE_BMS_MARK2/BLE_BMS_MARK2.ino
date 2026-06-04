@@ -37,12 +37,16 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define CAN_MUTEX_TIMEOUT_MS        100
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
-#define WIFI_SSID           "TP-LINK_73F3"
-#define WIFI_PASSWORD_UPPER "DEADBEEF"
-#define WIFI_PASSWORD_LOWER "deadbeef"
-#define WIFI_CONNECT_TIMEOUT_MS  10000
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD ""
+#endif
+#define WIFI_CONNECT_TIMEOUT_MS   5000
 #define SOLIS_POLL_INTERVAL_MS     3000
 #define SOLIS_BLOCK_READ_TIMEOUT_MS 300
+#define SOLIS_JSON_RESERVE_BYTES 1700
 #define SOLIS_BLOCK_START_REG     33050
 #define SOLIS_BLOCK_END_REG       33142
 #define SOLIS_BLOCK_REG_COUNT        93
@@ -562,7 +566,7 @@ static String buildSolisJson() {
     copySolisSnapshot(snapshot);
 
     String json;
-    json.reserve(1700);
+    json.reserve(SOLIS_JSON_RESERVE_BYTES);
     json += "{";
     json += "\"uptimeMs\":";
     json += String(millis());
@@ -1243,22 +1247,21 @@ void setup() {
                       (unsigned long)SOLIS_POLL_INTERVAL_MS);
     }
 
-    WiFi.mode(WIFI_STA);
-    bool wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_UPPER);
-    if (!wifiOk) {
-        WiFi.disconnect(true);
-        delay(200);
-        wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD_LOWER);
-    }
-    if (wifiOk) {
-        Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
-        server.on("/api/solis", HTTP_GET, [](AsyncWebServerRequest* request) {
-            request->send(200, "application/json", buildSolisJson());
-        });
-        server.begin();
-        Serial.println("Async web server started on port 80 (/api/solis)");
+    if (WIFI_SSID[0] != '\0') {
+        WiFi.mode(WIFI_STA);
+        bool wifiOk = tryConnectWiFi(WIFI_SSID, WIFI_PASSWORD);
+        if (wifiOk) {
+            Serial.printf("WiFi connected - http://%s\n", WiFi.localIP().toString().c_str());
+            server.on("/api/solis", HTTP_GET, [](AsyncWebServerRequest* request) {
+                request->send(200, "application/json", buildSolisJson());
+            });
+            server.begin();
+            Serial.println("Async web server started on port 80 (/api/solis)");
+        } else {
+            Serial.println("WiFi failed - continuing without web server");
+        }
     } else {
-        Serial.println("WiFi failed - continuing without web server");
+        Serial.println("WiFi disabled - set WIFI_SSID/WIFI_PASSWORD to enable /api/solis");
     }
 
     BLEDevice::init("");
