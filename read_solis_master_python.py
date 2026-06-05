@@ -37,6 +37,8 @@ SOLIS_RESPONSE_LEN = 3 + (SOLIS_REG_COUNT * 2) + 2  # 191
 
 # Register metadata based on the Solis PDF mapping notes in memory/history.
 # Unknown/resolved-later fields are still emitted as raw values.
+# Note: the active poll block starts at 33050, so 33049 (DC Voltage 1) is not
+# included in this fixed 93-register read shape.
 KNOWN_REGS = {
     33050: {"label": "dc_current_1", "scale": 0.1, "signed": False, "unit": "A"},
     33051: {"label": "dc_voltage_2", "scale": 0.1, "signed": False, "unit": "V"},
@@ -52,7 +54,13 @@ KNOWN_REGS = {
     33132: {"label": "storage_control_switching_value", "scale": None, "signed": False, "unit": None},
     33133: {"label": "battery_voltage", "scale": 0.1, "signed": False, "unit": "V"},
     33134: {"label": "battery_current", "scale": 0.1, "signed": True, "unit": "A"},
-    33135: {"label": "battery_current_direction", "scale": None, "signed": False, "unit": None},
+    33135: {
+        "label": "battery_current_direction",
+        "scale": None,
+        "signed": False,
+        "unit": None,
+        "enum_map": {0: "charging", 1: "discharging"},
+    },
     33136: {"label": "llc_bus_voltage", "scale": None, "signed": False, "unit": None},
     33137: {"label": "backup_ac_voltage_phase_a", "scale": 0.1, "signed": False, "unit": "V"},
     33139: {"label": "battery_soc", "scale": 1.0, "signed": False, "unit": "%"},
@@ -158,8 +166,9 @@ def decode_registers(regs: Dict[int, int]) -> Dict[str, Dict[str, object]]:
                 if meta.get("unit"):
                     entry["unit"] = meta["unit"]
 
-            if reg == 33135:
-                entry["enum"] = "discharging" if raw == 1 else "charging"
+            enum_map = meta.get("enum_map")
+            if enum_map:
+                entry["enum"] = enum_map.get(raw, f"unknown_{raw}")
 
         decoded[str(reg)] = entry
 
@@ -191,10 +200,13 @@ def legacy_metrics(regs: Dict[int, int], poll_count: int, read_errors: int, lock
     # Keep existing measurement names/shapes for Grafana compatibility.
     # Where the PDF mapping is known and unambiguous, use those corrected registers.
     # Where historical names don't map cleanly to the current block, keep old behavior.
-    pv1_v_raw = regs.get(33050, 0)
-    pv1_i_raw = regs.get(33051, 0)
-    pv2_v_raw = regs.get(33052, 0)
-    pv2_i_raw = regs.get(33053, 0)
+    # Keep historical metric names while using voltage/current typed registers.
+    # With this fixed 33050..33142 block, doc register 33049 is not present.
+    # So these are the first two available V/I pairs in the returned block.
+    legacy_pv1_v_raw = regs.get(33051, 0)  # doc: dc_voltage_2
+    legacy_pv1_i_raw = regs.get(33050, 0)  # doc: dc_current_1
+    legacy_pv2_v_raw = regs.get(33053, 0)  # doc: dc_voltage_3
+    legacy_pv2_i_raw = regs.get(33052, 0)  # doc: dc_current_2
     grid_v_raw = regs.get(33074, 0)
     grid_f_raw = regs.get(33094, 0)
     grid_p_signed = s32_from_u16(regs.get(33130, 0), regs.get(33131, 0))
@@ -203,26 +215,26 @@ def legacy_metrics(regs: Dict[int, int], poll_count: int, read_errors: int, lock
     batt_i_signed = s16(regs.get(33134, 0))
     batt_dir_raw = regs.get(33135, 0)
 
-    pv1_v = round(pv1_v_raw / 10.0, 1)
-    pv1_i = round(pv1_i_raw / 10.0, 1)
-    pv2_v = round(pv2_v_raw / 10.0, 1)
-    pv2_i = round(pv2_i_raw / 10.0, 1)
+    legacy_pv1_v = round(legacy_pv1_v_raw / 10.0, 1)
+    legacy_pv1_i = round(legacy_pv1_i_raw / 10.0, 1)
+    legacy_pv2_v = round(legacy_pv2_v_raw / 10.0, 1)
+    legacy_pv2_i = round(legacy_pv2_i_raw / 10.0, 1)
     grid_v = round(grid_v_raw / 10.0, 1)
     grid_f = round(grid_f_raw / 100.0, 2)
     batt_soc = batt_soc_raw
     batt_v = round(batt_v_raw / 10.0, 2)
     batt_i = round(batt_i_signed / 10.0, 1)
 
-    pv1_p = round((pv1_v_raw / 10.0) * (pv1_i_raw / 10.0), 1)
-    pv2_p = round((pv2_v_raw / 10.0) * (pv2_i_raw / 10.0), 1)
+    pv1_p = round(legacy_pv1_v * legacy_pv1_i, 1)
+    pv2_p = round(legacy_pv2_v * legacy_pv2_i, 1)
     pv_total_p = round(pv1_p + pv2_p, 1)
     batt_p = round((batt_v_raw / 10.0) * (batt_i_signed / 10.0), 1)
 
     return {
-        "solis_pv1_voltage": pv1_v,
-        "solis_pv1_current": pv1_i,
-        "solis_pv2_voltage": pv2_v,
-        "solis_pv2_current": pv2_i,
+        "solis_pv1_voltage": legacy_pv1_v,
+        "solis_pv1_current": legacy_pv1_i,
+        "solis_pv2_voltage": legacy_pv2_v,
+        "solis_pv2_current": legacy_pv2_i,
         "solis_grid_voltage": grid_v,
         "solis_grid_frequency": grid_f,
         "solis_grid_power": grid_p_signed,
