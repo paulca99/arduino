@@ -998,20 +998,20 @@ static void canTxTask(void* pv) {
                           snap.chargeAllowed,
                           snap.dischargeAllowed);
         }
-
-        static void rs485Task(void* pv) {
-            (void)pv;
-
-            for (;;) {
-                AggregateSnapshot snap = copyCanAggregateSnapshot();
-                if (!snap.valid && canAggregateMutex == nullptr) {
-                    snap = aggregate;
-                }
-                processRS485Slave(snap);
-                vTaskDelay(pdMS_TO_TICKS(1));
-            }
-        }
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(CAN_INTERVAL_MS));
+    }
+}
+
+static void rs485Task(void* pv) {
+    (void)pv;
+
+    for (;;) {
+        AggregateSnapshot snap = copyCanAggregateSnapshot();
+        if (!snap.valid && canAggregateMutex == nullptr) {
+            snap = aggregate;
+        }
+        processRS485Slave(snap);
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
