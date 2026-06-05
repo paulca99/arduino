@@ -421,9 +421,12 @@ static void processRS485Slave(const AggregateSnapshot& agg) {
         slaveRxLen = 0;
     }
 
+    // Capture first-byte timestamp before draining so the stale-frame timer
+    // always reflects when the frame started, not when a mid-frame byte arrived.
+    if (slaveRxLen == 0 && RS485.available()) slaveRxFirstByteMs = nowMs;
+
     // Drain available bytes into the receive buffer (FC03 request = 8 bytes)
     while (RS485.available() && slaveRxLen < (int)sizeof(slaveRxBuf)) {
-        if (slaveRxLen == 0) slaveRxFirstByteMs = millis();
         slaveRxBuf[slaveRxLen++] = (uint8_t)RS485.read();
     }
 
@@ -1124,7 +1127,7 @@ void setup() {
 
 void loop() {
     cycleCount++;
-    Serial.printf("\n--- Persistent cycle %lu ---\n", cycleCount);
+    Serial.printf("\n--- Main cycle %lu ---\n", cycleCount);
 
     processRS485Slave(aggregate);
 
