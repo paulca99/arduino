@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
 """
-Solis RS485 master poller, version 6.
+Pi-side master poller.
 
-This version restores the legacy register mapping used by the ESP32 code
-(BLE_BMS_MARK2.ino) so Grafana/Influx remain compatible.
+Behavior:
+- Poll Solis inverter as Modbus slave 1 exactly like the current V6 script.
+- Poll ESP32 battery bridge as Modbus slave 5.
+- Write Solis metrics to InfluxDB as before.
+- Write each battery slot from the ESP32 slave into InfluxDB under batteryX measurements.
 
-Legacy fields restored:
-- 33050 PV1 voltage
-- 33051 PV1 current
-- 33052 PV2 voltage
-- 33053 PV2 current
-- 33132 grid power
-- 33135 battery current
-- 33136 battery direction flag
-- 33140 battery SoC
-- 33142 battery voltage
+ESP32 slave register map (FC03 holding registers, slave id 5):
+- 0..7   : aggregate block
+- 8..31  : battery 0
+- 32..55 : battery 1
+- 56..79 : battery 2
 
-Derived values:
-- PV1 power
-- PV2 power
-- PV total power
-- battery power (from battery voltage/current + direction)
-
-Still included:
-- full raw register dump for all 93 registers
-- tentative/unknown registers for future analysis
-- changed-since-last-poll register summary
+Each battery block:
+- enabled
+- hasData
+- voltage ×100
+- current ×100 signed
+- soc
+- chargeMos
+- dischargeMos
+- temperature ×10 signed
+- cellCount
+- 14 cell millivolt values
+- reserved
 """
 
 import json
@@ -44,55 +44,31 @@ BAUDRATE = 9600
 
 INFLUX_URL = "http://localhost:8086/write?db=power"
 HOST_TAG = "server01"
-SOURCE_TAG = "solis_master"
 
-SLAVE_ID = 0x01
+SolisSourceTag = "solis_master"
+BatterySourceTag = "battery_master"
+
+SOLIS_SLAVE_ID = 0x01
+BATTERY_SLAVE_ID = 0x05
+
 FUNC_READ_INPUT_REGS = 0x04
+FUNC_READ_HOLDING_REGS = 0x03
 
-START_DOC_REG = 33050
-END_DOC_REG = 33142
-REG_COUNT = END_DOC_REG - START_DOC_REG + 1  # 93
+# Solis block (existing behavior)
+SOLIS_START_DOC_REG = 33050
+SOLIS_END_DOC_REG = 33142
+SOLIS_REG_COUNT = SOLIS_END_DOC_REG - SOLIS_START_DOC_REG + 1  # 93
+
+# Battery bridge block
+BATTERY_START_REG = 0
+BATTERY_REG_COUNT = 80
+BATTERY_BLOCK_SIZE = 24
+BATTERY_COUNT = 3
 
 POLL_INTERVAL_S = 5.0
 REPLY_TIMEOUT_S = 0.30
 READ_IDLE_TIMEOUT_S = 0.05
 BUFFER_MAX = 8192
-
-# ----------------------------------------------------------------------
-# Register metadata
-# ----------------------------------------------------------------------
-
-SAFE_REGISTERS = {
-    33050: ("pv1Voltage", 10.0, False, "V", "DC Voltage 1 / PV1 voltage"),
-    33051: ("pv1Current", 10.0, False, "A", "DC Current 1 / PV1 current"),
-    33052: ("pv2Voltage", 10.0, False, "V", "DC Voltage 2 / PV2 voltage"),
-    33053: ("pv2Current", 10.0, False, "A", "DC Current 2 / PV2 current"),
-    33132: ("gridPower", 1.0, True, "W", "grid power"),
-    33135: ("batteryCurrent", 10.0, True, "A", "battery current"),
-    33136: ("batteryDirectionFlag", 1.0, False, "", "0 charge / 1 discharge"),
-    33140: ("batterySoc", 1.0, False, "%", "battery state of charge"),
-    33142: ("batteryVoltage", 100.0, False, "V", "battery voltage"),
-}
-
-TENTATIVE_REGISTERS = {
-    33059: ("reg33059", 1.0, False, "", "observed non-zero value; meaning unclear"),
-    33072: ("dcBusHalfVoltage", 10.0, False, "V", "DC bus half voltage"),
-    33080: ("reg33080", 1.0, False, "", "unresolved"),
-    33081: ("reg33081", 1.0, False, "", "unresolved"),
-    33085: ("reg33085", 1.0, False, "", "unresolved"),
-    33095: ("gridFrequencyRaw", 1.0, False, "", "raw field currently left tentative"),
-    33129: ("meterCurrent", 10.0, True, "A", "meter current"),
-    33130: ("meterActivePowerHi", 1.0, False, "", "meter active power high word"),
-    33131: ("meterActivePowerLo", 1.0, False, "", "meter active power low word"),
-    33133: ("reg33133", 1.0, False, "", "unresolved"),
-    33134: ("reg33134", 1.0, False, "", "unresolved"),
-    33137: ("backupAcVoltagePhaseA", 10.0, False, "V", "backup AC voltage phase A"),
-    33141: ("reg33141", 1.0, False, "", "unresolved"),
-}
-
-REGISTER_META = {}
-REGISTER_META.update(SAFE_REGISTERS)
-REGISTER_META.update(TENTATIVE_REGISTERS)
 
 # ----------------------------------------------------------------------
 # Modbus helpers
@@ -117,30 +93,31 @@ def crc_ok(frame: bytes) -> bool:
     return rx_crc == modbus_crc(frame[:-2])
 
 
-def build_read_request() -> bytes:
-    raw_addr = START_DOC_REG - 1
+def build_request(slave_id: int, func: int, start_reg: int, count: int) -> bytes:
+    # Modbus uses 0-based raw address in the frame.
+    raw_addr = start_reg if slave_id == BATTERY_SLAVE_ID else (start_reg - 1)
     frame = bytes([
-        SLAVE_ID,
-        FUNC_READ_INPUT_REGS,
+        slave_id,
+        func,
         (raw_addr >> 8) & 0xFF,
         raw_addr & 0xFF,
-        (REG_COUNT >> 8) & 0xFF,
-        REG_COUNT & 0xFF,
+        (count >> 8) & 0xFF,
+        count & 0xFF,
     ])
     crc = modbus_crc(frame)
     return frame + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
 
-def extract_frame_from_buffer(buf: bytearray) -> Optional[bytes]:
-    expected_len = 3 + (REG_COUNT * 2) + 2
+def extract_frame_from_buffer(buf: bytearray, slave_id: int, func: int, expected_regs: int) -> Optional[bytes]:
+    expected_len = 3 + (expected_regs * 2) + 2
     if len(buf) < expected_len:
         return None
 
     for i in range(0, len(buf) - expected_len + 1):
-        if buf[i] != SLAVE_ID or buf[i + 1] != FUNC_READ_INPUT_REGS:
+        if buf[i] != slave_id or buf[i + 1] != func:
             continue
         candidate = bytes(buf[i:i + expected_len])
-        if candidate[2] != REG_COUNT * 2:
+        if candidate[2] != expected_regs * 2:
             continue
         if crc_ok(candidate):
             del buf[:i + expected_len]
@@ -151,121 +128,33 @@ def extract_frame_from_buffer(buf: bytearray) -> Optional[bytes]:
     return None
 
 
-def parse_modbus_response(frame: bytes) -> Optional[Dict[int, int]]:
-    if len(frame) != 3 + (REG_COUNT * 2) + 2:
-        return None
-    if frame[0] != SLAVE_ID or frame[1] != FUNC_READ_INPUT_REGS:
-        return None
-    if frame[2] != REG_COUNT * 2:
+def parse_modbus_response(frame: bytes, start_reg: int, expected_regs: int) -> Optional[Dict[int, int]]:
+    if len(frame) != 3 + (expected_regs * 2) + 2:
         return None
     if not crc_ok(frame):
         return None
 
     data = frame[3:-2]
     regs: Dict[int, int] = {}
-    for i in range(REG_COUNT):
-        reg_addr = START_DOC_REG + i
+    for i in range(expected_regs):
+        reg_addr = start_reg + i
         raw = (data[i * 2] << 8) | data[i * 2 + 1]
         regs[reg_addr] = raw
     return regs
 
 
-# ----------------------------------------------------------------------
-# Decoding helpers
-# ----------------------------------------------------------------------
-
 def s16(v: int) -> int:
     return v - 65536 if v >= 32768 else v
 
 
-def decode_meta(reg: int, raw: int) -> Tuple[str, float, str, str]:
-    meta = REGISTER_META.get(reg)
-    if meta is None:
-        return (f"reg{reg}", float(raw), "", "unknown")
-
-    label, divisor, signed_value, unit, note = meta
-    value = s16(raw) if signed_value else raw
-
-    if divisor == 0:
-        scaled = float(value)
-    elif divisor == 1.0 and not signed_value:
-        scaled = float(value)
-    else:
-        scaled = float(value) / divisor
-
-    return (label, scaled, unit, note)
-
-
-def build_payload(regs: Dict[int, int], uptime_ms: int, poll_count: int, read_errors: int) -> dict:
-    payload = {
-        "uptimeMs": uptime_ms,
-        "pollCount": poll_count,
-        "readErrors": read_errors,
-        "slaveId": SLAVE_ID,
-        "function": FUNC_READ_INPUT_REGS,
-        "startDocReg": START_DOC_REG,
-        "endDocReg": END_DOC_REG,
-        "registerCount": REG_COUNT,
-    }
-
-    # Legacy dashboard values from the ESP32 mapping.
-    pv1_v_raw = regs.get(33050, 0)
-    pv1_i_raw = regs.get(33051, 0)
-    pv2_v_raw = regs.get(33052, 0)
-    pv2_i_raw = regs.get(33053, 0)
-
-    payload["pv1Voltage"] = round(pv1_v_raw / 10.0, 1)
-    payload["pv1Current"] = round(pv1_i_raw / 10.0, 1)
-    payload["pv2Voltage"] = round(pv2_v_raw / 10.0, 1)
-    payload["pv2Current"] = round(pv2_i_raw / 10.0, 1)
-
-    payload["gridVoltage"] = round(regs.get(33074, 0) / 10.0, 1)
-    payload["gridPower"] = s16(regs.get(33132, 0))
-    payload["batteryCurrent"] = round(s16(regs.get(33135, 0)) / 10.0, 1)
-    payload["batteryDirectionFlag"] = regs.get(33136, 0)
-    payload["batteryDirection"] = "discharging" if payload["batteryDirectionFlag"] == 1 else "charging"
-    payload["batterySoc"] = regs.get(33140, 0)
-    payload["batteryVoltage"] = round(regs.get(33142, 0) / 100.0, 2)
-
-    payload["pv1PowerW"] = round(payload["pv1Voltage"] * payload["pv1Current"], 1)
-    payload["pv2PowerW"] = round(payload["pv2Voltage"] * payload["pv2Current"], 1)
-    payload["pvTotalPowerW"] = round(payload["pv1PowerW"] + payload["pv2PowerW"], 1)
-    payload["batteryPowerW"] = round(payload["batteryVoltage"] * payload["batteryCurrent"], 1)
-    if payload["batteryDirectionFlag"] == 1:
-        payload["batteryPowerW"] = -payload["batteryPowerW"]
-
-    # Keep a few additional values around as raw diagnostics.
-    payload["gridFrequencyRaw"] = regs.get(33095, 0)
-
-    # Full raw register dump.
-    dump = []
-    for reg in range(START_DOC_REG, END_DOC_REG + 1):
-        raw = regs.get(reg, 0)
-        label, scaled, unit, note = decode_meta(reg, raw)
-        dump.append({
-            "reg": reg,
-            "label": label,
-            "raw": raw,
-            "signed": s16(raw),
-            "scaled": scaled,
-            "unit": unit,
-            "note": note,
-            "known": reg in REGISTER_META,
-            "safe": reg in SAFE_REGISTERS,
-        })
-    payload["registers"] = dump
-
-    return payload
-
-
 # ----------------------------------------------------------------------
-# Influx
+# Influx helper
 # ----------------------------------------------------------------------
 
-def write_line(measurement: str, value):
+def write_line(measurement: str, value, source_tag: str):
     if value is None:
         return
-    line = f"{measurement},host={HOST_TAG},source={SOURCE_TAG} value={value}"
+    line = f"{measurement},host={HOST_TAG},source={source_tag} value={value}"
     print(line)
     try:
         requests.post(INFLUX_URL, data=line.encode("utf-8"), timeout=2)
@@ -273,85 +162,144 @@ def write_line(measurement: str, value):
         print(f"Influx write failed: {e}")
 
 
-def write_metrics(payload: dict):
-    write_line("solis_pv1_voltage", payload["pv1Voltage"])
-    write_line("solis_pv1_current", payload["pv1Current"])
-    write_line("solis_pv2_voltage", payload["pv2Voltage"])
-    write_line("solis_pv2_current", payload["pv2Current"])
-    write_line("solis_grid_voltage", payload["gridVoltage"])
-    write_line("solis_grid_power", payload["gridPower"])
-    write_line("solis_battery_soc", payload["batterySoc"])
-    write_line("solis_battery_voltage", payload["batteryVoltage"])
-    write_line("solis_battery_current", payload["batteryCurrent"])
-    write_line("solis_battery_direction_flag", payload["batteryDirectionFlag"])
-    write_line("solis_battery_power", payload["batteryPowerW"])
-    write_line("solis_pv1_power", payload["pv1PowerW"])
-    write_line("solis_pv2_power", payload["pv2PowerW"])
-    write_line("solis_pv_total_power", payload["pvTotalPowerW"])
-    write_line("solis_poll_count", payload["pollCount"])
-    write_line("solis_read_errors", payload["readErrors"])
+# ----------------------------------------------------------------------
+# Solis decode
+# ----------------------------------------------------------------------
 
-    # Diagnostics
-    write_line("solis_reg_33095_raw", payload["gridFrequencyRaw"])
+def decode_solis(regs: Dict[int, int]) -> dict:
+    pv1_v_raw = regs.get(33050, 0)
+    pv1_i_raw = regs.get(33051, 0)
+    pv2_v_raw = regs.get(33052, 0)
+    pv2_i_raw = regs.get(33053, 0)
+
+    pv1_v = round(pv1_v_raw / 10.0, 1)
+    pv1_i = round(pv1_i_raw / 10.0, 1)
+    pv2_v = round(pv2_v_raw / 10.0, 1)
+    pv2_i = round(pv2_i_raw / 10.0, 1)
+
+    grid_v = round(regs.get(33074, 0) / 10.0, 1)
+    grid_f = round(regs.get(33095, 0) / 100.0, 2)
+
+    # Existing legacy behavior: grid power from 33132
+    grid_power = s16(regs.get(33132, 0))
+
+    battery_current = round(s16(regs.get(33135, 0)) / 10.0, 1)
+    battery_direction_flag = regs.get(33136, 0)
+    battery_direction = "discharging" if battery_direction_flag == 1 else "charging"
+    battery_soc = regs.get(33140, 0)
+    battery_voltage = round(regs.get(33142, 0) / 100.0, 2)
+
+    pv1_power = round(pv1_v * pv1_i, 1)
+    pv2_power = round(pv2_v * pv2_i, 1)
+    pv_total_power = round(pv1_power + pv2_power, 1)
+
+    battery_power = round(battery_voltage * battery_current, 1)
+    if battery_direction_flag == 1:
+        battery_power = -battery_power
+
+    return {
+        "pv1Voltage": pv1_v,
+        "pv1Current": pv1_i,
+        "pv2Voltage": pv2_v,
+        "pv2Current": pv2_i,
+        "gridVoltage": grid_v,
+        "gridFrequency": grid_f,
+        "gridPower": grid_power,
+        "batterySoc": battery_soc,
+        "batteryVoltage": battery_voltage,
+        "batteryCurrent": battery_current,
+        "batteryDirectionFlag": battery_direction_flag,
+        "batteryDirection": battery_direction,
+        "batteryPowerW": battery_power,
+        "pv1PowerW": pv1_power,
+        "pv2PowerW": pv2_power,
+        "pvTotalPowerW": pv_total_power,
+        "rawGridFrequency": regs.get(33095, 0),
+    }
+
+
+def write_solis_metrics(s: dict, poll_count: int, read_errors: int):
+    write_line("solis_pv1_voltage", s["pv1Voltage"], SolisSourceTag)
+    write_line("solis_pv1_current", s["pv1Current"], SolisSourceTag)
+    write_line("solis_pv2_voltage", s["pv2Voltage"], SolisSourceTag)
+    write_line("solis_pv2_current", s["pv2Current"], SolisSourceTag)
+    write_line("solis_grid_voltage", s["gridVoltage"], SolisSourceTag)
+    write_line("solis_grid_frequency", s["gridFrequency"], SolisSourceTag)
+    write_line("solis_grid_power", s["gridPower"], SolisSourceTag)
+    write_line("solis_battery_soc", s["batterySoc"], SolisSourceTag)
+    write_line("solis_battery_voltage", s["batteryVoltage"], SolisSourceTag)
+    write_line("solis_battery_current", s["batteryCurrent"], SolisSourceTag)
+    write_line("solis_battery_direction_flag", s["batteryDirectionFlag"], SolisSourceTag)
+    write_line("solis_battery_power", s["batteryPowerW"], SolisSourceTag)
+    write_line("solis_pv1_power", s["pv1PowerW"], SolisSourceTag)
+    write_line("solis_pv2_power", s["pv2PowerW"], SolisSourceTag)
+    write_line("solis_pv_total_power", s["pvTotalPowerW"], SolisSourceTag)
+    write_line("solis_poll_count", poll_count, SolisSourceTag)
+    write_line("solis_read_errors", read_errors, SolisSourceTag)
+    write_line("solis_reg_33095_raw", s["rawGridFrequency"], SolisSourceTag)
 
 
 # ----------------------------------------------------------------------
-# Logging
+# Battery bridge decode
 # ----------------------------------------------------------------------
 
-def diff_registers(prev: Optional[Dict[int, int]], curr: Dict[int, int]):
-    if prev is None:
-        return
-    changes = []
-    for reg in range(START_DOC_REG, END_DOC_REG + 1):
-        old = prev.get(reg, None)
-        new = curr.get(reg, None)
-        if old != new:
-            changes.append((reg, old, new))
-    if not changes:
-        print("changed: none")
-        return
-    print("changed:")
-    for reg, old, new in changes:
-        if old is None:
-            print(f"  {reg}: <none> -> {new}")
-        else:
-            print(f"  {reg}: {old} -> {new}")
+def parse_battery_block(regs: Dict[int, int], battery_index: int) -> dict:
+    base = battery_index * BATTERY_BLOCK_SIZE + 8
+
+    enabled = regs.get(base + 0, 0) == 1
+    has_data = regs.get(base + 1, 0) == 1
+    voltage = regs.get(base + 2, 0) / 100.0
+    current = s16(regs.get(base + 3, 0)) / 100.0
+    soc = regs.get(base + 4, 0)
+    charge_mos = regs.get(base + 5, 0) == 1
+    discharge_mos = regs.get(base + 6, 0) == 1
+    temperature_raw = s16(regs.get(base + 7, 0))
+    temperature = temperature_raw / 10.0 if temperature_raw != 0 else None
+    cell_count = regs.get(base + 8, 0)
+
+    cells = []
+    for i in range(14):
+        cell_val = regs.get(base + 9 + i, 0)
+        if i < cell_count:
+            cells.append(cell_val)
+
+    return {
+        "enabled": enabled,
+        "hasData": has_data,
+        "voltage": voltage,
+        "current": current,
+        "soc": soc,
+        "chargeMos": charge_mos,
+        "dischargeMos": discharge_mos,
+        "temperature": temperature,
+        "cellCount": cell_count,
+        "cells": cells,
+    }
 
 
-def print_summary(payload: dict, prev_regs: Optional[Dict[int, int]], curr_regs: Dict[int, int]):
-    print("\n=== SOLIS MASTER DUMP V6 ===")
-    print(
-        f"uptimeMs={payload['uptimeMs']} pollCount={payload['pollCount']} "
-        f"readErrors={payload['readErrors']} registers={payload['registerCount']}"
-    )
-    print(
-        f"pv1={payload['pv1Voltage']:.1f}V {payload['pv1Current']:.1f}A  "
-        f"pv2={payload['pv2Voltage']:.1f}V {payload['pv2Current']:.1f}A  "
-        f"grid={payload['gridVoltage']:.1f}V  "
-        f"gridP={payload['gridPower']}W  "
-        f"batt={payload['batteryVoltage']:.2f}V {payload['batteryCurrent']:.1f}A "
-        f"soc={payload['batterySoc']}% dir={payload['batteryDirection']}"
-    )
-    diff_registers(prev_regs, curr_regs)
+def write_battery_metrics(bat: dict, battery_name: str):
+    meas = f"battery_{battery_name}"
 
-    for item in payload["registers"]:
-        flag = "safe" if item["safe"] else "tent"
-        print(
-            f"{item['reg']} {item['label']:<28} "
-            f"raw={item['raw']:<6} signed={item['signed']:<6} "
-            f"scaled={item['scaled']:.3f}{item['unit']:<2}  "
-            f"[{flag}]  # {item['note']}"
-        )
-    print("=============================\n")
+    write_line(f"{meas}_enabled", 1 if bat["enabled"] else 0, BatterySourceTag)
+    write_line(f"{meas}_has_data", 1 if bat["hasData"] else 0, BatterySourceTag)
+    write_line(f"{meas}_voltage", round(bat["voltage"], 2), BatterySourceTag)
+    write_line(f"{meas}_current", round(bat["current"], 2), BatterySourceTag)
+    write_line(f"{meas}_soc", bat["soc"], BatterySourceTag)
+    write_line(f"{meas}_charge_mos", 1 if bat["chargeMos"] else 0, BatterySourceTag)
+    write_line(f"{meas}_discharge_mos", 1 if bat["dischargeMos"] else 0, BatterySourceTag)
+    write_line(f"{meas}_temperature", bat["temperature"], BatterySourceTag)
+    write_line(f"{meas}_cell_count", bat["cellCount"], BatterySourceTag)
+
+    for idx, mv in enumerate(bat["cells"], start=1):
+        write_line(f"{meas}_cell_{idx}_mv", mv, BatterySourceTag)
 
 
 # ----------------------------------------------------------------------
-# Polling
+# Polling helpers
 # ----------------------------------------------------------------------
 
-def poll_once(ser: serial.Serial, poll_count: int, read_errors: int) -> Tuple[Optional[dict], Optional[Dict[int, int]], int, int]:
-    request = build_read_request()
+def poll_modbus(ser: serial.Serial, slave_id: int, func: int, start_reg: int, count: int) -> Optional[Dict[int, int]]:
+    request = build_request(slave_id, func, start_reg, count)
 
     while ser.in_waiting:
         ser.read(ser.in_waiting)
@@ -366,21 +314,13 @@ def poll_once(ser: serial.Serial, poll_count: int, read_errors: int) -> Tuple[Op
         chunk = ser.read(512)
         if chunk:
             buf.extend(chunk)
-            frame = extract_frame_from_buffer(buf)
+            frame = extract_frame_from_buffer(buf, slave_id, func, count)
             if frame is not None:
-                regs = parse_modbus_response(frame)
-                if regs is None:
-                    read_errors += 1
-                    return None, None, poll_count, read_errors
-                poll_count += 1
-                uptime_ms = int(time.monotonic() * 1000)
-                payload = build_payload(regs, uptime_ms, poll_count, read_errors)
-                return payload, regs, poll_count, read_errors
+                return parse_modbus_response(frame, start_reg, count)
         else:
             time.sleep(0.01)
 
-    read_errors += 1
-    return None, None, poll_count, read_errors
+    return None
 
 
 # ----------------------------------------------------------------------
@@ -388,12 +328,12 @@ def poll_once(ser: serial.Serial, poll_count: int, read_errors: int) -> Tuple[Op
 # ----------------------------------------------------------------------
 
 def main():
-    print(f"Starting Solis master poller V6 on {PORT} @ {BAUDRATE}")
-    print(f"Polling slave {SLAVE_ID}, function 0x{FUNC_READ_INPUT_REGS:02X}, regs {START_DOC_REG}-{END_DOC_REG}")
+    print(f"Starting master poller on {PORT} @ {BAUDRATE}")
+    print(f"Solis: slave {SOLIS_SLAVE_ID}, FC04, regs {SOLIS_START_DOC_REG}-{SOLIS_END_DOC_REG}")
+    print(f"Battery bridge: slave {BATTERY_SLAVE_ID}, FC03, regs {BATTERY_START_REG}-{BATTERY_START_REG + BATTERY_REG_COUNT - 1}")
 
     poll_count = 0
     read_errors = 0
-    prev_regs: Optional[Dict[int, int]] = None
 
     with serial.Serial(
         port=PORT,
@@ -407,14 +347,41 @@ def main():
         while True:
             loop_start = time.monotonic()
 
-            payload, curr_regs, poll_count, read_errors = poll_once(ser, poll_count, read_errors)
-            if payload is None or curr_regs is None:
-                print(f"[WARN] poll failed (errors={read_errors})")
+            # 1) Poll Solis exactly as before
+            solis_regs = poll_modbus(ser, SOLIS_SLAVE_ID, FUNC_READ_INPUT_REGS, SOLIS_START_DOC_REG, SOLIS_REG_COUNT)
+            if solis_regs is None:
+                read_errors += 1
+                print(f"[WARN] Solis poll failed (errors={read_errors})")
             else:
-                print_summary(payload, prev_regs, curr_regs)
-                write_metrics(payload)
-                print(json.dumps(payload, separators=(",", ":")))
-                prev_regs = curr_regs
+                poll_count += 1
+                s = decode_solis(solis_regs)
+                print("\n=== SOLIS MASTER DUMP V6 ===")
+                print(
+                    f"pollCount={poll_count} readErrors={read_errors} "
+                    f"pv1={s['pv1Voltage']:.1f}V {s['pv1Current']:.1f}A  "
+                    f"pv2={s['pv2Voltage']:.1f}V {s['pv2Current']:.1f}A  "
+                    f"grid={s['gridVoltage']:.1f}V  "
+                    f"gridP={s['gridPower']}W  "
+                    f"batt={s['batteryVoltage']:.2f}V {s['batteryCurrent']:.1f}A "
+                    f"soc={s['batterySoc']}% dir={s['batteryDirection']}"
+                )
+                write_solis_metrics(s, poll_count, read_errors)
+                print(json.dumps({"solis": s}, separators=(",", ":")))
+
+            # 2) Poll ESP32 battery bridge slave 5
+            battery_regs = poll_modbus(ser, BATTERY_SLAVE_ID, FUNC_READ_HOLDING_REGS, BATTERY_START_REG, BATTERY_REG_COUNT)
+            if battery_regs is None:
+                print("[WARN] Battery bridge poll failed")
+            else:
+                batteries = []
+                for idx in range(BATTERY_COUNT):
+                    bat = parse_battery_block(battery_regs, idx)
+                    batteries.append(bat)
+
+                    battery_name = f"{idx + 1}"
+                    write_battery_metrics(bat, battery_name)
+
+                print(json.dumps({"batteryBridge": batteries}, separators=(",", ":")))
 
             elapsed = time.monotonic() - loop_start
             sleep_for = POLL_INTERVAL_S - elapsed

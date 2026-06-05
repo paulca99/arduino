@@ -31,27 +31,20 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
 #define CAN_TASK_STACK_SIZE        4096
 #define CAN_TASK_PRIORITY             1
+#define RS485_TASK_STACK_SIZE      4096
+#define RS485_TASK_PRIORITY           2
 #define CAN_MUTEX_TIMEOUT_MS        100
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
-#define SOLIS_POLL_INTERVAL_MS     3000
-#define SOLIS_BLOCK_READ_TIMEOUT_MS 300
-#define SOLIS_BLOCK_START_REG     33050
-#define SOLIS_BLOCK_END_REG       33142
-#define SOLIS_BLOCK_REG_COUNT        93
-#define SOLIS_MODBUS_HEADER_BYTES     3
-#define SOLIS_MODBUS_CRC_BYTES        2
-#define SOLIS_MODBUS_BYTES_PER_REG    2
-#define SOLIS_MUTEX_TIMEOUT_MS      100
-#define SOLIS_SLAVE_ID                1
-#define SOLIS_DIVISOR_ZERO_GUARD 1.0e-6f
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
+#define RS485_TASK_CORE              0
 #else
 #ifndef CONFIG_ARDUINO_RUNNING_CORE
 #define CONFIG_ARDUINO_RUNNING_CORE 1
 #endif
 #define CAN_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
+#define RS485_TASK_CORE CONFIG_ARDUINO_RUNNING_CORE
 #endif
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
@@ -76,6 +69,89 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define PACKET03_FET_INDEX          24
 #define PACKET03_TEMP_COUNT_IDX_A   26
 #define PACKET03_TEMP_COUNT_IDX_B   25
+
+// -----------------------------------------------------------------------
+// RS485 Modbus slave configuration
+//
+// The ESP32 acts as Modbus slave ID RS485_SLAVE_ID on the RS485 bus.
+// The Raspberry Pi master polls this slave using FC03 (read holding
+// registers) to retrieve battery telemetry.
+//
+// Set RS485_DE_PIN to the GPIO used for DE/RE direction control (active-
+// high), or -1 to disable if the RS485 transceiver handles direction
+// automatically (e.g. auto-direction ICs or full-duplex wiring).
+// -----------------------------------------------------------------------
+#define RS485_SLAVE_ID               5
+#define RS485_DE_PIN                -1
+#define RS485_BAUD                9600
+#define RS485_FC_READ_HOLDING      0x03
+// Stale-frame timeout: if no new byte arrives within this many ms after
+// the first byte, discard the partial frame and start fresh.
+#define RS485_FRAME_STALE_MS        50
+
+// -----------------------------------------------------------------------
+// Modbus register map (holding registers, FC03)
+//
+// The Pi reads one contiguous block starting at address 0.
+// All values are unsigned 16-bit; signed fields use two's complement
+// (int16_t cast to uint16_t).
+//
+// Aggregate block  — addresses 0 … 7  (8 registers)
+// -----------------------------------------------------------------------
+//  Addr  Name                 Scale   Notes
+//  ----  -------------------  ------  ---------------------------------
+//   0    agg_valid            1       1 = aggregate is usable
+//   1    agg_contributing     1       number of contributing batteries
+//   2    agg_voltage          ×100    pack voltage in V (e.g. 5490 = 54.90 V)
+//   3    agg_current          ×100    signed; positive = charging (A)
+//   4    agg_soc              1       state of charge 0-100 %
+//   5    agg_temperature      ×10     signed °C; 0 if temperature unavailable
+//   6    agg_charge_allowed   1       1 if charge MOS OK across all contributing
+//   7    agg_discharge_allowed 1      1 if discharge MOS OK across all contributing
+//
+// Per-battery block — 24 registers each
+//   Battery 0: addresses  8 … 31
+//   Battery 1: addresses 32 … 55
+//   Battery 2: addresses 56 … 79
+// -----------------------------------------------------------------------
+//  +0   enabled              1       1 if this battery slot is configured
+//  +1   has_data             1       1 if fresh BMS data is available
+//  +2   voltage              ×100    pack voltage in V
+//  +3   current              ×100    signed A; positive = charging
+//  +4   soc                  1       0-100 %
+//  +5   charge_mos           1       1 if charge MOS on
+//  +6   discharge_mos        1       1 if discharge MOS on
+//  +7   temperature          ×10     signed °C; 0 if unavailable
+//  +8   cell_count           1       number of cells (0 if no cell data)
+//  +9   cell_mv_1            1       cell 1 millivolts
+//  +10  cell_mv_2            1       cell 2 millivolts
+//   …   …                   …       …
+//  +22  cell_mv_14           1       cell 14 millivolts
+//  +23  reserved             0       always 0
+// -----------------------------------------------------------------------
+#define REG_AGG_VALID               0
+#define REG_AGG_CONTRIBUTING        1
+#define REG_AGG_VOLTAGE_V100        2
+#define REG_AGG_CURRENT_A100        3
+#define REG_AGG_SOC                 4
+#define REG_AGG_TEMP_C10            5
+#define REG_AGG_CHARGE_ALLOWED      6
+#define REG_AGG_DISCHARGE_ALLOWED   7
+#define REG_BATT_BASE               8
+
+#define SLAVE_CELLS_PER_BATTERY    14
+#define SLAVE_REGS_PER_BATTERY     24   // 9 header + 14 cells + 1 reserved
+
+#define REG_BATT_ENABLED            0
+#define REG_BATT_HAS_DATA           1
+#define REG_BATT_VOLTAGE_V100       2
+#define REG_BATT_CURRENT_A100       3
+#define REG_BATT_SOC                4
+#define REG_BATT_CHARGE_MOS         5
+#define REG_BATT_DISCHARGE_MOS      6
+#define REG_BATT_TEMP_C10           7
+#define REG_BATT_CELL_COUNT         8
+#define REG_BATT_CELL_MV_FIRST      9
 
 struct BatteryState {
     const char* name;
@@ -135,38 +211,6 @@ struct AggregateSnapshot {
     unsigned long lastFreshMs = 0;
 };
 
-struct SolisRegisterValue {
-    uint16_t raw = 0;
-    bool valid = false;
-};
-
-struct SolisSnapshot {
-    SolisRegisterValue pv1Voltage;
-    SolisRegisterValue pv1Current;
-    SolisRegisterValue pv2Voltage;
-    SolisRegisterValue pv2Current;
-    SolisRegisterValue gridPower;
-    SolisRegisterValue batteryCurrent;
-    SolisRegisterValue batteryDirection;
-    SolisRegisterValue batterySoc;
-    SolisRegisterValue batteryVoltage;
-    uint32_t lastPollMs = 0;
-    uint32_t lastSuccessMs = 0;
-    uint32_t pollCount = 0;
-    uint32_t readErrors = 0;
-    uint32_t lockTimeouts = 0;
-};
-
-static const uint16_t SOLIS_REG_PV1_VOLTAGE = 33050;
-static const uint16_t SOLIS_REG_PV1_CURRENT = 33051;
-static const uint16_t SOLIS_REG_PV2_VOLTAGE = 33052;
-static const uint16_t SOLIS_REG_PV2_CURRENT = 33053;
-static const uint16_t SOLIS_REG_GRID_POWER = 33132;
-static const uint16_t SOLIS_REG_BATTERY_CURRENT = 33135;
-static const uint16_t SOLIS_REG_BATTERY_DIRECTION = 33136;
-static const uint16_t SOLIS_REG_BATTERY_SOC = 33140;
-static const uint16_t SOLIS_REG_BATTERY_VOLTAGE = 33142;
-
 static BatteryState batteries[] = {
     {BMS1_NAME, BMS1_MAC, BMS1_ENABLED},
     {BMS2_NAME, BMS2_MAC, BMS2_ENABLED},
@@ -175,41 +219,33 @@ static BatteryState batteries[] = {
 
 static const int BATTERY_COUNT = sizeof(batteries) / sizeof(batteries[0]);
 
+// Total holding registers exposed over RS485
+#define SLAVE_REG_COUNT  (REG_BATT_BASE + BATTERY_COUNT * SLAVE_REGS_PER_BATTERY)
+
 static BLEScan* pBLEScan = nullptr;
 static unsigned long cycleCount = 0;
 static unsigned long lastSummaryMs = 0;
-static unsigned long lastSolisPollMs = 0;
 static AggregateSnapshot aggregate;
 static AggregateSnapshot canAggregate;
 static SemaphoreHandle_t canAggregateMutex = nullptr;
-static SolisSnapshot solisState = {};
-static SemaphoreHandle_t solisMutex = nullptr;
 static HardwareSerial RS485(2);
+
+// RS485 slave receive state
+static uint8_t slaveRxBuf[8];
+static int slaveRxLen = 0;
+static unsigned long slaveRxFirstByteMs = 0;
 
 static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs);
 static AggregateSnapshot buildAggregateSnapshot(unsigned long now);
 static void updateCanAggregateSnapshot(const AggregateSnapshot& snap);
 static AggregateSnapshot copyCanAggregateSnapshot();
 static void canTxTask(void* pv);
-static bool tryGetSolisScaledValue(const SolisRegisterValue& regValue,
-                                   float divisor,
-                                   bool signedValue,
-                                   float& value);
-static bool isSolisBatteryDischarging(const SolisRegisterValue& regValue);
-static bool tryBuildSolisPowerW(const SolisRegisterValue& voltageReg,
-                                const SolisRegisterValue& currentReg,
-                                float voltageDivisor,
-                                float currentDivisor,
-                                float& powerW);
-static bool tryBuildSignedSolisBatteryPowerW(const SolisSnapshot& snapshot, float& powerW);
-static void setSolisRegisterFromBlock(uint16_t docReg,
-                                      const uint16_t* blockValues,
-                                      SolisRegisterValue& regValue);
-static bool copySolisSnapshot(SolisSnapshot& snapshot);
-static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues);
-static void pollSolisOnce(unsigned long nowMs);
-static void maybePollSolis(unsigned long nowMs);
-static void printSolisSummary(unsigned long nowMs);
+static void rs485Task(void* pv);
+static void buildRegisterMap(uint16_t* regs, int count, const AggregateSnapshot& agg);
+static void sendModbusResponse(uint16_t startReg, uint16_t count,
+                               const uint16_t* regs, int regCount);
+static void processRS485Slave(const AggregateSnapshot& agg);
+
 uint8_t socFromVoltageTable(float packVoltage);
 
 void setupCAN();
@@ -267,48 +303,6 @@ static int seenBatteryCount() {
     return count;
 }
 
-static bool tryGetSolisScaledValue(const SolisRegisterValue& regValue,
-                                   float divisor,
-                                   bool signedValue,
-                                   float& value) {
-    if (!regValue.valid || fabsf(divisor) < SOLIS_DIVISOR_ZERO_GUARD) return false;
-
-    value = signedValue ? static_cast<float>(static_cast<int16_t>(regValue.raw)) / divisor
-                        : static_cast<float>(regValue.raw) / divisor;
-    return true;
-}
-
-static bool isSolisBatteryDischarging(const SolisRegisterValue& regValue) {
-    return regValue.valid && regValue.raw == 1;
-}
-
-static bool tryBuildSolisPowerW(const SolisRegisterValue& voltageReg,
-                                const SolisRegisterValue& currentReg,
-                                float voltageDivisor,
-                                float currentDivisor,
-                                float& powerW) {
-    float voltageVolts = 0.0f;
-    float currentAmps = 0.0f;
-    if (!tryGetSolisScaledValue(voltageReg, voltageDivisor, false, voltageVolts) ||
-        !tryGetSolisScaledValue(currentReg, currentDivisor, false, currentAmps)) {
-        return false;
-    }
-
-    powerW = voltageVolts * currentAmps;
-    return true;
-}
-
-static bool tryBuildSignedSolisBatteryPowerW(const SolisSnapshot& snapshot, float& powerW) {
-    if (!tryBuildSolisPowerW(snapshot.batteryVoltage, snapshot.batteryCurrent, 100.0f, 10.0f, powerW)) {
-        return false;
-    }
-
-    if (isSolisBatteryDischarging(snapshot.batteryDirection)) {
-        powerW = -powerW;
-    }
-    return true;
-}
-
 static uint16_t modbusCRC(const uint8_t* buf, int len) {
     uint16_t crc = 0xFFFF;
     for (int pos = 0; pos < len; pos++) {
@@ -326,183 +320,148 @@ static void flushRS485Input() {
     }
 }
 
-static int readRS485Reply(uint8_t* buf, int maxLen, uint32_t timeoutMs) {
-    int len = 0;
-    uint32_t last = millis();
-    while (millis() - last < timeoutMs) {
-        while (RS485.available()) {
-            uint8_t byteValue = RS485.read();
-            if (len < maxLen) buf[len++] = byteValue;
-            last = millis();
-        }
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    return len;
-}
-
 static bool validModbusCRC(const uint8_t* buf, int len) {
     if (len < 4) return false;
     uint16_t rxCRC = buf[len - 2] | (static_cast<uint16_t>(buf[len - 1]) << 8);
     return rxCRC == modbusCRC(buf, len - 2);
 }
 
-static void sendReadInput(uint8_t slave, uint16_t rawAddr, uint16_t count) {
-    uint8_t frame[8];
-    frame[0] = slave;
-    frame[1] = 0x04;
-    frame[2] = rawAddr >> 8;
-    frame[3] = rawAddr & 0xFF;
-    frame[4] = count >> 8;
-    frame[5] = count & 0xFF;
-    uint16_t crc = modbusCRC(frame, 6);
-    frame[6] = crc & 0xFF;
-    frame[7] = crc >> 8;
-    RS485.write(frame, sizeof(frame));
-    RS485.flush();
-}
+// -----------------------------------------------------------------------
+// buildRegisterMap — populate the Modbus holding register array from the
+// current aggregate snapshot and per-battery state.
+// -----------------------------------------------------------------------
+static void buildRegisterMap(uint16_t* regs, int count, const AggregateSnapshot& agg) {
+    for (int i = 0; i < count; i++) regs[i] = 0;
 
-static void setSolisRegisterFromBlock(uint16_t docReg,
-                                      const uint16_t* blockValues,
-                                      SolisRegisterValue& regValue) {
-    if (docReg < SOLIS_BLOCK_START_REG || docReg > SOLIS_BLOCK_END_REG) return;
+    // Aggregate block
+    regs[REG_AGG_VALID]             = agg.valid ? 1U : 0U;
+    regs[REG_AGG_CONTRIBUTING]      = agg.contributingBatteries;
+    regs[REG_AGG_VOLTAGE_V100]      = (uint16_t)(agg.voltage * 100.0f + 0.5f);
+    regs[REG_AGG_CURRENT_A100]      = (uint16_t)(int16_t)(agg.current * 100.0f);
+    regs[REG_AGG_SOC]               = agg.soc;
+    regs[REG_AGG_TEMP_C10]          = agg.hasTemperature
+                                      ? (uint16_t)(int16_t)(agg.temperature * 10.0f)
+                                      : 0U;
+    regs[REG_AGG_CHARGE_ALLOWED]    = agg.chargeAllowed ? 1U : 0U;
+    regs[REG_AGG_DISCHARGE_ALLOWED] = agg.dischargeAllowed ? 1U : 0U;
 
-    regValue.raw = blockValues[docReg - SOLIS_BLOCK_START_REG];
-    regValue.valid = true;
-}
+    // Per-battery blocks
+    for (int b = 0; b < BATTERY_COUNT; b++) {
+        const BatteryState& bat = batteries[b];
+        int base = REG_BATT_BASE + b * SLAVE_REGS_PER_BATTERY;
+        if (base + SLAVE_REGS_PER_BATTERY > count) break;
 
-static bool readSolisBlockU16(uint8_t slave, uint16_t startDocReg, uint16_t count, uint16_t* outValues) {
-    static uint8_t buf[SOLIS_MODBUS_HEADER_BYTES +
-                       (SOLIS_BLOCK_REG_COUNT * SOLIS_MODBUS_BYTES_PER_REG) +
-                       SOLIS_MODBUS_CRC_BYTES];
+        regs[base + REG_BATT_ENABLED]        = bat.enabled ? 1U : 0U;
+        regs[base + REG_BATT_HAS_DATA]       = bat.hasData ? 1U : 0U;
+        regs[base + REG_BATT_VOLTAGE_V100]   = bat.hasData
+                                               ? (uint16_t)(bat.voltage * 100.0f + 0.5f)
+                                               : 0U;
+        regs[base + REG_BATT_CURRENT_A100]   = bat.hasData
+                                               ? (uint16_t)(int16_t)(bat.current * 100.0f)
+                                               : 0U;
+        regs[base + REG_BATT_SOC]            = bat.hasData ? bat.soc : 0U;
+        regs[base + REG_BATT_CHARGE_MOS]     = bat.chargeMos ? 1U : 0U;
+        regs[base + REG_BATT_DISCHARGE_MOS]  = bat.dischargeMos ? 1U : 0U;
+        regs[base + REG_BATT_TEMP_C10]       = (bat.hasData && bat.hasTemperature)
+                                               ? (uint16_t)(int16_t)(bat.temperature * 10.0f)
+                                               : 0U;
+        regs[base + REG_BATT_CELL_COUNT]     = bat.hasCellData ? bat.cellCount : 0U;
 
-    const int expectedLen = SOLIS_MODBUS_HEADER_BYTES +
-                            (count * SOLIS_MODBUS_BYTES_PER_REG) +
-                            SOLIS_MODBUS_CRC_BYTES;
-    if (expectedLen > static_cast<int>(sizeof(buf))) return false;
-
-    const uint16_t rawAddr = startDocReg - 1;
-
-    flushRS485Input();
-    sendReadInput(slave, rawAddr, count);
-
-    const int len = readRS485Reply(buf, sizeof(buf), SOLIS_BLOCK_READ_TIMEOUT_MS);
-    if (len < expectedLen) return false;
-    if (!validModbusCRC(buf, len)) return false;
-    if (buf[0] != slave || buf[1] != 0x04) return false;
-    if (buf[2] != static_cast<uint8_t>(count * SOLIS_MODBUS_BYTES_PER_REG)) return false;
-
-    for (uint16_t i = 0; i < count; i++) {
-        const int offset = SOLIS_MODBUS_HEADER_BYTES + (i * SOLIS_MODBUS_BYTES_PER_REG);
-        outValues[i] = (static_cast<uint16_t>(buf[offset]) << 8) | buf[offset + 1];
-    }
-    return true;
-}
-
-static void pollSolisOnce(unsigned long nowMs) {
-    if (solisMutex == nullptr) return;
-
-    uint16_t blockValues[SOLIS_BLOCK_REG_COUNT];
-    uint32_t lockTimeoutsThisPass = 0;
-    bool blockOk = readSolisBlockU16(SOLIS_SLAVE_ID,
-                                     SOLIS_BLOCK_START_REG,
-                                     SOLIS_BLOCK_REG_COUNT,
-                                     blockValues);
-
-    if (blockOk) {
-        if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            setSolisRegisterFromBlock(SOLIS_REG_PV1_VOLTAGE, blockValues, solisState.pv1Voltage);
-            setSolisRegisterFromBlock(SOLIS_REG_PV1_CURRENT, blockValues, solisState.pv1Current);
-            setSolisRegisterFromBlock(SOLIS_REG_PV2_VOLTAGE, blockValues, solisState.pv2Voltage);
-            setSolisRegisterFromBlock(SOLIS_REG_PV2_CURRENT, blockValues, solisState.pv2Current);
-            setSolisRegisterFromBlock(SOLIS_REG_GRID_POWER, blockValues, solisState.gridPower);
-            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_CURRENT, blockValues, solisState.batteryCurrent);
-            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_DIRECTION, blockValues, solisState.batteryDirection);
-            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_SOC, blockValues, solisState.batterySoc);
-            setSolisRegisterFromBlock(SOLIS_REG_BATTERY_VOLTAGE, blockValues, solisState.batteryVoltage);
-            solisState.lastSuccessMs = nowMs;
-            xSemaphoreGive(solisMutex);
-        } else {
-            lockTimeoutsThisPass++;
+        for (int c = 0; c < SLAVE_CELLS_PER_BATTERY; c++) {
+            regs[base + REG_BATT_CELL_MV_FIRST + c] =
+                (bat.hasCellData && c < bat.cellCount) ? bat.cellMv[c] : 0U;
         }
-    }
-
-    if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        solisState.lastPollMs = nowMs;
-        solisState.pollCount++;
-        if (!blockOk) solisState.readErrors++;
-        solisState.lockTimeouts += lockTimeoutsThisPass;
-        xSemaphoreGive(solisMutex);
-    }
-
-    if (!blockOk) {
-        Serial.println("[Solis] poll pass had no successful reads");
+        // reserved slot (+23) is already zero from the initial memset above
     }
 }
 
-static void maybePollSolis(unsigned long nowMs) {
-    if (solisMutex == nullptr) return;
-    if (lastSolisPollMs != 0 && (nowMs - lastSolisPollMs) < SOLIS_POLL_INTERVAL_MS) return;
-
-    lastSolisPollMs = nowMs;
-    pollSolisOnce(nowMs);
-}
-
-static bool copySolisSnapshot(SolisSnapshot& snapshot) {
-    if (solisMutex == nullptr) {
-        snapshot = {};
-        return false;
+// -----------------------------------------------------------------------
+// sendModbusResponse — build and transmit an FC03 response frame.
+// Clamps the requested register window to [0, regCount).
+// -----------------------------------------------------------------------
+static void sendModbusResponse(uint16_t startReg, uint16_t count,
+                               const uint16_t* regs, int regCount) {
+    if (startReg >= (uint16_t)regCount) count = 0;
+    if ((uint32_t)startReg + count > (uint32_t)regCount) {
+        count = (uint16_t)(regCount - startReg);
     }
 
-    if (xSemaphoreTake(solisMutex, pdMS_TO_TICKS(SOLIS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
-        snapshot = {};
-        return false;
-    }
+    // Frame: slave(1) + func(1) + byteCount(1) + data(count×2) + CRC(2)
+    const int dataBytes = count * 2;
+    const int frameLen  = 3 + dataBytes + 2;
+    static uint8_t frame[3 + SLAVE_REG_COUNT * 2 + 2];
 
-    snapshot = solisState;
-    xSemaphoreGive(solisMutex);
-    return true;
+    frame[0] = RS485_SLAVE_ID;
+    frame[1] = RS485_FC_READ_HOLDING;
+    frame[2] = (uint8_t)dataBytes;
+    for (uint16_t i = 0; i < count; i++) {
+        uint16_t val = regs[startReg + i];
+        frame[3 + i * 2]     = (val >> 8) & 0xFF;
+        frame[3 + i * 2 + 1] = val & 0xFF;
+    }
+    uint16_t crc = modbusCRC(frame, 3 + dataBytes);
+    frame[3 + dataBytes]     = crc & 0xFF;
+    frame[3 + dataBytes + 1] = crc >> 8;
+
+    if (RS485_DE_PIN >= 0) digitalWrite(RS485_DE_PIN, HIGH);
+    RS485.write(frame, frameLen);
+    RS485.flush();
+    if (RS485_DE_PIN >= 0) digitalWrite(RS485_DE_PIN, LOW);
+    // Discard any TX echo that may appear on the RX line (half-duplex bus)
+    flushRS485Input();
 }
 
-static void printSolisSummary(unsigned long nowMs) {
-    SolisSnapshot snapshot = {};
-    if (!copySolisSnapshot(snapshot) || snapshot.pollCount == 0) {
-        Serial.println("[Solis] no inverter polls yet");
+// -----------------------------------------------------------------------
+// processRS485Slave — accumulate incoming bytes and respond to valid
+// FC03 requests addressed to RS485_SLAVE_ID.
+//
+// Called by the dedicated RS485 task. All non-matching or malformed frames
+// are silently discarded; the Pi master will retry on timeout.
+// -----------------------------------------------------------------------
+static void processRS485Slave(const AggregateSnapshot& agg) {
+    unsigned long nowMs = millis();
+
+    // Reset a partial frame that has gone stale (no new byte for too long)
+    if (slaveRxLen > 0 && (nowMs - slaveRxFirstByteMs) > RS485_FRAME_STALE_MS) {
+        slaveRxLen = 0;
+    }
+
+    // Capture first-byte timestamp before draining so the stale-frame timer
+    // always reflects when the frame started, not when a mid-frame byte arrived.
+    if (slaveRxLen == 0 && RS485.available()) slaveRxFirstByteMs = nowMs;
+
+    // Drain available bytes into the receive buffer (FC03 request = 8 bytes)
+    while (RS485.available() && slaveRxLen < (int)sizeof(slaveRxBuf)) {
+        slaveRxBuf[slaveRxLen++] = (uint8_t)RS485.read();
+    }
+
+    // Need all 8 bytes of a standard Modbus RTU request before processing
+    if (slaveRxLen < 8) return;
+
+    // Filter: only respond to requests addressed to this slave using FC03
+    if (slaveRxBuf[0] != RS485_SLAVE_ID || slaveRxBuf[1] != RS485_FC_READ_HOLDING) {
+        slaveRxLen = 0;
         return;
     }
 
-    unsigned long ageSec = snapshot.lastSuccessMs == 0 ? 0 : (nowMs - snapshot.lastSuccessMs) / 1000UL;
-    float batteryVoltage = 0.0f;
-    float batteryCurrent = 0.0f;
-    float batterySoc = 0.0f;
-    float gridPower = 0.0f;
-    float batteryPower = 0.0f;
-    float pv1Power = 0.0f;
-    float pv2Power = 0.0f;
-
-    bool haveBatteryVoltage = tryGetSolisScaledValue(snapshot.batteryVoltage, 100.0f, false, batteryVoltage);
-    bool haveBatteryCurrent = tryGetSolisScaledValue(snapshot.batteryCurrent, 10.0f, false, batteryCurrent);
-    bool haveBatterySoc = tryGetSolisScaledValue(snapshot.batterySoc, 1.0f, false, batterySoc);
-    bool haveGridPower = tryGetSolisScaledValue(snapshot.gridPower, 1.0f, true, gridPower);
-    bool haveBatteryPower = tryBuildSignedSolisBatteryPowerW(snapshot, batteryPower);
-    bool havePv1Power = tryBuildSolisPowerW(snapshot.pv1Voltage, snapshot.pv1Current, 10.0f, 10.0f, pv1Power);
-    bool havePv2Power = tryBuildSolisPowerW(snapshot.pv2Voltage, snapshot.pv2Current, 10.0f, 10.0f, pv2Power);
-
-    Serial.printf("[Solis] age=%lus polls=%lu errors=%lu locks=%lu",
-                  ageSec,
-                  (unsigned long)snapshot.pollCount,
-                  (unsigned long)snapshot.readErrors,
-                  (unsigned long)snapshot.lockTimeouts);
-    if (haveBatteryVoltage) Serial.printf(" batt=%.2fV", batteryVoltage);
-    if (haveBatteryCurrent) Serial.printf(" %.1fA", batteryCurrent);
-    if (haveBatterySoc) Serial.printf(" soc=%.0f%%", batterySoc);
-    if (haveBatteryPower) Serial.printf(" battP=%.0fW", batteryPower);
-    if (haveGridPower) Serial.printf(" grid=%.0fW", gridPower);
-    if (havePv1Power) Serial.printf(" pv1=%.0fW", pv1Power);
-    if (havePv2Power) Serial.printf(" pv2=%.0fW", pv2Power);
-    if (snapshot.batteryDirection.valid) {
-        Serial.printf(" dir=%s", isSolisBatteryDischarging(snapshot.batteryDirection) ? "discharging" : "charging");
+    // Validate CRC
+    if (!validModbusCRC(slaveRxBuf, 8)) {
+        Serial.println("[RS485] bad CRC — frame discarded");
+        slaveRxLen = 0;
+        return;
     }
-    Serial.println();
+
+    uint16_t startReg = ((uint16_t)slaveRxBuf[2] << 8) | slaveRxBuf[3];
+    uint16_t count    = ((uint16_t)slaveRxBuf[4] << 8) | slaveRxBuf[5];
+
+    Serial.printf("[RS485] FC03 req start=%u count=%u\n", startReg, count);
+
+    // Build and send response
+    static uint16_t regs[SLAVE_REG_COUNT];
+    buildRegisterMap(regs, SLAVE_REG_COUNT, agg);
+    sendModbusResponse(startReg, count, regs, SLAVE_REG_COUNT);
+
+    slaveRxLen = 0;
 }
 
 static bool isAggregateUsable(const AggregateSnapshot& snap, unsigned long nowMs) {
@@ -1043,11 +1002,24 @@ static void canTxTask(void* pv) {
     }
 }
 
+static void rs485Task(void* pv) {
+    (void)pv;
+
+    for (;;) {
+        AggregateSnapshot snap = copyCanAggregateSnapshot();
+        if (!snap.valid && canAggregateMutex == nullptr) {
+            snap = aggregate;
+        }
+        processRS485Slave(snap);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
 static void printSummary() {
     unsigned long now = millis();
     int connectedCount = 0;
 
-    Serial.printf("\n=== Persistent BLE summary @ %lus ===\n", now / 1000UL);
+    Serial.printf("\n=== BLE BMS summary @ %lus ===\n", now / 1000UL);
     for (int i = 0; i < BATTERY_COUNT; i++) {
         BatteryState& battery = batteries[i];
         if (!battery.enabled) continue;
@@ -1079,10 +1051,10 @@ static void printSummary() {
         Serial.println();
     }
 
-    printSolisSummary(now);
     Serial.printf("Connected %d/%d enabled batteries\n",
                   connectedCount,
                   enabledBatteryCount());
+    Serial.printf("[RS485] slave id=%d regs=%d\n", RS485_SLAVE_ID, SLAVE_REG_COUNT);
     Serial.println("========================================");
 }
 
@@ -1090,7 +1062,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println();
-    Serial.println("=== BLE_BMS_MARK2 (persistent BLE baseline + CAN) ===");
+    Serial.println("=== BLE_BMS_MARK2 (BLE battery bridge + RS485 Modbus slave) ===");
 
     setupCAN();
     canAggregateMutex = xSemaphoreCreateMutex();
@@ -1113,15 +1085,28 @@ void setup() {
         }
     }
 
-    solisMutex = xSemaphoreCreateMutex();
-    if (solisMutex == nullptr) {
-        Serial.println("Failed to create Solis mutex; inverter polling disabled");
+    // Initialise RS485 as a Modbus slave (receive by default)
+    if (RS485_DE_PIN >= 0) {
+        pinMode(RS485_DE_PIN, OUTPUT);
+        digitalWrite(RS485_DE_PIN, LOW);  // receive mode
+    }
+    RS485.begin(RS485_BAUD, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
+    flushRS485Input();
+    Serial.printf("RS485 Modbus slave id=%d  baud=%d  RX=%d TX=%d  regs=%d\n",
+                  RS485_SLAVE_ID, RS485_BAUD, RS485_RX_PIN, RS485_TX_PIN,
+                  SLAVE_REG_COUNT);
+    BaseType_t rs485TaskOk = xTaskCreatePinnedToCore(
+        rs485Task,
+        "RS485Slave",
+        RS485_TASK_STACK_SIZE,
+        nullptr,
+        RS485_TASK_PRIORITY,
+        nullptr,
+        RS485_TASK_CORE);
+    if (rs485TaskOk != pdPASS) {
+        Serial.println("Failed to start RS485 task");
     } else {
-        RS485.begin(9600, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-        Serial.printf("Solis RS485 polling enabled on RX=%d TX=%d every %lu ms\n",
-                      RS485_RX_PIN,
-                      RS485_TX_PIN,
-                      (unsigned long)SOLIS_POLL_INTERVAL_MS);
+        Serial.printf("RS485 task started on core %d\n", RS485_TASK_CORE);
     }
 
     BLEDevice::init("");
@@ -1173,8 +1158,7 @@ void setup() {
 
 void loop() {
     cycleCount++;
-    Serial.printf("\n--- Persistent cycle %lu ---\n", cycleCount);
-    maybePollSolis(millis());
+    Serial.printf("\n--- Main cycle %lu ---\n", cycleCount);
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
         BatteryState& battery = batteries[i];
@@ -1213,7 +1197,6 @@ void loop() {
         }
 
         delay(BETWEEN_BATTERIES_MS);
-        maybePollSolis(millis());
     }
 
     if (millis() - lastSummaryMs >= LOG_INTERVAL_MS) {
