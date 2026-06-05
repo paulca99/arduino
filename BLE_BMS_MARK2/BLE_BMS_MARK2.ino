@@ -31,16 +31,20 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define BLE_TIMEOUT_MS  (3UL * 60UL * 1000UL)
 #define CAN_TASK_STACK_SIZE        4096
 #define CAN_TASK_PRIORITY             1
+#define RS485_TASK_STACK_SIZE      4096
+#define RS485_TASK_PRIORITY           2
 #define CAN_MUTEX_TIMEOUT_MS        100
 #define RS485_RX_PIN                 16
 #define RS485_TX_PIN                 17
 #if CONFIG_FREERTOS_UNICORE
 #define CAN_TASK_CORE                0
+#define RS485_TASK_CORE              0
 #else
 #ifndef CONFIG_ARDUINO_RUNNING_CORE
 #define CONFIG_ARDUINO_RUNNING_CORE 1
 #endif
 #define CAN_TASK_CORE  (1 - CONFIG_ARDUINO_RUNNING_CORE)
+#define RS485_TASK_CORE CONFIG_ARDUINO_RUNNING_CORE
 #endif
 
 #define STARTUP_SCAN_TIMEOUT_MS   15000
@@ -236,6 +240,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now);
 static void updateCanAggregateSnapshot(const AggregateSnapshot& snap);
 static AggregateSnapshot copyCanAggregateSnapshot();
 static void canTxTask(void* pv);
+static void rs485Task(void* pv);
 static void buildRegisterMap(uint16_t* regs, int count, const AggregateSnapshot& agg);
 static void sendModbusResponse(uint16_t startReg, uint16_t count,
                                const uint16_t* regs, int regCount);
@@ -410,7 +415,7 @@ static void sendModbusResponse(uint16_t startReg, uint16_t count,
 // processRS485Slave — accumulate incoming bytes and respond to valid
 // FC03 requests addressed to RS485_SLAVE_ID.
 //
-// Call this frequently from loop().  All non-matching or malformed frames
+// Called by the dedicated RS485 task. All non-matching or malformed frames
 // are silently discarded; the Pi master will retry on timeout.
 // -----------------------------------------------------------------------
 static void processRS485Slave(const AggregateSnapshot& agg) {
@@ -993,6 +998,19 @@ static void canTxTask(void* pv) {
                           snap.chargeAllowed,
                           snap.dischargeAllowed);
         }
+
+        static void rs485Task(void* pv) {
+            (void)pv;
+
+            for (;;) {
+                AggregateSnapshot snap = copyCanAggregateSnapshot();
+                if (!snap.valid && canAggregateMutex == nullptr) {
+                    snap = aggregate;
+                }
+                processRS485Slave(snap);
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+        }
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(CAN_INTERVAL_MS));
     }
 }
@@ -1077,6 +1095,19 @@ void setup() {
     Serial.printf("RS485 Modbus slave id=%d  baud=%d  RX=%d TX=%d  regs=%d\n",
                   RS485_SLAVE_ID, RS485_BAUD, RS485_RX_PIN, RS485_TX_PIN,
                   SLAVE_REG_COUNT);
+    BaseType_t rs485TaskOk = xTaskCreatePinnedToCore(
+        rs485Task,
+        "RS485Slave",
+        RS485_TASK_STACK_SIZE,
+        nullptr,
+        RS485_TASK_PRIORITY,
+        nullptr,
+        RS485_TASK_CORE);
+    if (rs485TaskOk != pdPASS) {
+        Serial.println("Failed to start RS485 task");
+    } else {
+        Serial.printf("RS485 task started on core %d\n", RS485_TASK_CORE);
+    }
 
     BLEDevice::init("");
     BLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -1129,8 +1160,6 @@ void loop() {
     cycleCount++;
     Serial.printf("\n--- Main cycle %lu ---\n", cycleCount);
 
-    processRS485Slave(aggregate);
-
     for (int i = 0; i < BATTERY_COUNT; i++) {
         BatteryState& battery = batteries[i];
         if (!battery.enabled) continue;
@@ -1168,7 +1197,6 @@ void loop() {
         }
 
         delay(BETWEEN_BATTERIES_MS);
-        processRS485Slave(aggregate);
     }
 
     if (millis() - lastSummaryMs >= LOG_INTERVAL_MS) {
