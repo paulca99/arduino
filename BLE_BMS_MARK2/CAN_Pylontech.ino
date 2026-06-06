@@ -1,5 +1,4 @@
 #include "driver/twai.h"
-#include <math.h>
 
 // -----------------------------------------------------------------------
 // Pylontech CAN protocol for Solis S5-EH1P3.6K-L
@@ -31,11 +30,6 @@
 // e.g. 13S → 546, 14S → 588
 #define PACK_MAX_V10            ((uint16_t)((PACK_SERIES_CELLS) * 4.20f * 10.0f + 0.5f))
 
-// SoC curve reference: authored for 14S pack voltages. Scale voltages by
-// PACK_SERIES_CELLS / 14 so 13S packs work automatically.
-#define SOC_REF_SERIES          14.0f
-#define SOC_SCALE               ((float)(PACK_SERIES_CELLS) / SOC_REF_SERIES)
-
 // Battery limits — Boston Power Swing 5300 NMC, 13S 18P (by default)
 // Cell max: 4.20V, Cell min: 2.75V, Pack: 54.6V / 35.75V, Capacity: ~95Ah
 #define MAX_CHARGE_VOLTAGE      PACK_MAX_V10   // PACK_SERIES_CELLS x 4.20V NMC (x10)
@@ -43,74 +37,6 @@
 #define MAX_DISCHARGE_CURRENT   600   // 60.0A  (x10)
 
 static uint32_t aliveCounter = 0;
-
-// -----------------------------------------------------------------------
-// SOC_EMA_TAU_S — EMA time constant for the voltage-based SoC filter.
-//
-// Using instantaneous pack voltage to derive SoC causes the reported SoC
-// to rebound immediately when the inverter stops drawing current (voltage
-// recovers).  That makes the inverter think the battery is usable again,
-// which re-enables discharge, voltage sags, SoC drops again — the classic
-// oscillation near the inverter's lower SoC threshold.
-//
-// We smooth the voltage with an exponential moving average (EMA) before
-// passing it to voltageToSoc().  An EMA needs only two state variables
-// (filtered value + last timestamp) — no ring buffer, negligible RAM.
-//
-// Time constant τ = 120 s ≈ 2 minutes.  That means a sudden 1 V voltage
-// step takes ~2 minutes to be fully reflected in the reported SoC, so
-// brief load/no-load rebounds are suppressed.
-//
-// Tuning:
-//   Increase SOC_EMA_TAU_S → more smoothing (slower SoC response).
-//   Decrease SOC_EMA_TAU_S → less smoothing (faster SoC response).
-//   Set to 0 → disables smoothing (reverts to instantaneous behaviour).
-//
-// Alpha is computed per-call from elapsed wall-clock time so the
-// behaviour is stable even if loop timing varies.
-// -----------------------------------------------------------------------
-#define SOC_EMA_TAU_S   120.0f   // EMA time constant ≈ 2-minute smoothing window
-
-// -----------------------------------------------------------------------
-// voltageToSoc — NMC discharge curve lookup + linear interpolation
-// Input: pack voltage (V). Output: SoC 0–100%.
-// Curve is authored for a 14S reference pack; voltages are scaled by
-// SOC_SCALE (= PACK_SERIES_CELLS / 14) so 13S packs work automatically.
-// Based on Boston Power Swing 5300 NMC cell characterisation.
-// -----------------------------------------------------------------------
-static uint8_t voltageToSoc(float packV) {
-    // {14S reference pack voltage, SoC%} — must be in descending voltage order
-    static const float curve[][2] = {
-        {58.8f, 100},
-        {56.0f,  80},
-        {53.9f,  70},
-        {52.5f,  60},
-        {51.1f,  50},
-        {49.7f,  40},
-        {48.3f,  30},
-        {46.2f,  20},
-        {44.1f,  10},
-        {38.5f,   0},
-    };
-    const uint8_t points = sizeof(curve) / sizeof(curve[0]);
-
-    if (packV >= curve[0][0] * SOC_SCALE)             return 100;
-    if (packV <= curve[points - 1][0] * SOC_SCALE)    return 0;
-
-    for (uint8_t i = 0; i < points - 1; i++) {
-        float vHigh = curve[i][0]   * SOC_SCALE, socHigh = curve[i][1];
-        float vLow  = curve[i+1][0] * SOC_SCALE, socLow  = curve[i+1][1];
-        if (packV <= vHigh && packV > vLow) {
-            float t = (packV - vLow) / (vHigh - vLow);
-            return (uint8_t)(socLow + t * (socHigh - socLow) + 0.5f);
-        }
-    }
-    return 0;
-}
-
-uint8_t socFromVoltageTable(float packVoltage) {
-    return voltageToSoc(packVoltage);
-}
 
 // -----------------------------------------------------------------------
 // Helper — transmit one CAN frame, print warning if it fails
@@ -170,51 +96,12 @@ static void can_send_limits() {
 // -----------------------------------------------------------------------
 // 0x355 — SoC and SoH
 //
-// Voltage-based SoC override: uses the filtered (EMA) pack voltage rather
-// than instantaneous voltage so that brief load/no-load voltage swings do
-// not immediately flip the reported SoC.  The voltage-based override is
-// retained because the JBD BMS can report 0% SoC whenever an alarm fires.
-// See SOC_EMA_TAU_S above for smoothing details and tuning guidance.
+// Reports the highest SoC value received from any contributing BMS.
+// SoH is assumed 100% as the JBD BMS does not report it.
 // -----------------------------------------------------------------------
-static void can_send_soc(float packVoltage, uint8_t measuredSoc) {
-    // EMA state — persists across calls; filteredV < 0 means "not yet seeded".
-    static float         filteredV = -1.0f;
-    static unsigned long lastEmaMs = 0;
-
-    float        rawV  = packVoltage;
-    unsigned long nowMs = millis();
-
-    if (rawV > 0.0f) {
-        if (filteredV < 0.0f) {
-            // First valid reading: seed the filter so we start from a sensible
-            // voltage immediately rather than ramping up from 0 V.
-            filteredV = rawV;
-        } else if (SOC_EMA_TAU_S > 0.0f) {
-            float dtSec = (nowMs - lastEmaMs) * 1.0e-3f;
-            // alpha = 1 - exp(-dt / tau).  For dt << tau this ≈ dt/tau (small
-            // step); for dt >> tau this → 1 (instant follow, e.g. after a long
-            // gap with no BLE data).  expf() is part of the ESP32 Arduino core.
-            float alpha = 1.0f - expf(-dtSec / SOC_EMA_TAU_S);
-            filteredV  += alpha * (rawV - filteredV);
-        } else {
-            filteredV = rawV;  // tau == 0: smoothing disabled, use raw voltage
-        }
-        lastEmaMs = nowMs;
-    }
-    // rawV <= 0 means no valid BMS data yet — leave filteredV unchanged so
-    // the last known good voltage (or the initial -1 sentinel) is preserved.
-
-    // Convert smoothed voltage to SoC — immune to BMS coulomb-counter resets.
-    // voltageToSoc() clamps out-of-range inputs, so the -1 sentinel returns 0%.
-    uint8_t socFromVoltage = voltageToSoc(filteredV);
-    // Blend measured and voltage-derived SoC when measuredSoC is non-zero so CAN
-    // remains stable if one input briefly spikes; if measuredSoC is zero we keep
-    // the voltage-derived value to avoid false "empty" drops from transient resets.
-    uint8_t clampedMeasuredSoc = measuredSoc > 100 ? 100 : measuredSoc;
-    uint8_t soc = clampedMeasuredSoc > 0
-                ? (uint8_t)roundf((socFromVoltage + clampedMeasuredSoc) / 2.0f)
-                : socFromVoltage;
-    uint8_t soh = 100; // JBD BMS doesn't report SoH — assume 100%
+static void can_send_soc(uint8_t measuredSoc) {
+    uint8_t soc = measuredSoc > 100 ? 100 : measuredSoc;
+    uint8_t soh = 100;
 
     twai_message_t msg;
     msg.identifier       = 0x355;
@@ -340,7 +227,7 @@ void sendCANFrames(float voltage,
                    bool chargeAllowed,
                    bool dischargeAllowed) {
     can_send_limits();
-    can_send_soc(voltage, soc);
+    can_send_soc(soc);
     can_send_measurements(voltage, current, temperature);
     can_send_alarms(voltage, temperature);
     can_send_request(chargeAllowed, dischargeAllowed);
