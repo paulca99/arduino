@@ -246,8 +246,6 @@ static void sendModbusResponse(uint16_t startReg, uint16_t count,
                                const uint16_t* regs, int regCount);
 static void processRS485Slave(const AggregateSnapshot& agg);
 
-uint8_t socFromVoltageTable(float packVoltage);
-
 void setupCAN();
 void sendCANFrames(float voltage,
                    float current,
@@ -476,6 +474,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     float sumCurrent = 0.0f;
     float sumTemp = 0.0f;
     uint8_t tempCount = 0;
+    uint8_t maxSoc = 0;
     bool chargeAllowedInit = false;
     bool dischargeAllowedInit = false;
 
@@ -488,6 +487,8 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
 
         sumVoltage += battery.voltage;
         sumCurrent += battery.current;
+
+        if (battery.soc > maxSoc) maxSoc = battery.soc;
 
         if (!chargeAllowedInit) {
             snap.chargeAllowed = battery.chargeMos;
@@ -516,7 +517,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         snap.valid = true;
         snap.voltage = sumVoltage / (float)snap.contributingBatteries;
         snap.current = sumCurrent;
-        snap.soc = socFromVoltageTable(snap.voltage);
+        snap.soc = maxSoc > 100 ? 100 : maxSoc;
         if (tempCount > 0) {
             snap.hasTemperature = true;
             snap.temperature = sumTemp / (float)tempCount;
