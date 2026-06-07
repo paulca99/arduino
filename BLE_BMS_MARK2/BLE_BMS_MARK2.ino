@@ -77,6 +77,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define CHARGE_DERATE_HALF_MV        4050U
 #define CHARGE_DERATE_CAP_MV         4100U
 #define CHARGE_CUTOFF_MV             4150U
+#define DERATE_HALF_DIVISOR             2U
 
 // -----------------------------------------------------------------------
 // RS485 Modbus slave configuration
@@ -494,10 +495,10 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     uint8_t maxSoc = 0;
     bool hasChargeCellData = false;
     bool hasDischargeCellData = false;
-    uint16_t chargeMaxCellMv = 0;
-    uint16_t chargeMinCellMv = 0xFFFFU;
-    uint16_t dischargeMaxCellMv = 0;
-    uint16_t dischargeMinCellMv = 0xFFFFU;
+    uint16_t maxCellMvForCharge = 0;
+    uint16_t minCellMvForCharge = UINT16_MAX;
+    uint16_t maxCellMvForDischarge = 0;
+    uint16_t minCellMvForDischarge = UINT16_MAX;
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
         if (!batteries[i].enabled) continue;
@@ -519,7 +520,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
                              battery.lastCellDataMs != 0 &&
                              (now - battery.lastCellDataMs <= DATA_FRESH_MS);
         if (freshCellData) {
-            uint16_t localMin = 0xFFFFU;
+            uint16_t localMin = UINT16_MAX;
             uint16_t localMax = 0;
             for (uint8_t c = 0; c < battery.cellCount && c < MAX_CELLS; c++) {
                 uint16_t mv = battery.cellMv[c];
@@ -528,13 +529,13 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
             }
 
             if (battery.chargeMos) {
-                if (!hasChargeCellData || localMin < chargeMinCellMv) chargeMinCellMv = localMin;
-                if (!hasChargeCellData || localMax > chargeMaxCellMv) chargeMaxCellMv = localMax;
+                if (localMin < minCellMvForCharge) minCellMvForCharge = localMin;
+                if (localMax > maxCellMvForCharge) maxCellMvForCharge = localMax;
                 hasChargeCellData = true;
             }
             if (battery.dischargeMos) {
-                if (!hasDischargeCellData || localMin < dischargeMinCellMv) dischargeMinCellMv = localMin;
-                if (!hasDischargeCellData || localMax > dischargeMaxCellMv) dischargeMaxCellMv = localMax;
+                if (localMin < minCellMvForDischarge) minCellMvForDischarge = localMin;
+                if (localMax > maxCellMvForDischarge) maxCellMvForDischarge = localMax;
                 hasDischargeCellData = true;
             }
         }
@@ -559,64 +560,67 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         }
     }
 
+    uint32_t chargeBaseAx10 =
+        (uint32_t)snap.chargeContributingBatteries * PER_BATTERY_CURRENT_LIMIT_AX10;
+    uint32_t dischargeBaseAx10 =
+        (uint32_t)snap.dischargeContributingBatteries * PER_BATTERY_CURRENT_LIMIT_AX10;
     snap.chargeCurrentLimitAx10 =
-        (uint16_t)snap.chargeContributingBatteries * PER_BATTERY_CURRENT_LIMIT_AX10;
+        chargeBaseAx10 > UINT16_MAX ? UINT16_MAX : (uint16_t)chargeBaseAx10;
     snap.dischargeCurrentLimitAx10 =
-        (uint16_t)snap.dischargeContributingBatteries * PER_BATTERY_CURRENT_LIMIT_AX10;
-    snap.chargeAllowed = snap.chargeCurrentLimitAx10 > 0;
-    snap.dischargeAllowed = snap.dischargeCurrentLimitAx10 > 0;
+        dischargeBaseAx10 > UINT16_MAX ? UINT16_MAX : (uint16_t)dischargeBaseAx10;
 
-    if (snap.dischargeAllowed) {
+    if (snap.dischargeCurrentLimitAx10 > 0) {
         if (hasDischargeCellData) {
-            if (dischargeMinCellMv < DISCHARGE_CUTOFF_MV) {
+            if (minCellMvForDischarge < DISCHARGE_CUTOFF_MV) {
                 snap.dischargeCurrentLimitAx10 = 0;
-                snap.dischargeAllowed = false;
-            } else if (dischargeMinCellMv < DISCHARGE_DERATE_CAP_MV) {
+            } else if (minCellMvForDischarge < DISCHARGE_DERATE_CAP_MV) {
                 if (snap.dischargeCurrentLimitAx10 > DERATE_CURRENT_CAP_AX10) {
                     snap.dischargeCurrentLimitAx10 = DERATE_CURRENT_CAP_AX10;
                 }
-            } else if (dischargeMinCellMv < DISCHARGE_DERATE_HALF_MV) {
-                snap.dischargeCurrentLimitAx10 /= 2U;
+            } else if (minCellMvForDischarge < DISCHARGE_DERATE_HALF_MV) {
+                snap.dischargeCurrentLimitAx10 /= DERATE_HALF_DIVISOR;
             }
         } else if (snap.dischargeCurrentLimitAx10 > PER_BATTERY_CURRENT_LIMIT_AX10) {
+            // If cell telemetry is temporarily stale, keep operation predictable
+            // but avoid advertising multi-pack current without cell-level safety.
+            // Single-pack operation remains unchanged at the same 40A limit.
             snap.dischargeCurrentLimitAx10 = PER_BATTERY_CURRENT_LIMIT_AX10;
         }
-        if (snap.dischargeCurrentLimitAx10 == 0) snap.dischargeAllowed = false;
     }
 
-    if (snap.chargeAllowed) {
+    if (snap.chargeCurrentLimitAx10 > 0) {
         if (hasChargeCellData) {
-            if (chargeMaxCellMv >= CHARGE_CUTOFF_MV) {
+            if (maxCellMvForCharge >= CHARGE_CUTOFF_MV) {
                 snap.chargeCurrentLimitAx10 = 0;
-                snap.chargeAllowed = false;
-            } else if (chargeMaxCellMv >= CHARGE_DERATE_CAP_MV) {
+            } else if (maxCellMvForCharge >= CHARGE_DERATE_CAP_MV) {
                 if (snap.chargeCurrentLimitAx10 > DERATE_CURRENT_CAP_AX10) {
                     snap.chargeCurrentLimitAx10 = DERATE_CURRENT_CAP_AX10;
                 }
-            } else if (chargeMaxCellMv >= CHARGE_DERATE_HALF_MV) {
-                snap.chargeCurrentLimitAx10 /= 2U;
+            } else if (maxCellMvForCharge >= CHARGE_DERATE_HALF_MV) {
+                snap.chargeCurrentLimitAx10 /= DERATE_HALF_DIVISOR;
             }
         } else if (snap.chargeCurrentLimitAx10 > PER_BATTERY_CURRENT_LIMIT_AX10) {
+            // If cell telemetry is temporarily stale, keep operation predictable
+            // but avoid advertising multi-pack current without cell-level safety.
+            // Single-pack operation remains unchanged at the same 40A limit.
             snap.chargeCurrentLimitAx10 = PER_BATTERY_CURRENT_LIMIT_AX10;
         }
-        if (snap.chargeCurrentLimitAx10 == 0) snap.chargeAllowed = false;
     }
+
+    snap.chargeAllowed = snap.chargeCurrentLimitAx10 > 0;
+    snap.dischargeAllowed = snap.dischargeCurrentLimitAx10 > 0;
 
     if (hasChargeCellData || hasDischargeCellData) {
         snap.hasFreshCellExtremes = true;
         if (hasChargeCellData && hasDischargeCellData) {
-            snap.minCellMv = (chargeMinCellMv < dischargeMinCellMv)
-                           ? chargeMinCellMv
-                           : dischargeMinCellMv;
-            snap.maxCellMv = (chargeMaxCellMv > dischargeMaxCellMv)
-                           ? chargeMaxCellMv
-                           : dischargeMaxCellMv;
+            snap.minCellMv = min(minCellMvForCharge, minCellMvForDischarge);
+            snap.maxCellMv = max(maxCellMvForCharge, maxCellMvForDischarge);
         } else if (hasChargeCellData) {
-            snap.minCellMv = chargeMinCellMv;
-            snap.maxCellMv = chargeMaxCellMv;
+            snap.minCellMv = minCellMvForCharge;
+            snap.maxCellMv = maxCellMvForCharge;
         } else {
-            snap.minCellMv = dischargeMinCellMv;
-            snap.maxCellMv = dischargeMaxCellMv;
+            snap.minCellMv = minCellMvForDischarge;
+            snap.maxCellMv = maxCellMvForDischarge;
         }
     }
 
