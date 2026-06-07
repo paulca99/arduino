@@ -65,6 +65,11 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
 #define MAX_CELLS                   24
+#define PER_BATTERY_CURRENT_LIMIT_AX10 400U  // 40.0A per fresh usable battery
+#define DISCHARGE_DERATE_UPPER_MV   3200U
+#define DISCHARGE_DERATE_LOWER_MV   3100U
+#define CHARGE_DERATE_LOWER_MV      4050U
+#define CHARGE_DERATE_UPPER_MV      4150U
 #define PACKET03_SOC_INDEX          23
 #define PACKET03_FET_INDEX          24
 #define PACKET03_TEMP_COUNT_IDX_A   26
@@ -106,8 +111,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 //   3    agg_current          ×100    signed; positive = charging (A)
 //   4    agg_soc              1       state of charge 0-100 %
 //   5    agg_temperature      ×10     signed °C; 0 if temperature unavailable
-//   6    agg_charge_allowed   1       1 if charge MOS OK across all contributing
-//   7    agg_discharge_allowed 1      1 if discharge MOS OK across all contributing
+//   6    agg_charge_allowed   1       1 if final charge request is allowed
+//   7    agg_discharge_allowed 1      1 if final discharge request is allowed
 //
 // Per-battery block — 24 registers each
 //   Battery 0: addresses  8 … 31
@@ -201,6 +206,8 @@ struct BatteryState {
 struct AggregateSnapshot {
     bool valid = false;
     uint8_t contributingBatteries = 0;
+    uint8_t chargeContributingBatteries = 0;
+    uint8_t dischargeContributingBatteries = 0;
     float voltage = 0.0f;
     float current = 0.0f;
     uint8_t soc = 0;
@@ -208,6 +215,12 @@ struct AggregateSnapshot {
     bool hasTemperature = false;
     bool chargeAllowed = false;
     bool dischargeAllowed = false;
+    uint16_t chargeCurrentLimitAx10 = 0;
+    uint16_t dischargeCurrentLimitAx10 = 0;
+    uint16_t minDischargeCellMv = 0;
+    uint16_t maxChargeCellMv = 0;
+    bool hasMinDischargeCellMv = false;
+    bool hasMaxChargeCellMv = false;
     unsigned long lastFreshMs = 0;
 };
 
@@ -252,7 +265,9 @@ void sendCANFrames(float voltage,
                    uint8_t soc,
                    float temperature,
                    bool chargeAllowed,
-                   bool dischargeAllowed);
+                   bool dischargeAllowed,
+                   uint16_t chargeCurrentLimitAx10,
+                   uint16_t dischargeCurrentLimitAx10);
 
 static int findBatteryByClient(BLEClient* client) {
     for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -475,8 +490,8 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     float sumTemp = 0.0f;
     uint8_t tempCount = 0;
     uint8_t maxSoc = 0;
-    bool chargeAllowedInit = false;
-    bool dischargeAllowedInit = false;
+    uint8_t chargeCellDataCount = 0;
+    uint8_t dischargeCellDataCount = 0;
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
         if (!batteries[i].enabled) continue;
@@ -490,18 +505,43 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
 
         if (battery.soc > maxSoc) maxSoc = battery.soc;
 
-        if (!chargeAllowedInit) {
-            snap.chargeAllowed = battery.chargeMos;
-            chargeAllowedInit = true;
-        } else {
-            snap.chargeAllowed = snap.chargeAllowed && battery.chargeMos;
+        bool cellFresh = battery.hasCellData &&
+                         battery.cellCount > 0 &&
+                         battery.lastCellDataMs != 0 &&
+                         (now - battery.lastCellDataMs <= DATA_FRESH_MS);
+        bool chargeUsable = battery.chargeMos;
+        bool dischargeUsable = battery.dischargeMos;
+
+        if (chargeUsable) {
+            snap.chargeContributingBatteries++;
+            if (cellFresh) {
+                uint16_t localMaxCell = 0;
+                for (uint8_t c = 0; c < battery.cellCount; c++) {
+                    if (battery.cellMv[c] > localMaxCell) localMaxCell = battery.cellMv[c];
+                }
+                if (localMaxCell > 0) {
+                    if (!snap.hasMaxChargeCellMv || localMaxCell > snap.maxChargeCellMv) {
+                        snap.maxChargeCellMv = localMaxCell;
+                        snap.hasMaxChargeCellMv = true;
+                    }
+                    chargeCellDataCount++;
+                }
+            }
         }
 
-        if (!dischargeAllowedInit) {
-            snap.dischargeAllowed = battery.dischargeMos;
-            dischargeAllowedInit = true;
-        } else {
-            snap.dischargeAllowed = snap.dischargeAllowed && battery.dischargeMos;
+        if (dischargeUsable) {
+            snap.dischargeContributingBatteries++;
+            if (cellFresh) {
+                uint16_t localMinCell = battery.cellMv[0];
+                for (uint8_t c = 1; c < battery.cellCount; c++) {
+                    if (battery.cellMv[c] < localMinCell) localMinCell = battery.cellMv[c];
+                }
+                if (!snap.hasMinDischargeCellMv || localMinCell < snap.minDischargeCellMv) {
+                    snap.minDischargeCellMv = localMinCell;
+                    snap.hasMinDischargeCellMv = true;
+                }
+                dischargeCellDataCount++;
+            }
         }
 
         if (battery.hasTemperature) {
@@ -523,6 +563,49 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
             snap.temperature = sumTemp / (float)tempCount;
         }
     }
+
+    uint16_t baseChargeLimitAx10 =
+        (uint16_t)(snap.chargeContributingBatteries * PER_BATTERY_CURRENT_LIMIT_AX10);
+    uint16_t baseDischargeLimitAx10 =
+        (uint16_t)(snap.dischargeContributingBatteries * PER_BATTERY_CURRENT_LIMIT_AX10);
+
+    if (snap.chargeContributingBatteries > 1 &&
+        chargeCellDataCount < snap.chargeContributingBatteries &&
+        baseChargeLimitAx10 > PER_BATTERY_CURRENT_LIMIT_AX10) {
+        baseChargeLimitAx10 = PER_BATTERY_CURRENT_LIMIT_AX10;
+    }
+    if (snap.dischargeContributingBatteries > 1 &&
+        dischargeCellDataCount < snap.dischargeContributingBatteries &&
+        baseDischargeLimitAx10 > PER_BATTERY_CURRENT_LIMIT_AX10) {
+        baseDischargeLimitAx10 = PER_BATTERY_CURRENT_LIMIT_AX10;
+    }
+
+    snap.chargeCurrentLimitAx10 = baseChargeLimitAx10;
+    if (snap.chargeCurrentLimitAx10 > 0 && snap.hasMaxChargeCellMv) {
+        if (snap.maxChargeCellMv >= CHARGE_DERATE_UPPER_MV) {
+            snap.chargeCurrentLimitAx10 = 0;
+        } else if (snap.maxChargeCellMv > CHARGE_DERATE_LOWER_MV) {
+            const uint16_t rangeMv = CHARGE_DERATE_UPPER_MV - CHARGE_DERATE_LOWER_MV;
+            const uint16_t headroomMv = CHARGE_DERATE_UPPER_MV - snap.maxChargeCellMv;
+            snap.chargeCurrentLimitAx10 =
+                (uint16_t)(((uint32_t)baseChargeLimitAx10 * headroomMv) / rangeMv);
+        }
+    }
+
+    snap.dischargeCurrentLimitAx10 = baseDischargeLimitAx10;
+    if (snap.dischargeCurrentLimitAx10 > 0 && snap.hasMinDischargeCellMv) {
+        if (snap.minDischargeCellMv <= DISCHARGE_DERATE_LOWER_MV) {
+            snap.dischargeCurrentLimitAx10 = 0;
+        } else if (snap.minDischargeCellMv < DISCHARGE_DERATE_UPPER_MV) {
+            const uint16_t rangeMv = DISCHARGE_DERATE_UPPER_MV - DISCHARGE_DERATE_LOWER_MV;
+            const uint16_t aboveLowerMv = snap.minDischargeCellMv - DISCHARGE_DERATE_LOWER_MV;
+            snap.dischargeCurrentLimitAx10 =
+                (uint16_t)(((uint32_t)baseDischargeLimitAx10 * aboveLowerMv) / rangeMv);
+        }
+    }
+
+    snap.chargeAllowed = snap.chargeCurrentLimitAx10 > 0;
+    snap.dischargeAllowed = snap.dischargeCurrentLimitAx10 > 0;
 
     return snap;
 }
@@ -997,7 +1080,9 @@ static void canTxTask(void* pv) {
                           snap.soc,
                           snap.temperature,
                           snap.chargeAllowed,
-                          snap.dischargeAllowed);
+                          snap.dischargeAllowed,
+                          snap.chargeCurrentLimitAx10,
+                          snap.dischargeCurrentLimitAx10);
         }
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(CAN_INTERVAL_MS));
     }
@@ -1055,6 +1140,20 @@ static void printSummary() {
     Serial.printf("Connected %d/%d enabled batteries\n",
                   connectedCount,
                   enabledBatteryCount());
+    int minCellMvLog = aggregate.hasMinDischargeCellMv ? (int)aggregate.minDischargeCellMv : -1;
+    int maxCellMvLog = aggregate.hasMaxChargeCellMv ? (int)aggregate.maxChargeCellMv : -1;
+    Serial.printf("Aggregate: contrib=%u chargeContrib=%u dischargeContrib=%u "
+                  "chargeLimit=%.1fA dischargeLimit=%.1fA minCellMv=%d maxCellMv=%d "
+                  "req(chg=%u,dis=%u)\n",
+                  aggregate.contributingBatteries,
+                  aggregate.chargeContributingBatteries,
+                  aggregate.dischargeContributingBatteries,
+                  aggregate.chargeCurrentLimitAx10 / 10.0f,
+                  aggregate.dischargeCurrentLimitAx10 / 10.0f,
+                  minCellMvLog,
+                  maxCellMvLog,
+                  aggregate.chargeAllowed ? 1U : 0U,
+                  aggregate.dischargeAllowed ? 1U : 0U);
     Serial.printf("[RS485] slave id=%d regs=%d\n", RS485_SLAVE_ID, SLAVE_REG_COUNT);
     Serial.println("========================================");
 }
