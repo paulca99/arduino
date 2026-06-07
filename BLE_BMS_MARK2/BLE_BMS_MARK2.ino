@@ -72,6 +72,9 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define CHARGE_DERATE_LOWER_MV      4050U
 #define CHARGE_DERATE_UPPER_MV      4150U
 #define CHARGE_DERATE_RANGE_MV      (CHARGE_DERATE_UPPER_MV - CHARGE_DERATE_LOWER_MV)
+#if CHARGE_DERATE_RANGE_MV == 0 || DISCHARGE_DERATE_RANGE_MV == 0
+#error "Invalid derate thresholds: upper/lower thresholds must differ"
+#endif
 #define PACKET03_SOC_INDEX          23
 #define PACKET03_FET_INDEX          24
 #define PACKET03_TEMP_COUNT_IDX_A   26
@@ -113,8 +116,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 //   3    agg_current          ×100    signed; positive = charging (A)
 //   4    agg_soc              1       state of charge 0-100 %
 //   5    agg_temperature      ×10     signed °C; 0 if temperature unavailable
-//   6    agg_charge_allowed   1       1 if final charge request is allowed
-//   7    agg_discharge_allowed 1      1 if final discharge request is allowed
+//   6    agg_charge_allowed   1       1 if post-derate charge request is allowed
+//   7    agg_discharge_allowed 1      1 if post-derate discharge request is allowed
 //
 // Per-battery block — 24 registers each
 //   Battery 0: addresses  8 … 31
@@ -516,7 +519,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
 
         if (chargeUsable) {
             snap.chargeContributingBatteries++;
-            if (cellFresh) {
+            if (cellFresh && battery.cellCount > 0) {
                 uint16_t localMaxCell = 0;
                 for (uint8_t c = 0; c < battery.cellCount; c++) {
                     if (battery.cellMv[c] > localMaxCell) localMaxCell = battery.cellMv[c];
@@ -533,7 +536,7 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
 
         if (dischargeUsable) {
             snap.dischargeContributingBatteries++;
-            if (cellFresh) {
+            if (cellFresh && battery.cellCount > 0) {
                 uint16_t localMinCell = battery.cellMv[0];
                 for (uint8_t c = 1; c < battery.cellCount; c++) {
                     if (battery.cellMv[c] < localMinCell) localMinCell = battery.cellMv[c];
