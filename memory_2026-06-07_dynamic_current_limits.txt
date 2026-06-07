@@ -1,0 +1,43 @@
+## 2026-06-07
+
+- User flashed the latest `BLE_BMS_MARK2/BLE_BMS_MARK2.ino` from `master` after the dynamic CAN current-limit work.
+- New safety/control direction implemented for testing:
+  - Pylontech CAN charge/discharge current limits should be dynamic rather than fixed.
+  - GBLI 5001-style per-battery current limit is treated as **40 A per fresh usable battery**.
+  - With 1 fresh usable battery, CAN current limit should be about **40 A**.
+  - With 2 fresh usable batteries in parallel, CAN current limit should be about **80 A**.
+  - If one enabled battery becomes stale/offline/not contributing, current limit should drop rather than allowing two-pack current from one pack.
+- Important refinement agreed:
+  - current limit scaling should use batteries that are **enabled + fresh + contributing**, not merely configured/enabled.
+  - A battery should not count toward charge current if charge MOS is off, data is stale, or it is not contributing.
+  - A battery should not count toward discharge current if discharge MOS is off, data is stale, or it is not contributing.
+- Cell-voltage safety policy agreed for Boston Swing 5300 Li-ion 14S packs:
+  - use weakest/strongest cell voltage, not pack average, as the safety authority.
+  - low-cell discharge derating idea:
+    - min cell >= 3.25 V: full discharge current
+    - 3.20-3.25 V: reduced discharge current
+    - 3.15-3.20 V: strongly limited discharge current, around 10 A total
+    - below about 3.15 V: stop discharge by advertising zero discharge current / discharge not allowed
+  - high-cell charge derating idea:
+    - max cell < 4.05 V: full charge current
+    - 4.05-4.10 V: reduced charge current
+    - 4.10-4.15 V: strongly limited charge current, around 10 A total
+    - >= about 4.15 V: stop charge by advertising zero charge current / charge not allowed
+- Earlier overnight Grafana observation from 2026-06-07:
+  - inverter was set to stop at SoC 15%, but appeared to continue drawing roughly **80 W** from the battery.
+  - battery voltage appeared to flatten around **43.8 V**.
+  - concern remains that there may be another Solis setting involved, likely distinction between over-discharge SoC/voltage, force-charge SoC, reserve/backup behavior, or standby load.
+- Important result from Grafana/Pi monitoring:
+  - battery cell voltages are now visible in Grafana for Battery 2 and Battery 3.
+  - the dashboard shows 28 combined cell values from `battery_2_cell_1_mv` through `battery_2_cell_14_mv` and `battery_3_cell_1_mv` through `battery_3_cell_14_mv`.
+  - this means the previously missing safety-critical per-cell visibility is now available outside the ESP32 web UI.
+- Dashboard work:
+  - user created/edited Grafana dashboard `Battery Bridge - Cell Voltages Vertical`.
+  - a bottom time-series panel was added/expanded to plot all Battery 2 and Battery 3 cell voltages over time.
+  - this should make it possible to inspect cell spread and identify weak groups during charge/discharge without waiting for serial output.
+- Current test caveat:
+  - because the dynamic current-limit thresholds only trigger near high/low cell voltage limits, it may take a long time before real-world testing reaches those paths.
+  - until those thresholds are naturally hit, verify indirectly via logs/CAN behaviour if possible and continue watching Grafana for min/max cell behavior.
+- Future-session priority if testing shows odd inverter behaviour:
+  - check exact Solis menu names/photos for OverDischg SOC, ForceCharge SOC, over-discharge voltage, reserve mode, backup/EPS reserve, and time-of-use settings.
+  - avoid inventing Solis settings; base advice on actual menu evidence or manual pages.
