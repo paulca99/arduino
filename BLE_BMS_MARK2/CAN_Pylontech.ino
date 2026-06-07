@@ -33,18 +33,17 @@
 // Battery limits — Boston Power Swing 5300 NMC, 13S 18P (by default)
 // Cell max: 4.20V, Cell min: 2.75V, Pack: 54.6V / 35.75V, Capacity: ~95Ah
 #define MAX_CHARGE_VOLTAGE      PACK_MAX_V10   // PACK_SERIES_CELLS x 4.20V NMC (x10)
-#define MAX_CHARGE_CURRENT      600   // 60.0A  (x10)
-#define MAX_DISCHARGE_CURRENT   600   // 60.0A  (x10)
-
 static uint32_t aliveCounter = 0;
 
 // -----------------------------------------------------------------------
 // Helper — transmit one CAN frame, print warning if it fails
 // -----------------------------------------------------------------------
-static void canSend(twai_message_t& msg) {
+static bool canSend(twai_message_t& msg) {
     if (twai_transmit(&msg, pdMS_TO_TICKS(10)) != ESP_OK) {
         Serial.printf("⚠️  CAN TX failed for ID 0x%03X\n", msg.identifier);
+        return false;
     }
+    return true;
 }
 
 // -----------------------------------------------------------------------
@@ -79,18 +78,24 @@ void setupCAN() {
 // -----------------------------------------------------------------------
 // 0x351 — Charge voltage & current limits
 // -----------------------------------------------------------------------
-static void can_send_limits() {
+static void can_send_limits(uint16_t chargeCurrentLimitAx10,
+                            uint16_t dischargeCurrentLimitAx10) {
     twai_message_t msg;
     msg.identifier      = 0x351;
     msg.flags           = TWAI_MSG_FLAG_NONE;
     msg.data_length_code = 6;
     msg.data[0] = (MAX_CHARGE_VOLTAGE    & 0xFF);
     msg.data[1] = (MAX_CHARGE_VOLTAGE    >> 8) & 0xFF;
-    msg.data[2] = (MAX_CHARGE_CURRENT    & 0xFF);
-    msg.data[3] = (MAX_CHARGE_CURRENT    >> 8) & 0xFF;
-    msg.data[4] = (MAX_DISCHARGE_CURRENT & 0xFF);
-    msg.data[5] = (MAX_DISCHARGE_CURRENT >> 8) & 0xFF;
-    canSend(msg);
+    msg.data[2] = (chargeCurrentLimitAx10    & 0xFF);
+    msg.data[3] = (chargeCurrentLimitAx10    >> 8) & 0xFF;
+    msg.data[4] = (dischargeCurrentLimitAx10 & 0xFF);
+    msg.data[5] = (dischargeCurrentLimitAx10 >> 8) & 0xFF;
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x351] maxChargeV=%.1fV chargeLimit=%.1fA dischargeLimit=%.1fA\n",
+                      MAX_CHARGE_VOLTAGE / 10.0f,
+                      chargeCurrentLimitAx10 / 10.0f,
+                      dischargeCurrentLimitAx10 / 10.0f);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -111,7 +116,9 @@ static void can_send_soc(uint8_t measuredSoc) {
     msg.data[1] = 0x00;
     msg.data[2] = soh;
     msg.data[3] = 0x00;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x355] SoC=%u%% SoH=%u%%\n", soc, soh);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -132,7 +139,10 @@ static void can_send_measurements(float packVoltage, float packCurrent, float pa
     msg.data[3] = (current >> 8)  & 0xFF;
     msg.data[4] =  temp           & 0xFF;
     msg.data[5] = (temp    >> 8)  & 0xFF;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x356] voltage=%.2fV current=%.1fA temp=%.1fC\n",
+                      packVoltage, packCurrent, packTemp);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -142,10 +152,12 @@ static void can_send_alarms(float packVoltage, float packTemp) {
     const float maxPackV = (float)PACK_SERIES_CELLS * 4.20f;
     const float minPackV = (float)PACK_SERIES_CELLS * 2.75f;
     uint8_t protection = 0;
+    uint8_t alarms = 0;
     if (packVoltage > maxPackV) bitSet(protection, 1);   // pack overvoltage
     if (packVoltage < minPackV) bitSet(protection, 2);   // pack undervoltage
     if (packTemp > 55.0f) bitSet(protection, 3);         // high temp
     if (packTemp < 0.0f) bitSet(protection, 4);          // low temp
+    alarms = protection;
 
     twai_message_t msg;
     msg.identifier       = 0x359;
@@ -153,12 +165,14 @@ static void can_send_alarms(float packVoltage, float packTemp) {
     msg.data_length_code = 7;
     msg.data[0] = protection;  // protection flags
     msg.data[1] = 0x00;
-    msg.data[2] = protection;  // alarm flags (mirror)
+    msg.data[2] = alarms;      // alarm flags (mirror)
     msg.data[3] = 0x00;
     msg.data[4] = 0x01;
     msg.data[5] = 0x50;        // 'P'
     msg.data[6] = 0x4E;        // 'N'
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x359] protection=0x%02X alarms=0x%02X\n", protection, alarms);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -175,7 +189,11 @@ static void can_send_request(bool chargeAllowed, bool dischargeAllowed) {
     msg.data_length_code = 2;
     msg.data[0] = flags;
     msg.data[1] = 0x00;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x35C] chargeAllowed=%s dischargeAllowed=%s\n",
+                      chargeAllowed ? "yes" : "no",
+                      dischargeAllowed ? "yes" : "no");
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -194,7 +212,9 @@ static void can_send_manufacturer() {
     msg.data[5] = 'T';
     msg.data[6] = 'E';
     msg.data[7] = 'C';
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.println("[CAN TX 0x35E] manufacturer=PYLONTEC");
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -214,7 +234,9 @@ static void can_send_alive() {
     msg.data[5] = 0x00;
     msg.data[6] = 0x00;
     msg.data[7] = 0x00;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x305] aliveCounter=%lu\n", (unsigned long)aliveCounter);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -225,8 +247,10 @@ void sendCANFrames(float voltage,
                    uint8_t soc,
                    float temperature,
                    bool chargeAllowed,
-                   bool dischargeAllowed) {
-    can_send_limits();
+                   bool dischargeAllowed,
+                   uint16_t chargeCurrentLimitAx10,
+                   uint16_t dischargeCurrentLimitAx10) {
+    can_send_limits(chargeCurrentLimitAx10, dischargeCurrentLimitAx10);
     can_send_soc(soc);
     can_send_measurements(voltage, current, temperature);
     can_send_alarms(voltage, temperature);
