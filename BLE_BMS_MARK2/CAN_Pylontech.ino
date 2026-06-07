@@ -152,10 +152,12 @@ static void can_send_alarms(float packVoltage, float packTemp) {
     const float maxPackV = (float)PACK_SERIES_CELLS * 4.20f;
     const float minPackV = (float)PACK_SERIES_CELLS * 2.75f;
     uint8_t protection = 0;
+    uint8_t alarms = 0;
     if (packVoltage > maxPackV) bitSet(protection, 1);   // pack overvoltage
     if (packVoltage < minPackV) bitSet(protection, 2);   // pack undervoltage
     if (packTemp > 55.0f) bitSet(protection, 3);         // high temp
     if (packTemp < 0.0f) bitSet(protection, 4);          // low temp
+    alarms = protection;
 
     twai_message_t msg;
     msg.identifier       = 0x359;
@@ -163,13 +165,13 @@ static void can_send_alarms(float packVoltage, float packTemp) {
     msg.data_length_code = 7;
     msg.data[0] = protection;  // protection flags
     msg.data[1] = 0x00;
-    msg.data[2] = protection;  // alarm flags (mirror)
+    msg.data[2] = alarms;      // alarm flags (mirror)
     msg.data[3] = 0x00;
     msg.data[4] = 0x01;
     msg.data[5] = 0x50;        // 'P'
     msg.data[6] = 0x4E;        // 'N'
     if (canSend(msg)) {
-        Serial.printf("[CAN TX 0x359] protection=0x%02X alarms=0x%02X\n", protection, protection);
+        Serial.printf("[CAN TX 0x359] protection=0x%02X alarms=0x%02X\n", protection, alarms);
     }
 }
 
