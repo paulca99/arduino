@@ -33,8 +33,6 @@
 // Battery limits — Boston Power Swing 5300 NMC, 13S 18P (by default)
 // Cell max: 4.20V, Cell min: 2.75V, Pack: 54.6V / 35.75V, Capacity: ~95Ah
 #define MAX_CHARGE_VOLTAGE      PACK_MAX_V10   // PACK_SERIES_CELLS x 4.20V NMC (x10)
-#define MAX_CHARGE_CURRENT      600   // 60.0A  (x10)
-#define MAX_DISCHARGE_CURRENT   600   // 60.0A  (x10)
 
 static uint32_t aliveCounter = 0;
 
@@ -79,17 +77,18 @@ void setupCAN() {
 // -----------------------------------------------------------------------
 // 0x351 — Charge voltage & current limits
 // -----------------------------------------------------------------------
-static void can_send_limits() {
+static void can_send_limits(uint16_t chargeCurrentLimitAx10,
+                            uint16_t dischargeCurrentLimitAx10) {
     twai_message_t msg;
     msg.identifier      = 0x351;
     msg.flags           = TWAI_MSG_FLAG_NONE;
     msg.data_length_code = 6;
     msg.data[0] = (MAX_CHARGE_VOLTAGE    & 0xFF);
     msg.data[1] = (MAX_CHARGE_VOLTAGE    >> 8) & 0xFF;
-    msg.data[2] = (MAX_CHARGE_CURRENT    & 0xFF);
-    msg.data[3] = (MAX_CHARGE_CURRENT    >> 8) & 0xFF;
-    msg.data[4] = (MAX_DISCHARGE_CURRENT & 0xFF);
-    msg.data[5] = (MAX_DISCHARGE_CURRENT >> 8) & 0xFF;
+    msg.data[2] = (chargeCurrentLimitAx10    & 0xFF);
+    msg.data[3] = (chargeCurrentLimitAx10    >> 8) & 0xFF;
+    msg.data[4] = (dischargeCurrentLimitAx10 & 0xFF);
+    msg.data[5] = (dischargeCurrentLimitAx10 >> 8) & 0xFF;
     canSend(msg);
 }
 
@@ -224,9 +223,11 @@ void sendCANFrames(float voltage,
                    float current,
                    uint8_t soc,
                    float temperature,
+                   uint16_t chargeCurrentLimitAx10,
+                   uint16_t dischargeCurrentLimitAx10,
                    bool chargeAllowed,
                    bool dischargeAllowed) {
-    can_send_limits();
+    can_send_limits(chargeCurrentLimitAx10, dischargeCurrentLimitAx10);
     can_send_soc(soc);
     can_send_measurements(voltage, current, temperature);
     can_send_alarms(voltage, temperature);
