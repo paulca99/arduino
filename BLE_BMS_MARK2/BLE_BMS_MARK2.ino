@@ -537,8 +537,8 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         if (dischargeUsable) {
             snap.dischargeContributingBatteries++;
             if (cellFresh && battery.cellCount > 0) {
-                uint16_t localMinCell = battery.cellMv[0];
-                for (uint8_t c = 1; c < battery.cellCount; c++) {
+                uint16_t localMinCell = 0xFFFFU;
+                for (uint8_t c = 0; c < battery.cellCount; c++) {
                     if (battery.cellMv[c] < localMinCell) localMinCell = battery.cellMv[c];
                 }
                 if (!snap.hasMinDischargeCellMv || localMinCell < snap.minDischargeCellMv) {
@@ -593,7 +593,9 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         if (snap.maxChargeCellMv >= CHARGE_DERATE_UPPER_MV) {
             snap.chargeCurrentLimitAx10 = 0;
         } else if (snap.maxChargeCellMv > CHARGE_DERATE_LOWER_MV) {
-            const uint16_t headroomMv = CHARGE_DERATE_UPPER_MV - snap.maxChargeCellMv;
+            const uint16_t headroomMv = snap.maxChargeCellMv >= CHARGE_DERATE_UPPER_MV
+                                            ? 0U
+                                            : (uint16_t)(CHARGE_DERATE_UPPER_MV - snap.maxChargeCellMv);
             snap.chargeCurrentLimitAx10 =
                 (uint16_t)(((uint32_t)baseChargeLimitAx10 * headroomMv) / CHARGE_DERATE_RANGE_MV);
         }
@@ -604,7 +606,9 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         if (snap.minDischargeCellMv <= DISCHARGE_DERATE_LOWER_MV) {
             snap.dischargeCurrentLimitAx10 = 0;
         } else if (snap.minDischargeCellMv < DISCHARGE_DERATE_UPPER_MV) {
-            const uint16_t aboveLowerMv = snap.minDischargeCellMv - DISCHARGE_DERATE_LOWER_MV;
+            const uint16_t aboveLowerMv = snap.minDischargeCellMv <= DISCHARGE_DERATE_LOWER_MV
+                                              ? 0U
+                                              : (uint16_t)(snap.minDischargeCellMv - DISCHARGE_DERATE_LOWER_MV);
             snap.dischargeCurrentLimitAx10 =
                 (uint16_t)(((uint32_t)baseDischargeLimitAx10 * aboveLowerMv) / DISCHARGE_DERATE_RANGE_MV);
         }
