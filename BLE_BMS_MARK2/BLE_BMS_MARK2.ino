@@ -68,8 +68,10 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define PER_BATTERY_CURRENT_LIMIT_AX10 400U  // 40.0A per fresh usable battery
 #define DISCHARGE_DERATE_UPPER_MV   3200U
 #define DISCHARGE_DERATE_LOWER_MV   3100U
+#define DISCHARGE_DERATE_RANGE_MV   (DISCHARGE_DERATE_UPPER_MV - DISCHARGE_DERATE_LOWER_MV)
 #define CHARGE_DERATE_LOWER_MV      4050U
 #define CHARGE_DERATE_UPPER_MV      4150U
+#define CHARGE_DERATE_RANGE_MV      (CHARGE_DERATE_UPPER_MV - CHARGE_DERATE_LOWER_MV)
 #define PACKET03_SOC_INDEX          23
 #define PACKET03_FET_INDEX          24
 #define PACKET03_TEMP_COUNT_IDX_A   26
@@ -564,10 +566,13 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         }
     }
 
-    uint16_t baseChargeLimitAx10 =
-        (uint16_t)(snap.chargeContributingBatteries * PER_BATTERY_CURRENT_LIMIT_AX10);
-    uint16_t baseDischargeLimitAx10 =
-        (uint16_t)(snap.dischargeContributingBatteries * PER_BATTERY_CURRENT_LIMIT_AX10);
+    uint32_t baseChargeLimitRaw =
+        (uint32_t)snap.chargeContributingBatteries * (uint32_t)PER_BATTERY_CURRENT_LIMIT_AX10;
+    uint32_t baseDischargeLimitRaw =
+        (uint32_t)snap.dischargeContributingBatteries * (uint32_t)PER_BATTERY_CURRENT_LIMIT_AX10;
+    uint16_t baseChargeLimitAx10 = baseChargeLimitRaw > 0xFFFFU ? 0xFFFFU : (uint16_t)baseChargeLimitRaw;
+    uint16_t baseDischargeLimitAx10 = baseDischargeLimitRaw > 0xFFFFU ? 0xFFFFU
+                                                                       : (uint16_t)baseDischargeLimitRaw;
 
     if (snap.chargeContributingBatteries > 1 &&
         chargeCellDataCount < snap.chargeContributingBatteries &&
@@ -585,10 +590,9 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         if (snap.maxChargeCellMv >= CHARGE_DERATE_UPPER_MV) {
             snap.chargeCurrentLimitAx10 = 0;
         } else if (snap.maxChargeCellMv > CHARGE_DERATE_LOWER_MV) {
-            const uint16_t rangeMv = CHARGE_DERATE_UPPER_MV - CHARGE_DERATE_LOWER_MV;
             const uint16_t headroomMv = CHARGE_DERATE_UPPER_MV - snap.maxChargeCellMv;
             snap.chargeCurrentLimitAx10 =
-                (uint16_t)(((uint32_t)baseChargeLimitAx10 * headroomMv) / rangeMv);
+                (uint16_t)(((uint32_t)baseChargeLimitAx10 * headroomMv) / CHARGE_DERATE_RANGE_MV);
         }
     }
 
@@ -597,10 +601,9 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
         if (snap.minDischargeCellMv <= DISCHARGE_DERATE_LOWER_MV) {
             snap.dischargeCurrentLimitAx10 = 0;
         } else if (snap.minDischargeCellMv < DISCHARGE_DERATE_UPPER_MV) {
-            const uint16_t rangeMv = DISCHARGE_DERATE_UPPER_MV - DISCHARGE_DERATE_LOWER_MV;
             const uint16_t aboveLowerMv = snap.minDischargeCellMv - DISCHARGE_DERATE_LOWER_MV;
             snap.dischargeCurrentLimitAx10 =
-                (uint16_t)(((uint32_t)baseDischargeLimitAx10 * aboveLowerMv) / rangeMv);
+                (uint16_t)(((uint32_t)baseDischargeLimitAx10 * aboveLowerMv) / DISCHARGE_DERATE_RANGE_MV);
         }
     }
 
