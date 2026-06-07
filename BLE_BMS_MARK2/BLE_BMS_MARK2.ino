@@ -472,8 +472,6 @@ static void processRS485Slave(const AggregateSnapshot& agg) {
     uint16_t startReg = ((uint16_t)slaveRxBuf[2] << 8) | slaveRxBuf[3];
     uint16_t count    = ((uint16_t)slaveRxBuf[4] << 8) | slaveRxBuf[5];
 
-    Serial.printf("[RS485] FC03 req start=%u count=%u\n", startReg, count);
-
     // Build and send response
     static uint16_t regs[SLAVE_REG_COUNT];
     buildRegisterMap(regs, SLAVE_REG_COUNT, agg);
@@ -1268,7 +1266,6 @@ void setup() {
 
 void loop() {
     cycleCount++;
-    Serial.printf("\n--- Main cycle %lu ---\n", cycleCount);
 
     for (int i = 0; i < BATTERY_COUNT; i++) {
         BatteryState& battery = batteries[i];
@@ -1280,30 +1277,15 @@ void loop() {
                 bool ok04 = requestCellVoltages(battery);
                 if (ok04) {
                     battery.okReads++;
-                    Serial.printf("[%s] OK   %.2f V  %.2f A  SoC %u%%\n",
-                                  battery.name,
-                                  battery.voltage,
-                                  battery.current,
-                                  battery.soc);
-                    printCellVoltages(battery);
                 } else {
                     battery.failedReads++;
-                    Serial.printf("[%s] FAIL waiting for 0x04 cell-voltage response\n",
-                                  battery.name);
                 }
             } else {
                 battery.failedReads++;
-                Serial.printf("[%s] FAIL waiting for 0x03 response\n",
-                              battery.name);
             }
         } else if (battery.nextReconnectMs != 0 &&
                    hasDeadlinePassed(battery.nextReconnectMs)) {
-            bool ok = reconnectBattery(battery);
-            Serial.printf("[%s] reconnect %s\n",
-                          battery.name,
-                          ok ? "OK" : "FAIL");
-        } else {
-            Serial.printf("[%s] offline\n", battery.name);
+            reconnectBattery(battery);
         }
 
         delay(BETWEEN_BATTERIES_MS);

@@ -41,7 +41,14 @@ static uint32_t aliveCounter = 0;
 static void canSend(twai_message_t& msg) {
     if (twai_transmit(&msg, pdMS_TO_TICKS(10)) != ESP_OK) {
         Serial.printf("⚠️  CAN TX failed for ID 0x%03X\n", msg.identifier);
+        return;
     }
+    Serial.printf("[CAN TX] ID=0x%03X DLC=%u DATA=", msg.identifier, msg.data_length_code);
+    for (uint8_t i = 0; i < msg.data_length_code; i++) {
+        Serial.printf("%02X", msg.data[i]);
+        if (i + 1 < msg.data_length_code) Serial.print(" ");
+    }
+    Serial.println();
 }
 
 // -----------------------------------------------------------------------
