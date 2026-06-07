@@ -38,17 +38,12 @@ static uint32_t aliveCounter = 0;
 // -----------------------------------------------------------------------
 // Helper — transmit one CAN frame, print warning if it fails
 // -----------------------------------------------------------------------
-static void canSend(twai_message_t& msg) {
+static bool canSend(twai_message_t& msg) {
     if (twai_transmit(&msg, pdMS_TO_TICKS(10)) != ESP_OK) {
         Serial.printf("⚠️  CAN TX failed for ID 0x%03X\n", msg.identifier);
-        return;
+        return false;
     }
-    Serial.printf("[CAN TX] ID=0x%03X DLC=%u DATA=", msg.identifier, msg.data_length_code);
-    for (uint8_t i = 0; i < msg.data_length_code; i++) {
-        Serial.printf("%02X", msg.data[i]);
-        if (i + 1 < msg.data_length_code) Serial.print(" ");
-    }
-    Serial.println();
+    return true;
 }
 
 // -----------------------------------------------------------------------
@@ -95,7 +90,12 @@ static void can_send_limits(uint16_t chargeCurrentLimitAx10,
     msg.data[3] = (chargeCurrentLimitAx10    >> 8) & 0xFF;
     msg.data[4] = (dischargeCurrentLimitAx10 & 0xFF);
     msg.data[5] = (dischargeCurrentLimitAx10 >> 8) & 0xFF;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x351] maxChargeV=%.1fV chargeLimit=%.1fA dischargeLimit=%.1fA\n",
+                      MAX_CHARGE_VOLTAGE / 10.0f,
+                      chargeCurrentLimitAx10 / 10.0f,
+                      dischargeCurrentLimitAx10 / 10.0f);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -116,7 +116,9 @@ static void can_send_soc(uint8_t measuredSoc) {
     msg.data[1] = 0x00;
     msg.data[2] = soh;
     msg.data[3] = 0x00;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x355] SoC=%u%% SoH=%u%%\n", soc, soh);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -137,7 +139,10 @@ static void can_send_measurements(float packVoltage, float packCurrent, float pa
     msg.data[3] = (current >> 8)  & 0xFF;
     msg.data[4] =  temp           & 0xFF;
     msg.data[5] = (temp    >> 8)  & 0xFF;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x356] voltage=%.2fV current=%.1fA temp=%.1fC\n",
+                      packVoltage, packCurrent, packTemp);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -163,7 +168,9 @@ static void can_send_alarms(float packVoltage, float packTemp) {
     msg.data[4] = 0x01;
     msg.data[5] = 0x50;        // 'P'
     msg.data[6] = 0x4E;        // 'N'
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x359] protection=0x%02X alarms=0x%02X\n", protection, protection);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -180,7 +187,11 @@ static void can_send_request(bool chargeAllowed, bool dischargeAllowed) {
     msg.data_length_code = 2;
     msg.data[0] = flags;
     msg.data[1] = 0x00;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x35C] chargeAllowed=%s dischargeAllowed=%s\n",
+                      chargeAllowed ? "yes" : "no",
+                      dischargeAllowed ? "yes" : "no");
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -199,7 +210,9 @@ static void can_send_manufacturer() {
     msg.data[5] = 'T';
     msg.data[6] = 'E';
     msg.data[7] = 'C';
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.println("[CAN TX 0x35E] manufacturer=PYLONTEC");
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -219,7 +232,9 @@ static void can_send_alive() {
     msg.data[5] = 0x00;
     msg.data[6] = 0x00;
     msg.data[7] = 0x00;
-    canSend(msg);
+    if (canSend(msg)) {
+        Serial.printf("[CAN TX 0x305] aliveCounter=%lu\n", (unsigned long)aliveCounter);
+    }
 }
 
 // -----------------------------------------------------------------------
