@@ -394,3 +394,36 @@ Project memory for BLE_BMS multi-battery work.
   - user asked to append this inverter/battery safety information to `memory.txt` in the root of the `paulca99/arduino` repo
   - repository existence and access were verified before updating the file
   - `memory.txt` should remain the authoritative in-repo memory for future sessions
+
+## 2026-06-07
+
+- `BLE_BMS_MARK2` testing focused on dynamic Pylontech CAN discharge limits using weakest-cell voltage rather than pack average.
+- User observed a confusing mismatch between dashboards:
+  - battery/cell Grafana dashboard showed Battery 2 and Battery 3 BMS currents as `0.00 A`
+  - Solis/inverter Grafana dashboard and the physical inverter UI showed the inverter drawing about `90 W` from the battery, roughly `2 A` at about `45 V`
+- Practical conclusion: the Solis-side battery draw was real; the BMS current display appears to have low-current deadband/rounding and can show `0.00 A` even while the inverter is drawing around 2 A total.
+- Overnight discharge mystery resolved:
+  - the previous overnight drop from about `47 V` to about `43.8 V` was plausibly explained by the inverter itself continuing to draw around `90 W` from the battery after normal discharge had stopped at the `15%` SoC limit
+  - at `90 W`, overnight draw is significant: roughly `0.72 kWh` over 8 hours or `0.9 kWh` over 10 hours
+- Important Solis behavior learned:
+  - the inverter can stop normal/self-use discharge at the configured SoC reserve (`15%` seen today) while still drawing internal/standby/housekeeping power from the battery
+  - therefore SoC reserve alone is not enough protection for this uneven pack unless CAN/BMS discharge stop is obeyed or the battery is physically disconnected
+- Linear derate work/testing:
+  - earlier stepped derating was judged flawed because hard threshold jumps could cause voltage rebound/hunting
+  - preferred control is linear derating based on weakest/strongest cell millivolts
+  - initial idea was `3200 mV` upper and `3100 mV` lower, but this would still allow the inverter's ~2 A / 90 W draw until very close to 3.10 V
+  - for safer overnight testing, user decided to flash a version with the lower discharge cutoff moved up to about `3150 mV` before bed
+- Runtime observations from Grafana screenshots:
+  - around 21:25, pack voltages were about `45.25 V` / `45.24 V`, both BMS currents showed `0.00 A`, both SoC values were `15%`, and the weakest displayed cell was cell 8 at about `3.18 V`
+  - around 21:40, pack voltages were about `45.16 V` / `45.15 V`, cell 8 was about `3.17 V`, and the trend graph showed cell 8 falling steadily
+  - after flashing/testing the safer `3.15 V` cutoff behavior, a later screenshot showed Battery 2/3 around `44.89 V` / `44.88 V`, cell 8 at about `3.15 V`, and the cell 8 graph flattening rather than continuing its earlier decline
+- Practical conclusion from that late screenshot:
+  - the `3.15 V` discharge cutoff test looked promising because the weakest-cell trace appeared to flatten near the intended floor
+  - key validation remains checking the physical Solis UI / Solis dashboard battery power: if it drops from ~90 W discharge to near 0 W when CAN says `0 A` discharge / discharge request off, Solis is obeying the BMS/CAN stop for this draw
+  - if Solis continues drawing around 90 W despite `0 A` discharge being advertised, the safe plan is to disconnect the battery overnight
+- Safety lesson reinforced:
+  - for this battery, weakest-cell behavior must be the authority; pack voltage and BMS-reported aggregate current can both be misleading near the bottom
+  - future unattended operation should use a conservative weakest-cell cutoff/derate, and possibly a higher lower-bound such as `3150 mV` rather than waiting for `3100 mV`, unless further testing proves the inverter reliably stops earlier
+- Repository/code state note:
+  - the GitHub `master` files inspected during the session still appeared to show the older fixed-current CAN sender (`MAX_CHARGE_CURRENT` / `MAX_DISCHARGE_CURRENT`) rather than the linear-derate implementation, so the firmware being tested may have been built from a PR/branch or local version rather than the visible `master` at that moment
+  - future sessions should verify the actual flashed branch/commit before reasoning from `master`
