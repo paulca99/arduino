@@ -70,14 +70,10 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define PACKET03_TEMP_COUNT_IDX_A   26
 #define PACKET03_TEMP_COUNT_IDX_B   25
 #define PER_BATTERY_CURRENT_LIMIT_AX10 400U
-#define DERATE_CURRENT_CAP_AX10       100U
-#define DISCHARGE_DERATE_HALF_MV     3250U
-#define DISCHARGE_DERATE_CAP_MV      3200U
-#define DISCHARGE_CUTOFF_MV          3150U
-#define CHARGE_DERATE_HALF_MV        4050U
-#define CHARGE_DERATE_CAP_MV         4100U
-#define CHARGE_CUTOFF_MV             4150U
-#define DERATE_HALF_DIVISOR             2U
+#define DISCHARGE_DERATE_UPPER_MV    3200U
+#define DISCHARGE_DERATE_LOWER_MV    3100U
+#define CHARGE_DERATE_LOWER_MV       4050U
+#define CHARGE_DERATE_UPPER_MV       4150U
 
 // -----------------------------------------------------------------------
 // RS485 Modbus slave configuration
@@ -571,14 +567,14 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
 
     if (snap.dischargeCurrentLimitAx10 > 0) {
         if (hasDischargeCellData) {
-            if (minCellMvForDischarge < DISCHARGE_CUTOFF_MV) {
+            if (minCellMvForDischarge <= DISCHARGE_DERATE_LOWER_MV) {
                 snap.dischargeCurrentLimitAx10 = 0;
-            } else if (minCellMvForDischarge < DISCHARGE_DERATE_CAP_MV) {
-                if (snap.dischargeCurrentLimitAx10 > DERATE_CURRENT_CAP_AX10) {
-                    snap.dischargeCurrentLimitAx10 = DERATE_CURRENT_CAP_AX10;
-                }
-            } else if (minCellMvForDischarge < DISCHARGE_DERATE_HALF_MV) {
-                snap.dischargeCurrentLimitAx10 /= DERATE_HALF_DIVISOR;
+            } else if (minCellMvForDischarge < DISCHARGE_DERATE_UPPER_MV) {
+                uint32_t baseLimit = snap.dischargeCurrentLimitAx10;
+                uint32_t numerator =
+                    (uint32_t)(minCellMvForDischarge - DISCHARGE_DERATE_LOWER_MV) * baseLimit;
+                uint32_t denominator = (uint32_t)(DISCHARGE_DERATE_UPPER_MV - DISCHARGE_DERATE_LOWER_MV);
+                snap.dischargeCurrentLimitAx10 = (uint16_t)(numerator / denominator);
             }
         } else if (snap.dischargeCurrentLimitAx10 > PER_BATTERY_CURRENT_LIMIT_AX10) {
             // If cell telemetry is temporarily stale, keep operation predictable
@@ -590,14 +586,14 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
 
     if (snap.chargeCurrentLimitAx10 > 0) {
         if (hasChargeCellData) {
-            if (maxCellMvForCharge >= CHARGE_CUTOFF_MV) {
+            if (maxCellMvForCharge >= CHARGE_DERATE_UPPER_MV) {
                 snap.chargeCurrentLimitAx10 = 0;
-            } else if (maxCellMvForCharge >= CHARGE_DERATE_CAP_MV) {
-                if (snap.chargeCurrentLimitAx10 > DERATE_CURRENT_CAP_AX10) {
-                    snap.chargeCurrentLimitAx10 = DERATE_CURRENT_CAP_AX10;
-                }
-            } else if (maxCellMvForCharge >= CHARGE_DERATE_HALF_MV) {
-                snap.chargeCurrentLimitAx10 /= DERATE_HALF_DIVISOR;
+            } else if (maxCellMvForCharge > CHARGE_DERATE_LOWER_MV) {
+                uint32_t baseLimit = snap.chargeCurrentLimitAx10;
+                uint32_t numerator =
+                    (uint32_t)(CHARGE_DERATE_UPPER_MV - maxCellMvForCharge) * baseLimit;
+                uint32_t denominator = (uint32_t)(CHARGE_DERATE_UPPER_MV - CHARGE_DERATE_LOWER_MV);
+                snap.chargeCurrentLimitAx10 = (uint16_t)(numerator / denominator);
             }
         } else if (snap.chargeCurrentLimitAx10 > PER_BATTERY_CURRENT_LIMIT_AX10) {
             // If cell telemetry is temporarily stale, keep operation predictable
