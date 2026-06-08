@@ -1,9 +1,16 @@
 #include "Arduino.h"
+#if __has_include("esp_arduino_version.h")
+#include "esp_arduino_version.h"
+#endif
 #include "espEmonLib.h"
 #include "pcemon.h"
 #include "battery.h"
 #include "pwmFunctions.h"
 #include "pcwifi.h"
+
+#ifndef ESP_ARDUINO_VERSION_MAJOR
+#define ESP_ARDUINO_VERSION_MAJOR 2
+#endif
 /*
 Thinking about having PSU 5 as an afterburner
 This will make the morning startup easier as we'll only be using 4 PSU
@@ -34,7 +41,7 @@ const int freq = 200;
 int SOC = 90; // TODO neds calculating
 
 const float current_limit = 18;
-const int resolution = 9; // 2^8 = 256
+const int resolution = 9; // 2^8 = 512
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
 extern float chargerPower;
@@ -48,6 +55,33 @@ int range = (pow(2, resolution)) - 1;
 int psu_resistance_values[] = {range, range, range, range, range};
 int psu_count = sizeof psu_resistance_values / sizeof psu_resistance_values[0];
 int psu_pointer = 0;
+
+static void psuLedcAttach(int psu_index)
+{
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  // Arduino-ESP32 v3 removed ledcSetup() and ledcAttachPin().
+  // ledcAttachChannel() attaches a pin to a specified LEDC channel.
+  ledcAttachChannel(
+    psu_voltage_pins[psu_index],
+    freq,
+    resolution,
+    pwmChannels[psu_index]
+  );
+#else
+  ledcSetup(pwmChannels[psu_index], freq, resolution);
+  ledcAttachPin(psu_voltage_pins[psu_index], pwmChannels[psu_index]);
+#endif
+}
+
+static void psuLedcWrite(int psu_index, int duty)
+{
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  // Arduino-ESP32 v3 ledcWrite() takes the pin, not the channel.
+  ledcWrite(psu_voltage_pins[psu_index], duty);
+#else
+  ledcWrite(pwmChannels[psu_index], duty);
+#endif
+}
 
 int getTotalResistance()
 {
@@ -99,7 +133,7 @@ void writePowerValuesToPSUs()
   for (int i = 0; i < psu_count; i++)
   {
     // Serial.println("Writing " +(String)psu_resistance_values[i] + " to psu " + (String)i);
-    ledcWrite(pwmChannels[i], psu_resistance_values[i]);
+    psuLedcWrite(i, psu_resistance_values[i]);
   }
 }
 void turnGTIOn()
@@ -162,9 +196,8 @@ void pwmSetup()
   {
 
     pinMode(psu_voltage_pins[i], OUTPUT);
-    ledcSetup(pwmChannels[i], freq, resolution);
-    ledcAttachPin(psu_voltage_pins[i], pwmChannels[i]);
-    ledcWrite(pwmChannels[i], psu_resistance_values[i]);
+    psuLedcAttach(i);
+    psuLedcWrite(i, psu_resistance_values[i]);
   }
   writePowerValuesToPSUs();
 }
