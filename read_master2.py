@@ -13,7 +13,7 @@ Battery protection logic:
 NORMAL / UNKNOWN:
   If pvTotalPowerW < 80W and Solis SOC < 16%:
     Write Solis ToU:
-      RUN
+      RUN with grid-charge allowed
       charge current 0.0A
       charge window now+2min -> now+12h
     state = BATTERY_OFF
@@ -21,7 +21,7 @@ NORMAL / UNKNOWN:
 BATTERY_OFF:
   If pvTotalPowerW > 110W:
     Write Solis ToU:
-      STOP
+      STOP with grid-charge allowed
       charge current 10.0A
       charge window 00:00 -> 00:00
     state = NORMAL
@@ -100,15 +100,15 @@ TOU_MIN_WRITE_INTERVAL_S = 60
 
 # Confirmed Solis holding-register mapping for this Pi script:
 # The script uses doc_reg - 1 as the raw Modbus address.
-REG_TOU_RUN_STOP = 43111       # 1=STOP, 3=RUN
+REG_TOU_RUN_STOP = 43111       # bitfield: 33=STOP+grid-charge, 35=RUN+grid-charge
 REG_TOU_CHARGE_CURRENT = 43142 # x10 A, e.g. 17 = 1.7A
 REG_TOU_START_HOUR = 43144
 REG_TOU_START_MINUTE = 43145
 REG_TOU_END_HOUR = 43146
 REG_TOU_END_MINUTE = 43147
 
-TOU_STOP = 33
-TOU_RUN = 35
+TOU_STOP = 33  # self-use + allow grid charge; ToU stopped
+TOU_RUN = 35   # self-use + ToU run + allow grid charge
 
 TOU_CURRENT_0_0A = 0
 TOU_CURRENT_10_0A = 100
@@ -446,7 +446,7 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
     print("=" * 80)
     print(f"[tou] ENTER/REFRESH BATTERY_OFF: {reason}")
     print(
-        f"[tou] Target: RUN, 0.0A, "
+        f"[tou] Target: RUN+grid-charge, 0.0A, "
         f"{window['start_text']} -> {window['end_text']}"
     )
     print("=" * 80)
@@ -478,7 +478,7 @@ def exit_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool:
     print("")
     print("=" * 80)
     print(f"[tou] EXIT BATTERY_OFF: {reason}")
-    print("[tou] Target: STOP, 10.0A, 00:00 -> 00:00")
+    print("[tou] Target: STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("=" * 80)
 
     controller["last_tou_write_ts"] = time.time()
@@ -701,8 +701,8 @@ def main():
     print("Battery-off controller:")
     print(f"  ENTER: PV < {BATTERY_OFF_ENTER_PV_W}W and SOC < {BATTERY_OFF_ENTER_SOC}%")
     print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W")
-    print(f"  OFF  : RUN, 0.0A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
-    print("  RELEASE: STOP, 10.0A, 00:00 -> 00:00")
+    print(f"  OFF  : RUN+grid-charge, 0.0A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
+    print("  RELEASE: STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: disabled")
     print("")
 
@@ -791,4 +791,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
