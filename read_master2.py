@@ -7,12 +7,14 @@ Pi-side master poller.
 - Writes Solis metrics to InfluxDB.
 - Writes battery slot telemetry to InfluxDB as battery_1_*, battery_2_*, battery_3_*.
 - Adds Solis ToU low-battery protection logic.
+- Syncs the Solis inverter clock from the Pi clock whenever ToU registers are written.
 
 Battery protection logic:
 
 NORMAL / UNKNOWN:
   If pvTotalPowerW < 80W and Solis SOC < 16%:
     Write Solis ToU:
+      sync Solis clock to Pi time
       RUN with grid-charge allowed
       charge current 0.0A
       charge window now+2min -> now+12h
@@ -21,6 +23,7 @@ NORMAL / UNKNOWN:
 BATTERY_OFF:
   If pvTotalPowerW > 110W:
     Write Solis ToU:
+      sync Solis clock to Pi time
       STOP with grid-charge allowed
       charge current 10.0A
       charge window 00:00 -> 00:00
@@ -106,6 +109,16 @@ REG_TOU_START_HOUR = 43144
 REG_TOU_START_MINUTE = 43145
 REG_TOU_END_HOUR = 43146
 REG_TOU_END_MINUTE = 43147
+
+# Confirmed Solis clock holding-register mapping for this Pi script:
+# 43001=year as two digits, 43002=month, 43003=day,
+# 43004=hour, 43005=minute, 43006=second.
+REG_CLOCK_YEAR = 43001
+REG_CLOCK_MONTH = 43002
+REG_CLOCK_DAY = 43003
+REG_CLOCK_HOUR = 43004
+REG_CLOCK_MINUTE = 43005
+REG_CLOCK_SECOND = 43006
 
 TOU_STOP = 33  # self-use + allow grid charge; ToU stopped
 TOU_RUN = 35   # self-use + ToU run + allow grid charge
@@ -304,7 +317,7 @@ def write_solis_metrics(s: dict, poll_count: int, read_errors: int, controller_s
 
 
 # ----------------------------------------------------------------------
-# Solis ToU write helpers
+# Solis ToU / clock write helpers
 # ----------------------------------------------------------------------
 
 def read_write_response(ser: serial.Serial, expected_func: int, expected_len: int) -> Optional[bytes]:
@@ -381,6 +394,37 @@ def write_solis_holding_reg(ser: serial.Serial, doc_reg: int, value: int) -> boo
     return True
 
 
+def sync_solis_clock_to_pi(ser: serial.Serial) -> bool:
+    """Write the Solis RTC holding registers from the Pi's local time."""
+    now = datetime.now()
+    values = [
+        (REG_CLOCK_YEAR, now.year % 100),
+        (REG_CLOCK_MONTH, now.month),
+        (REG_CLOCK_DAY, now.day),
+        (REG_CLOCK_HOUR, now.hour),
+        (REG_CLOCK_MINUTE, now.minute),
+        (REG_CLOCK_SECOND, now.second),
+    ]
+
+    print(
+        f"[tou] Syncing Solis clock to Pi time: "
+        f"{now.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    all_ok = True
+    for reg, value in values:
+        ok = write_solis_holding_reg(ser, reg, value)
+        all_ok = all_ok and ok
+        time.sleep(0.10)
+
+    if all_ok:
+        print("[tou] Solis clock sync OK")
+    else:
+        print("[tou] WARN: Solis clock sync had one or more failed writes")
+
+    return all_ok
+
+
 def write_tou_registers(
     ser: serial.Serial,
     run_stop: int,
@@ -392,7 +436,7 @@ def write_tou_registers(
     run_stop_last: bool,
 ) -> bool:
     """
-    Write the six confirmed ToU registers.
+    Sync the Solis clock, then write the six confirmed ToU registers.
 
     run_stop_last=True:
       Write config first, then RUN/STOP. Used when entering RUN so stale
@@ -402,6 +446,8 @@ def write_tou_registers(
       Write RUN/STOP first, then config. Used when exiting BATTERY_OFF so
       STOP happens immediately.
     """
+    clock_ok = sync_solis_clock_to_pi(ser)
+
     writes_config = [
         (REG_TOU_CHARGE_CURRENT, current_x10),
         (REG_TOU_START_HOUR, start_hour),
@@ -414,7 +460,7 @@ def write_tou_registers(
 
     writes = writes_config + writes_run_stop if run_stop_last else writes_run_stop + writes_config
 
-    all_ok = True
+    all_ok = clock_ok
     for reg, value in writes:
         ok = write_solis_holding_reg(ser, reg, value)
         all_ok = all_ok and ok
@@ -701,8 +747,8 @@ def main():
     print("Battery-off controller:")
     print(f"  ENTER: PV < {BATTERY_OFF_ENTER_PV_W}W and SOC < {BATTERY_OFF_ENTER_SOC}%")
     print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W")
-    print(f"  OFF  : RUN+grid-charge, 0.0A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
-    print("  RELEASE: STOP+grid-charge, 10.0A, 00:00 -> 00:00")
+    print(f"  OFF  : sync clock, RUN+grid-charge, 0.0A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
+    print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: disabled")
     print("")
 
