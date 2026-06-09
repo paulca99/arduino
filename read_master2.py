@@ -260,10 +260,15 @@ def decode_solis(regs: Dict[int, int]) -> dict:
     # active AC power. This script sends raw_addr = doc_reg - 1 and labels
     # parsed registers from the requested start_reg, so use parsed keys
     # 33080-33081 here. Temporary raw metrics below help confirm mapping.
+    # Positive signed value means AC power coming out of the Solis.
+    # Negative signed value means AC power going into the Solis
+    # (e.g. AC/grid-assisted charging).
     inverter_active_power = s32_from_regs(
         regs.get(33080, 0),
         regs.get(33081, 0),
     )
+    solis_ac_output_power = max(inverter_active_power, 0)
+    solis_ac_input_power = max(-inverter_active_power, 0)
 
     battery_current = round(s16(regs.get(33135, 0)) / 10.0, 1)
     battery_direction_flag = regs.get(33136, 0)
@@ -288,6 +293,8 @@ def decode_solis(regs: Dict[int, int]) -> dict:
         "gridFrequency": grid_f,
         "gridPower": grid_power,
         "solisInverterActivePowerW": inverter_active_power,
+        "solisAcOutputPowerW": solis_ac_output_power,
+        "solisAcInputPowerW": solis_ac_input_power,
         "batterySoc": battery_soc,
         "batteryVoltage": battery_voltage,
         "batteryCurrent": battery_current,
@@ -313,6 +320,8 @@ def write_solis_metrics(s: dict, poll_count: int, read_errors: int, controller_s
     write_line("solis_grid_frequency", s["gridFrequency"], SOLIS_SOURCE_TAG)
     write_line("solis_grid_power", s["gridPower"], SOLIS_SOURCE_TAG)
     write_line("solis_inverter_active_power", s["solisInverterActivePowerW"], SOLIS_SOURCE_TAG)
+    write_line("solis_ac_output_power", s["solisAcOutputPowerW"], SOLIS_SOURCE_TAG)
+    write_line("solis_ac_input_power", s["solisAcInputPowerW"], SOLIS_SOURCE_TAG)
     write_line("solis_battery_soc", s["batterySoc"], SOLIS_SOURCE_TAG)
     write_line("solis_battery_voltage", s["batteryVoltage"], SOLIS_SOURCE_TAG)
     write_line("solis_battery_current", s["batteryCurrent"], SOLIS_SOURCE_TAG)
