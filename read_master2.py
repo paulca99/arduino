@@ -154,6 +154,11 @@ def s16(v: int) -> int:
     return v - 65536 if v >= 32768 else v
 
 
+def s32_from_regs(high: int, low: int) -> int:
+    v = ((high & 0xFFFF) << 16) | (low & 0xFFFF)
+    return v - 0x100000000 if v & 0x80000000 else v
+
+
 def build_request(slave_id: int, func: int, start_reg: int, count: int) -> bytes:
     # For Solis, start_reg is documented register and frame uses raw_addr=start-1.
     # For ESP32 slave 5, registers are 0-based and raw_addr is same as start_reg.
@@ -250,6 +255,11 @@ def decode_solis(regs: Dict[int, int]) -> dict:
     grid_v = round(regs.get(33074, 0) / 10.0, 1)
     grid_f = round(regs.get(33095, 0) / 100.0, 2)
     grid_power = s16(regs.get(33132, 0))
+    # 33079-33080: expected Solis signed 32-bit AC active inverter output power (W).
+    inverter_active_power = s32_from_regs(
+        regs.get(33079, 0),
+        regs.get(33080, 0),
+    )
 
     battery_current = round(s16(regs.get(33135, 0)) / 10.0, 1)
     battery_direction_flag = regs.get(33136, 0)
@@ -273,6 +283,7 @@ def decode_solis(regs: Dict[int, int]) -> dict:
         "gridVoltage": grid_v,
         "gridFrequency": grid_f,
         "gridPower": grid_power,
+        "solisInverterActivePowerW": inverter_active_power,
         "batterySoc": battery_soc,
         "batteryVoltage": battery_voltage,
         "batteryCurrent": battery_current,
@@ -294,6 +305,7 @@ def write_solis_metrics(s: dict, poll_count: int, read_errors: int, controller_s
     write_line("solis_grid_voltage", s["gridVoltage"], SOLIS_SOURCE_TAG)
     write_line("solis_grid_frequency", s["gridFrequency"], SOLIS_SOURCE_TAG)
     write_line("solis_grid_power", s["gridPower"], SOLIS_SOURCE_TAG)
+    write_line("solis_inverter_active_power", s["solisInverterActivePowerW"], SOLIS_SOURCE_TAG)
     write_line("solis_battery_soc", s["batterySoc"], SOLIS_SOURCE_TAG)
     write_line("solis_battery_voltage", s["batteryVoltage"], SOLIS_SOURCE_TAG)
     write_line("solis_battery_current", s["batteryCurrent"], SOLIS_SOURCE_TAG)
