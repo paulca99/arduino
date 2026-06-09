@@ -8,17 +8,24 @@ from typing import Any, Dict
 
 import requests
 
-INFLUX_URL = "http://localhost:8086/write?db=power"
-HOST_TAG = "server01"
-SOURCE_TAG = "ac_bms_monitor"
+DEFAULT_INFLUX_URL = "http://localhost:8086/write?db=power"
+DEFAULT_HOST_TAG = "server01"
+DEFAULT_SOURCE_TAG = "ac_bms_monitor"
 DEFAULT_AC_BMS_URL = "http://ac-battery-monitor.local/api/bms"
 DEFAULT_INTERVAL_S = 2.0
+
+INFLUX_URL = DEFAULT_INFLUX_URL
+HOST_TAG = DEFAULT_HOST_TAG
+SOURCE_TAG = DEFAULT_SOURCE_TAG
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Poll AC ESP32 BMS monitor and write Influx metrics")
     parser.add_argument("--url", default=None, help="AC monitor endpoint URL (default env AC_BMS_URL or built-in)")
     parser.add_argument("--interval", type=float, default=None, help="Polling interval seconds (default env AC_BMS_INTERVAL or 2.0)")
+    parser.add_argument("--influx-url", default=None, help="Influx write URL (default env AC_BMS_INFLUX_URL or built-in)")
+    parser.add_argument("--host-tag", default=None, help="Influx host tag (default env AC_BMS_HOST_TAG or built-in)")
+    parser.add_argument("--source-tag", default=None, help="Influx source tag (default env AC_BMS_SOURCE_TAG or built-in)")
     return parser.parse_args()
 
 
@@ -47,8 +54,7 @@ def write_line(measurement: str, value: Any, source_tag: str = SOURCE_TAG) -> No
 
 
 def safe_name(name: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", (name or "battery").strip().lower())
-    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", (name or "battery").strip().lower()).strip("_")
     return cleaned or "battery"
 
 
@@ -97,16 +103,21 @@ def write_battery_metrics(payload: Dict[str, Any]) -> None:
 
 
 def main() -> None:
+    global INFLUX_URL, HOST_TAG, SOURCE_TAG
     args = parse_args()
 
     url = args.url or os.getenv("AC_BMS_URL") or DEFAULT_AC_BMS_URL
     interval = args.interval
     if interval is None:
-        interval = as_float(os.getenv("AC_BMS_INTERVAL", DEFAULT_INTERVAL_S), DEFAULT_INTERVAL_S)
+        interval = as_float(os.getenv("AC_BMS_INTERVAL"), DEFAULT_INTERVAL_S)
     if interval <= 0:
         interval = DEFAULT_INTERVAL_S
 
-    print(f"[ac-bms] URL={url} interval={interval:.2f}s")
+    INFLUX_URL = args.influx_url or os.getenv("AC_BMS_INFLUX_URL") or DEFAULT_INFLUX_URL
+    HOST_TAG = args.host_tag or os.getenv("AC_BMS_HOST_TAG") or DEFAULT_HOST_TAG
+    SOURCE_TAG = args.source_tag or os.getenv("AC_BMS_SOURCE_TAG") or DEFAULT_SOURCE_TAG
+
+    print(f"[ac-bms] URL={url} interval={interval:.2f}s influx={INFLUX_URL} host={HOST_TAG} source={SOURCE_TAG}")
     error_count = 0
 
     while True:

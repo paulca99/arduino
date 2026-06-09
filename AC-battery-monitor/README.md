@@ -34,10 +34,12 @@ cp AC-battery-monitor/secrets_template.h AC-battery-monitor/secrets.h
 
 2. Edit `AC-battery-monitor/secrets.h` with your Wi-Fi credentials.
 
-The template currently contains:
+Template placeholders are:
 
-- SSID: `TP-LINK_73F3`
-- Password: `DEADBEEF`
+- SSID: `your-ssid-here`
+- Password: `your-password-here`
+
+For your deployment, set this file to your local Wi-Fi SSID/password.
 
 ## Polling behavior
 

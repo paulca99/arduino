@@ -760,7 +760,7 @@ void setup() {
 
   server.begin();
 
-  BLEDevice::init("");
+  BLEDevice::init("AC_BMS_MONITOR");
   BLEDevice::setPower(ESP_PWR_LVL_P9);
   pBLEScan = BLEDevice::getScan();
   pBLEScan->setAdvertisedDeviceCallbacks(&discoveryCallbacks);
@@ -774,9 +774,9 @@ void setup() {
                   batteries[i].enabled ? "true" : "false");
   }
 
-  bool allSeen = scanForAllEnabledBatteries(STARTUP_SCAN_TIMEOUT_MS);
+  bool discoverySuccessful = scanForAllEnabledBatteries(STARTUP_SCAN_TIMEOUT_MS);
   Serial.printf("Startup discovery: seen=%d/%d\n", seenBatteryCount(), enabledBatteryCount());
-  if (!allSeen) {
+  if (!discoverySuccessful) {
     Serial.println("Some enabled batteries were not found during startup scan.");
   }
 
