@@ -83,7 +83,7 @@ BATTERY_COUNT = 3
 # the transceiver to de-assert and the bus to settle.  Reliability is prioritised
 # over polling speed; these conservative defaults should be adjusted upward rather
 # than downward if Solis still shows intermittent no-response errors.
-RS485_PRE_SOLIS_SETTLE_S = 0.75    # quiet time before every Solis FC04 request
+RS485_PRE_SOLIS_SETTLE_S = 0.75    # quiet time before every Solis request
 RS485_POST_BATTERY_SETTLE_S = 0.25  # quiet time after battery-bridge FC03 response
 
 # Pacing between consecutive FC06 (write single register) calls to Solis.
