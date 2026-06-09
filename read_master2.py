@@ -156,6 +156,7 @@ def s16(v: int) -> int:
 
 def s32_from_regs(high: int, low: int) -> int:
     v = ((high & 0xFFFF) << 16) | (low & 0xFFFF)
+    # Convert unsigned 32-bit to signed two's-complement.
     return v - 0x100000000 if v & 0x80000000 else v
 
 
@@ -255,7 +256,8 @@ def decode_solis(regs: Dict[int, int]) -> dict:
     grid_v = round(regs.get(33074, 0) / 10.0, 1)
     grid_f = round(regs.get(33095, 0) / 100.0, 2)
     grid_power = s16(regs.get(33132, 0))
-    # 33079-33080: expected Solis signed 32-bit AC active inverter output power (W).
+    # 33079 (high word) + 33080 (low word): expected signed 32-bit
+    # Solis AC active inverter output power (W).
     inverter_active_power = s32_from_regs(
         regs.get(33079, 0),
         regs.get(33080, 0),
