@@ -50,3 +50,11 @@
 - Practical caution for energy accounting:
   - Whole-house usage cannot be accurately derived from the Solis/grid metrics alone because another solar system is present and unmonitored.
   - User clarified they do not care about whole-house usage for this task; the important quantity is how much AC power/energy is coming out of the Solis.
+
+- Physical generation meter validation test started:
+  - The generation meter is connected between the Solis inverter AC connection and the consumer unit and is the gold-standard reference for AC energy passing through that connection.
+  - Start reading recorded by user at `2026-06-09 10:44`: `34499.98 kWh`.
+  - Later comparison should use the second physical meter reading minus `34499.98 kWh` and compare against Grafana over the exact same time window, especially:
+    - `Solis AC Output Wh / 1000`
+    - `Solis AC Input Wh / 1000`
+    - possibly `Solis AC Output Wh - Solis AC Input Wh` or output+input depending on how the physical meter counts direction.
