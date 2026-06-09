@@ -1,429 +1,52 @@
-## 2026-05-19
+## 2026-06-09
 
-Project memory for BLE_BMS multi-battery work.
+- Async web library issue resolved for ESP32 Arduino v3:
+  - `esp32/charger/pcwifi.cpp` had been using `#include <ESPAsyncWebSrv.h>` / `ESPAsyncWebSrv`, which was the suspicious/incorrect async web library family for the current setup.
+  - The working fix was to use the ESP32Async library pair consistently: `AsyncTCP` + `ESPAsyncWebServer` with headers `#include <AsyncTCP.h>` and `#include <ESPAsyncWebServer.h>`.
+  - Future ESP32 async web work in this repo should avoid mixing `ESPAsyncWebSrv` / old async-web variants with ESP32Async `ESPAsyncWebServer`.
 
-- Repository: paulca99/arduino
-- Persistent memory file moved to the repository default branch (master) so it survives feature-branch deletion.
-- Earlier memory branch was: copilot/update-ble-bms-to-multi-battery
-- Goal during this conversation was to stabilize the BLE_BMS multi-battery sketch, understand the crashes/hangs, improve web responsiveness, and preserve findings for later sessions.
-- Configured battery list seen in logs:
-  - [0] Growatt  a5:c2:37:49:c7:a2
-  - [1] Solax  a4:c1:37:20:4e:3b
-  - [2] SP14S004P14S40A  a5:c2:37:51:85:7f
-  - [3] Growatt2  a5:c2:37:51:85:89
-- Growatt2 MAC explicitly captured separately as: a5:c2:37:51:85:89
-- Early production-sketch logs showed startup discovery succeeding for the enabled batteries, then an abort/reboot while bringing up the 3rd connection in the full BLE_BMS sketch.
-- Earlier evidence suggested startup failures while bringing up the 3rd or 4th BLE connection in the full sketch, even though a stripped-down persistent BLE test sketch had previously handled 3 batteries in isolation.
-- Interpretation from those tests: 3 persistent classic BLE connections may be possible in isolation, but not necessarily in the full production sketch once WiFi, WebServer, CAN, and the rest of the system are active.
-- Practical conclusion from early tests: the issue was likely total system pressure / coexistence / resource limits in the full sketch rather than just the raw battery count alone.
-- Separate historical note now captured explicitly: an earlier classic-BLE test sketch had already successfully read all cell voltages, so per-cell data over classic BLE is known to be achievable.
-- User tested 2 batteries in the full sketch; 2 batteries worked, but the web page was hit-and-miss / unreliable.
-- That pointed to the web server being starved by blocking BLE request/response handling in the earlier implementation.
-- The blocking pattern that needed changing was the old requestBatterySnapshot()-style logic: send request, wait in a loop for reply/timeout, then move on.
-- We decided to refactor BLE polling into a non-blocking per-battery state machine.
-- Requested BLE polling changes:
-  - per-battery request state
-  - fields like requestInFlight, lastRequestMs, requestDeadlineMs
-  - request fresh data every 2000 ms per connected battery
-  - let notify callback complete in-flight request asynchronously
-  - mark timeout/failure without blocking the loop
-  - keep persistent classic BLE connections
-  - preserve aggregate CAN output and multi-battery web page
-  - reduce or remove between-battery delays in the active polling path
-- A request was prepared to update the existing PR (#51) on branch copilot/update-ble-bms-to-multi-battery with the non-blocking BLE polling changes.
-- User noted that on GitHub the task only started working after explicitly mentioning @copilot in the PR thread/comment.
-- After the non-blocking work, a later test ran for a couple of minutes and then hung.
-- When that hang happened, the serial monitor stopped updating and the web page just spun.
-- Interpretation: the whole main loop appeared stalled, not just the webpage.
-- Based on that symptom, we suspected a blocking/hung BLE or reconnect/library call rather than only page rendering issues.
-- To investigate the hang, we added/requested breadcrumb and debug logging around the highest-risk BLE operations, especially:
-  - connect()
-  - getService()
-  - getCharacteristic()
-  - registerForNotify()
-  - writeValue()
-- We also added/requested:
-  - loop heartbeat logging
-  - per-battery debug state dumps
-  - timeout logging
-  - cleanup/disconnect logging
-  - heap and WiFi status logging
-- A full debug-instrumented variant of BLE_BMS.ino was drafted from the current file the user pasted.
-- A specific thread-scoped snippet showed growatt2_mac.cpp containing only the string "a5:c2:37:51:85:89".
-- Later, the user simplified the setup to only 1 battery: Growatt2, which is the only one physically connected to the inverter.
-- In that simplified test, the CAN bus was physically connected and the inverter reported CAN OK.
-- In the 1-battery + connected-CAN setup, the system ran stably for at least ~20 minutes and the web page refreshed reliably.
-- Working hypothesis from that result: previous instability may have been worsened by the CAN bus not being physically connected during some earlier tests.
-- Important caution: the 1-battery stable result changed multiple variables at once (battery count, non-blocking BLE behavior, connected CAN), so it does not prove disconnected CAN was the only root cause.
-- However, the 1-battery + connected CAN configuration is the current stable baseline.
-- Because moving batteries is difficult/heavy, the user preferred not to do more multi-battery physical tests that evening.
-- For that night, the user wanted to tweak the web page to show min and max cell ID and value for each battery, then leave the system to run for over 24 hours.
-- The user pointed out that the existing BLE_BMS/BLE_BMS.ino on the repository default branch already returns every single cell.
-- Repository metadata confirmed the repo default branch is master, not main.
-- The BLE_BMS/BLE_BMS.ino file on master was inspected.
-- Findings from the master-branch single-battery sketch:
-  - it uses NimBLEDevice and OverkillSolarBms2 / bms2.h
-  - it already iterates over all cells using bms.get_cell_voltage(c)
-  - it computes min/max/avg/delta cell voltage
-  - it renders every cell in the web page
-- Conclusion from that inspection:
-  - the old single-battery sketch already has per-cell support
-  - the current manual-parser multi-battery sketch does not yet carry per-cell data in BatteryState
-  - therefore, adding min/max cell ID/value to the current multi-battery page is not just an HTML tweak; it requires porting cell-voltage acquisition/parsing into the new per-battery model (or another compatible data path)
-- Suggested practical strategy for the evening was to avoid large protocol changes if the main priority was an overnight stability soak test.
-- User asked for a repo-based memory mechanism so previous discoveries would not need to be re-entered on later days.
-- memory.txt was created first on branch copilot/update-ble-bms-to-multi-battery and later moved to master so it survives branch deletion.
-- Purpose of memory.txt: act as an in-repo project log / memory so future sessions can read and continue from prior findings.
-- User explicitly asked to append everything known from the conversation to memory.txt.
-- User granted standing permission to update memory.txt without asking each time.
-- User later pointed out that if this memory mechanism had existed earlier, it would have preserved the fact that an earlier classic-BLE test sketch had already succeeded in reading all cells; this was acknowledged as a useful lesson.
-- Memory policy clarified:
-  - standing permission exists to update master/memory.txt whenever useful learnings arise
-  - preferred practice is to append a short summary near the end of a work session/day
-  - this file is a workflow aid only; it does not create autonomous timed actions or scheduled updates
-- End-of-day wrap-up for 2026-05-19:
-  - stable baseline at close of day was 1 battery (Growatt2) with CAN connected and inverter reporting CAN OK
-  - responsive web page and at least ~20 minutes stable runtime were observed in that configuration
-  - next likely future task is porting already-proven classic-BLE per-cell read capability into the current multi-battery production architecture without destabilizing the stable baseline
-- Additional battery hardware note captured after wrap-up:
-  - Growatt2 is a 14S battery
-  - most parallel groups are 18P
-  - groups 1 and 9 are 20P because those groups had been relatively weak
-  - cells are Boston Swing 5300
-- Overnight voltage-monitoring note:
-  - user observed Growatt2 pack voltage dropping from about 44.0 V to 43.7 V over roughly one hour while powering a 60V->12V buck, then a 12V->5V buck, then the ESP32U with external antenna
-  - Growatt2 was not being discharged by the inverter during that period; the electronics load was the apparent load
-  - because the current multi-battery production sketch is not yet scanning individual cell/group voltages, overnight judgement must rely on pack voltage only
-  - pack-average interpretation discussed: 44.0 V / 14S ~= 3.14 V avg per group; 43.7 V / 14S ~= 3.12 V avg; 42.0 V ~= 3.00 V avg; 41.3 V ~= 2.95 V avg; 40.6 V ~= 2.90 V avg
-  - key caution recorded: pack average can hide a weaker group, especially relevant because groups 1 and 9 had historically been weaker
-  - conservative overnight guidance discussed: if pack voltage continues falling toward about 42.5 V, use caution; if it reaches around 42.0 V and is still falling, strongly consider disconnecting
-  - specific limitation recorded: without per-group voltage visibility, it is not possible to know whether an individual weak group is already significantly below the pack average
-- Overnight outcome and revised interpretation:
-  - user left the system overnight and later found total Growatt2 pack voltage at about 41.23 V
-  - manual checking showed series group 1 had fallen to about 2.88 V
-  - user then put Growatt2 on charge
-  - this confirmed that pack voltage alone was not a safe enough proxy near the low end for this battery
-  - strong practical conclusion: Growatt2 must be managed by weakest-group behavior, not by pack voltage alone, especially near the bottom of discharge
-  - the observation strongly reinforces that restoring per-group visibility in the production sketch is important before future unattended low-voltage tests
-- Inverter protection setting change:
-  - user changed Solis inverter setting DischargeUVWPRO from 40.0 V to 44.5 V
-  - rationale captured: 40.0 V pack cutoff was too low in practice for Growatt2 because group 1 could already be at about 2.88 V while total pack voltage was only about 41.23 V
-  - 44.5 V / 14S ~= 3.18 V average per group, giving more margin for weak groups
-  - accepted tradeoff: higher cutoff may leave some capacity unused, but is safer for this uneven pack
-- Buck-converter interpretation update:
-  - user strongly doubted that the buck converters alone could explain the overnight voltage drop
-  - user provided Amazon listing details for the 60V->12V converter: Jadeshay buck converter, 20V-60V input, 12V output, 3A max, 36W max, waterproof automotive-style module
-  - key conclusion recorded: the converter description does not prove zero no-load current, but the overnight low-voltage outcome is more plausibly explained by weak-group behavior / imbalance than by the buck converters alone
-  - refined interpretation: even if the buck chain consumed some power, the dangerous result was that weak group 1 reached a low voltage earlier than pack voltage alone suggested
+- Solis ToU/grid-charge behavior learned:
+  - Using ToU values `33`/`35` appears to leave grid charging allowed even in `NORMAL` when ToU is stopped.
+  - This can explain battery charge power being higher than PV power: the Solis may supplement PV with AC/grid-side power while charging.
+  - Earlier interpretation was that `TOU_RUN = 35` means ToU run + allow grid charge, while `TOU_STOP = 33` means ToU stop but grid charge still allowed.
+  - If grid charging should only be allowed in emergency/battery-off protection, future code may need a no-grid-charge STOP value (previously discussed candidate: `1`) rather than `33`; verify carefully before changing production behavior.
 
-## 2026-05-21
+- Pi/Grafana Solis AC active power work:
+  - User wanted to know how much power is coming out of the Solis itself, independent of `solis_grid_power`, because the site grid/meter value can be affected by a separate unmonitored solar system.
+  - The useful live register pair for Solis AC active/inverter power is not the originally decoded parsed keys `33079-33080`; live testing showed that produced zero.
+  - With this script's `doc_reg - 1` request convention and parsed-key labeling, the useful pair is parsed keys `33080-33081`, decoded as signed 32-bit watts using high word then low word.
+  - Helper used:
+    - `s32_from_regs(high, low)` combines `(high << 16) | low` then converts from unsigned 32-bit two's complement to signed.
+  - Live Grafana testing confirmed `33080-33081` is a useful AC-side Solis flow metric: it moved with real conditions and reacted during a ~900 W kettle test.
 
-- Current production/master sketch under discussion is `BLE_BMS/BLE_BMS.ino` in `paulca99/arduino`.
-- Production stability concern observed on real hardware:
-  - the master sketch reportedly ran for about 8 hours and then froze
-  - at the same time the inverter reported CAN fail
-  - the web page became unresponsive
-  - this suggests a whole-device runtime hang/starvation problem rather than a simple UI-only issue
-- User clarified that the version currently running in production is generally stable and that web blank/partial loads are relatively rare in normal operation.
-- Revised working hypothesis:
-  - the worst instability may be caused by disconnected CAN causing repeated transmit retries and repeated `CAN TX FAILED` logging
-  - RS485 disconnection/failure may contribute similarly, but likely less severely than CAN
-  - serial flood plus retry pressure may starve the loop and make the web page appear flaky or hang
-- Desired comms failure behavior agreed for future fixes:
-  - CAN:
-    - keep the normal healthy CAN transmit cadence when communications are working
-    - if CAN transmission fails or the bus is disconnected, do not retry in a tight loop
-    - back off to at most one CAN retry every 2 seconds while failures continue
-    - throttle failure logging so `CAN TX FAILED` does not flood serial
-    - on first success, immediately restore the normal healthy cadence
-  - RS485:
-    - normal healthy poll interval remains 5 seconds
-    - if RS485 polls fail / no valid response is received, do not retry aggressively
-    - back off to one RS485 retry every 7 seconds while failures continue
-    - throttle repeated failure logging
-    - on first valid response, immediately return to the normal 5-second cadence
-- A new PR task was started to implement narrow comms-failure hardening only (CAN 2s backoff, RS485 degraded retry, log throttling) rather than a broad web rewrite.
-- A separate deep-research task was also started to investigate the long-runtime freeze/hang in `BLE_BMS/BLE_BMS.ino` on master.
-- Repository investigation findings from current master `BLE_BMS/BLE_BMS.ino`:
-  - RS485 polling runs in a dedicated FreeRTOS task `solisPollTask()`
-  - the code currently polls many Solis registers one-by-one using Modbus function 0x04 and `readSolisDocRegU16()`
-  - current `SOLIS_REGISTER_SPECS` list contains 21 individual document registers:
-    - 33050, 33051, 33052, 33053, 33059, 33072, 33074, 33080, 33081, 33085, 33095, 33129, 33130, 33131, 33132, 33134, 33135, 33136, 33137, 33140, 33142
-  - each register is read individually with `count=1`, with `SOLIS_MODBUS_TIMEOUT_MS = 180` and `SOLIS_INTER_REGISTER_DELAY_MS = 15`
-  - if the inverter is absent or silent, worst-case one full RS485 poll pass is roughly ~4 seconds of repeated timeout-driven work
-  - current RS485 code does not decode Modbus exception responses explicitly; any non-standard response shape is treated as a generic failure
-  - current RS485 code currently subtracts 1 from the documented register number before issuing the Modbus read (`docReg - 1`)
-- Investigation of current master `CAN_Pylontech.ino`:
-  - CAN frames are sent every 100 ms via `sendCANFrames()`
-  - each call sends 7 frames
-  - `canSend()` currently calls `twai_transmit(..., 10 ms timeout)` for each frame and prints a warning on every failure
-  - if CAN is disconnected, this can generate heavy retry pressure and serial flooding, making CAN failure/log starvation one of the strongest freeze suspects
-- Solis protocol/spec document identified and used for register audit:
-  - user-supplied spec URL: `https://community.openenergymonitor.org/uploads/short-url/kbwIjN8pl8idrCP04UstaxtSmlC.pdf`
-  - this document was treated as the authoritative source for resolving current Solis register mysteries
-- Key Solis register-map corrections from the spec versus current code:
-  - PV/DC input area:
-    - spec says 33049 = DC Voltage 1, 33050 = DC Current 1, 33051 = DC Voltage 2, 33052 = DC Current 2, 33053 = DC Voltage 3, 33054 = DC Current 3
-    - therefore current code mapping of 33050/33051/33052/33053 as PV1V/PV1I/PV2V/PV2I is shifted/wrong
-  - grid/frequency area:
-    - spec says 33094 = Grid frequency
-    - spec says 33095 = Inverter current status
-    - current code treating 33095 as grid frequency is wrong
-    - current code treating 33074 as a generic grid voltage is questionable; spec identifies 33074 as BC line voltage
-  - battery / meter area:
-    - spec says 33129 = Meter current
-    - spec says 33130-33131 = Meter active power (S32)
-    - spec says 33132 = Storage control switching value
-    - spec says 33133 = Battery voltage (0.1 V)
-    - spec says 33134 = Battery current (S16, +charge / -discharge)
-    - spec says 33135 = Battery current direction (0 charge / 1 discharge)
-    - spec says 33136 = LLC bus voltage
-    - spec says 33139 = Battery capacity SoC
-    - spec says 33140 = Battery health SoH
-    - spec says 33141 = Battery voltage from BMS (0.01 V)
-    - spec says 33142 = Battery current from BMS (S16, 0.1 A)
-    - therefore current code meanings for 33132, 33135, 33136, 33140, and 33142 are wrong
-- Practical corrected battery-oriented mapping likely to use in future code:
-  - 33133 = battery voltage
-  - 33134 = battery current signed
-  - 33135 = battery direction
-  - 33139 = battery SoC
-  - 33140 = battery SoH
-  - 33141 = battery voltage from BMS
-  - 33142 = battery current from BMS
-- Additional register-mystery resolution from the Solis spec:
-  - 33059 = reserved
-  - 33072 = DC bus half voltage
-  - 33129 = meter current
-  - 33130-33131 = meter active power (signed 32-bit)
-  - 33132 = storage control switching value
-  - 33136 = LLC bus voltage
-  - 33137 = backup AC voltage phase A
-  - 33140 = battery health SoH
-- Important possible addressing bug identified from the Solis document:
-  - the Solis spec appears to state that 30001-39999 addresses require no extra offset/transform
-  - current code does `docReg - 1` before issuing function 0x04 reads
-  - if the document is interpreted literally, the current code may be addressing one register early
-  - this needs explicit validation against live reads before changing production code blindly
-- Strong current interpretation to revisit later:
-  - there are two overlapping issues:
-    1. current Solis RS485 register map in code is materially wrong in several places
-    2. the most likely immediate freeze trigger is still CAN failure/retry/log flooding, with RS485 failure handling as a secondary pressure source
-- User explicitly asked that these new Solis/CAN/freeze findings be remembered for later sessions.
+- Observed sign convention for `solis_inverter_active_power` decoded from parsed keys `33080-33081`:
+  - positive = AC power coming out of the Solis / Solis supplying AC load or export
+  - negative = AC power going into the Solis / AC-grid-assisted charging side
+  - Therefore do not globally invert this value.
+  - Best metric model is to keep the signed raw metric and also emit split metrics:
+    - `solis_inverter_active_power` = signed raw AC-side Solis flow
+    - `solis_ac_output_power = max(solis_inverter_active_power, 0)`
+    - `solis_ac_input_power = max(-solis_inverter_active_power, 0)`
+  - Grafana should integrate `solis_ac_output_power` for "Solis AC Output Wh" and `solis_ac_input_power` for "Solis AC Input Wh".
 
-## 2026-06-02
+- Example live observations supporting the sign convention:
+  - Snapshot with PV about `532 W`, battery charging about `703 W`, and Solis AC active power about `-290 W` suggested AC-side input was supplementing PV into battery charge.
+  - Later snapshot with PV about `2.02 kW`, battery charging about `2.49 kW`, and signed Solis AC active around `-780 W` again supported negative as AC power going into Solis.
+  - During/around the kettle test, signed Solis AC active moved positive when the Solis appeared to be supplying AC-side load, supporting positive as AC output.
 
-- User-tested improvement: RS485 full-span block reads performed better than the earlier one-register-at-a-time polling.
-- Key successful direction: switching RS485 to block reads was a positive change and should be remembered as a good step for Solis polling stability/performance.
-- Another useful result: moving CAN transmission onto its own CPU/core made the web UI work better / become more responsive.
-- Important system-level interpretation from today's testing:
-  - separating CAN from the busy main loop improved web responsiveness,
-  - while RS485 block reads improved inverter-stat polling behavior,
-  - so both changes are promising directions even if later architectural refinements are still needed.
-- User plans to continue testing tomorrow from this point.
-- Important clarification about memory.txt usage: this file is primarily project memory for the assistant so prior discussion context, learnings, stable baselines, and dead ends are not forgotten.
-- User also shared a convenient GitHub URL for viewing open pull requests in the repository: `https://github.com/paulca99/arduino/pulls?q=is%3Aopen+is%3Apr`
-- Additional future-session note from this point in the conversation:
-  - if a later session restarts, it is worth re-checking open PRs first using that URL before starting new work, to avoid duplicating or conflicting with already-open changes
-  - recent user priorities/features requested after the runtime investigations were:
-    1. a lightweight web log page so runtime behavior can be inspected without the serial monitor
-    2. completely web-based battery enable/disable for aggregate membership
-    3. persistence of enabled batteries in NVS so reboot restores the same active BLE-queried aggregate set
-    4. optional periodic reboot around every 4 hours
-  - architectural preference learned from the discussion: if reliability work resumes, the highest-priority protected path is battery truthfulness to the inverter (BLE data freshness -> aggregate snapshot -> CAN output), and anything else must not interfere with that path
-- Additional workflow principle from the user: AI is useful, but learning requires memory; future sessions should treat memory.txt as the mechanism for compounding project knowledge rather than re-learning from scratch.
-- Reconfirmed useful repository shortcut URL for open PRs: `https://github.com/paulca99/arduino/pulls?q=is%3Aopen+is%3Apr`
+- Grafana dashboard direction:
+  - A new energy-flow dashboard was drafted around selected-time-range Wh panels.
+  - Preferred energy panels now use pre-split metrics rather than Grafana-side positive/negative variants:
+    - Solis AC Output Wh = integral of `solis_ac_output_power`
+    - Solis AC Input Wh = integral of `solis_ac_input_power`
+    - PV Generated Wh = integral of `solis_pv_total_power`
+    - Battery Charge Wh = integral of positive `solis_battery_power`
+    - Battery Discharge Wh = integral of negative `solis_battery_power` converted positive
+  - Keep raw debug register metrics temporarily while validating mapping:
+    - `solis_reg_33079_raw`
+    - `solis_reg_33080_raw`
+    - `solis_reg_33081_raw`
 
-## 2026-06-04
-
-- Current simplified sketch under active development/testing is `BLE_BMS_MARK2` in `paulca99/arduino`.
-- `BLE_BMS_MARK2` current stable baseline before web reintroduction:
-  - persistent BLE works well with the currently enabled 2 batteries
-  - CAN transmit moved to its own FreeRTOS task/core and this separation is considered a good design direction for stability
-  - RS485/Solis polling was ported in simplified form and runs every 3000 ms
-  - web was intentionally excluded at that stable point
-- User clarified battery reporting behavior:
-  - BMS-reported SoC on both packs was corrected at the BMS side and both reported around 26-28%
-  - inverter still showed SoC around 45%
-  - code review showed this was expected because `BLE_BMS_MARK2/CAN_Pylontech.ino` blends measured SoC with voltage-derived SoC in `can_send_soc()` rather than forwarding raw BMS SoC directly
-  - user explicitly chose to leave this SoC logic unchanged because JBD BMS units can panic on cell over/undervoltage and falsely report 0% or 100%, which can make the inverter react badly
-- `BLE_BMS_MARK2` aggregate behavior currently differs from the older master sketch:
-  - in Mark 2, aggregate SoC is derived from `socFromVoltageTable(snap.voltage)` inside `buildAggregateSnapshot()`
-  - the older `BLE_BMS/BLE_BMS.ino` averaged raw battery SoC values before later CAN-side handling
-- Important hardware/runtime note captured from flashing output:
-  - target MCU is `ESP32-D0WD-V3` revision `v3.1`
-  - practical takeaway is that the board supports the dual-core task separation used by Mark 2
-- User approved adding RS485/Solis polling into `BLE_BMS_MARK2` and simplification was explicitly desired where safe.
-- That change worked well enough that user then requested web capability be reintroduced, but only as JSON endpoint `/api/solis` using `AsyncWebServer` and not by copying the old blocking `WebServer` code.
-- The PR generated for web reintroduction overreached the request:
-  - instead of a narrow AsyncWebServer `/api/solis` addition, it also introduced broader Wi-Fi fallback/persistence behavior
-  - the resulting firmware crashed on startup with a `LoadProhibited` Guru Meditation shortly after WiFi connected, async web server started, and BLE discovery found both batteries
-  - user rolled back to master after this regression
-  - practical lesson: future web reintroduction must be very tightly scoped; do not combine AsyncWebServer endpoint work with broad Wi-Fi scanning/persistence/reconnect changes
-- Long-run overflow/rollover discussion for current Mark 2 baseline:
-  - obvious wrap candidates include `cycleCount`, `okReads`, `failedReads`, `disconnectCount`, Solis `pollCount`, `readErrors`, `lockTimeouts`, CAN `aliveCounter`, and all `millis()`-derived timing values
-  - most time comparisons in current Mark 2 use unsigned subtraction or `hasDeadlinePassed()` style arithmetic and should tolerate normal `millis()` rollover
-  - counter wrap is mainly a logging/telemetry concern unless code later assumes monotonic non-wrapping counters
-  - this area was not fully audited to completion because conversation moved on after the failed web PR
-- New architecture exploration on 2026-06-04 shifted toward using the existing Raspberry Pi / Grafana / InfluxDB system instead of ESP32 Wi-Fi.
-- User already has a cable from the inverter RS485 bus to the Raspberry Pi.
-- Key bus-architecture conclusion from discussion:
-  - using the same RS485 bus is only clean if there is one master
-  - a design where ESP32 dynamically flips between Modbus slave and master roles was considered clever but judged too fragile and timing-sensitive for a live Modbus RTU bus
-  - better conceptual options are either Pi as sole master, or ESP32 continuing as master while exporting data to Pi over a separate channel
-- Practical passive-sniffing progress on the Pi:
-  - user connected the Pi to the live RS485 bus and ran Python passive sniffer scripts at 9600 8N1
-  - the repeating Modbus request `01 04 81 19 00 5D C8 08` was confirmed and matches the current ESP32 Solis block read exactly:
-    - slave `0x01`
-    - function `0x04`
-    - raw start address `0x8119`
-    - count `0x005D` = 93 registers
-  - this validated that current Solis polling in Mark 2 uses the same block request shape as expected from code
-- Sniffed inverter response findings:
-  - a full valid Modbus RTU response was eventually captured with `CRC_OK` and length 191 bytes
-  - it began `01 04 BA ...`, which is correct for an FC04 reply with byte count `0xBA` = 186 data bytes (93 registers)
-  - this proves the Pi can, at least in principle, observe and decode the same Solis register block that the ESP32 is polling
-- Important caution from passive sniffing tests:
-  - when the Pi RS485 adapter was attached, the Solis/inverter became temperamental and replied less reliably
-  - many short 5-byte CRC-valid artifacts appeared on the bus capture (for example `01 FF 01 A0 30`, `01 FE 01 A1 A0`, etc.)
-  - these are not normal Modbus FC04 responses and were interpreted as bus noise/artifacts/adapter side effects rather than valid exceptions
-  - practical conclusion: the current Pi passive tap is not electrically benign enough to trust in production without further hardware refinement
-- Follow-up electrical finding that changed the interpretation:
-  - the real issue was missing earth/common reference between the Raspberry Pi adapter and the inverter/bus
-  - after adding the common reference/ground, the sniffed Solis traffic became reliable and the inverter replied every time the ESP32 polled
-  - practical conclusion: passive Pi sniffing of the live RS485 bus is viable in this setup provided the common reference is connected correctly
-- Sniffer/tooling lessons learned:
-  - naive chunk logging is not sufficient for RTU; buffering and frame reconstruction are required
-  - a more stateful Python sniffer using expected Modbus lengths and relaxed idle-gap handling produced much cleaner captures
-  - for this Solis block read, the expected response length is 191 bytes and request length is 8 bytes; using those lengths is more reliable than pure silence-gap splitting
-- Data decode confidence from the captured 191-byte Solis response:
-  - sample decoded values looked plausible for PV voltage/current and battery metrics
-  - user-observed clean frame was sufficient to support writing a Pi-side decoder that reconstructs Solis fields and emits JSON in the same structure as `BLE_BMS/BLE_BMS.ino` `buildInverterJson()`
-- Pi integration result:
-  - a root-level script `read_solis_python.py` was added on master as a Python replacement for `read_solis.sh`
-  - it listens on the RS485 tap, extracts valid 191-byte Solis FC04 block responses, reconstructs the same JSON-style fields expected by the existing shell pipeline, and writes InfluxDB measurements
-- High-confidence architecture lesson from today's outcome:
-  - `BLE_BMS_MARK2` is rock solid specifically when Wi-Fi/web are left out
-  - keeping Mark 2 lean (persistent BLE + CAN task separation + RS485 polling, no Wi-Fi) is currently the winning architecture
-  - with the Pi now able to sniff/decode Solis traffic reliably, there is no strong need to put Wi-Fi/web back into Mark 2 for monitoring purposes
-
-## 2026-06-05
-
-- User explicitly asked to restart from scratch in future sessions using `memory.txt` as the first context source.
-- The repo is `paulca99/arduino` and the default branch is `master`.
-- Current highest-value stable baseline remains `BLE_BMS_MARK2` with:
-  - persistent BLE
-  - CAN on its own core/task
-  - RS485/Solis polling in simplified form
-  - no Wi-Fi/web in the ESP32 firmware
-- The Pi is the preferred place for monitoring/visualization because it already runs InfluxDB and Grafana.
-- Most recent architectural idea from the user:
-  - switch the Pi from passive RS485 sniffing to a slave-listening role at Modbus ID 3
-  - have the ESP32 send battery cell data to the Pi
-  - use Grafana for battery-detail dashboards
-- Important protocol-topology caution recorded before any implementation:
-  - the live RS485 bus should continue to have only one master
-  - a Pi that only listens passively is low risk
-  - a Pi that actively responds as a slave is possible only if carefully designed so it does not disturb the existing Solis master/slave traffic
-- Key code facts to remember for any future battery-detail telemetry feature:
-  - `BatteryState` in `BLE_BMS_MARK2` already stores `cellMv[MAX_CELLS]`, `cellCount`, `hasCellData`, and `lastCellDataMs`
-  - `parsePacket04()` already fills `cellMv[]` from the BMS 0x04 notification
-  - `printCellVoltages()` already prints each cell to serial
-  - the existing Mark 2 loop already has battery-level data that could be exported without changing BLE parsing
-- Key integration implication:
-  - the simplest future Pi telemetry path is probably a separate data channel from ESP32 to Pi rather than adding another bus master on RS485
-  - if Modbus-style export is attempted, it should be treated as a new protocol project, not a small tweak
-- User also requested that the assistant read the code and memory thoroughly, then preserve the distilled knowledge here so a later session can begin fresh without losing the stable baseline and lessons learned.
-
-## 2026-06-06
-
-- Battery hardware clarification from the user:
-  - Growatt2 uses Boston Swing Power 5300 cells
-  - the cells are **Li-ion**, not LiFePO4
-  - the pack is a **14S** battery with mostly **18P** groups, and groups **1 and 9** are **20P** because those groups had been relatively weak
-- Safety-critical lesson from real-world testing:
-  - pack voltage alone is not a safe low-voltage proxy for this battery, especially near the bottom of discharge
-  - the user observed the pack at about **41.23 V** while manual checking showed **group 1 at about 2.88 V**
-  - this confirmed that weak-group behavior must be respected and that the battery should be managed by weakest-group behavior, not pack-average voltage alone
-- Inverter protection setting change recorded:
-  - user changed Solis inverter setting **DischargeUVWPRO** from **40.0 V** to **44.5 V**
-  - rationale: the earlier 40.0 V cutoff was too low for Growatt2 because weak groups can hit dangerous voltage before pack voltage looks alarming
-  - 44.5 V / 14S is about **3.18 V average per group**, which provides more margin for weak groups
-  - accepted tradeoff: the higher cutoff will leave some capacity unused, but is safer for this uneven pack
-- Buck-converter interpretation update:
-  - user doubted that the buck converters alone could explain the overnight voltage drop
-  - user supplied a 60V->12V Jadeshay buck converter listing: **20V-60V input, 12V output, 3A max, 36W max, waterproof automotive-style module**
-  - conclusion to remember: the converter description does not prove zero no-load current, but the dangerous outcome is much more plausibly explained by weak-group behavior / imbalance than by the buck converters alone
-- Solis inverter / battery configuration research findings:
-  - user supplied the Solis RHI-3.6K-48ES-5G manual URL: `https://www.solisinverters.au/uploads/files/202502/Solis_Manual_RHI-(3-6)K_5G_AUS_V1,2(20230808).pdf`
-  - a web search was used to gather Boston Swing 5300 datasheet details
-  - the relevant cell datasheet values found were:
-    - **nominal voltage:** 3.65 V per cell
-    - **maximum charge voltage:** 4.20 V per cell
-    - **minimum discharge voltage:** 2.75 V per cell
-    - **recommended charge current:** 3.7 A standard, max continuous charge current 10.6 A per cell
-  - for a 14S pack, these translate to:
-    - **full charge ceiling:** 58.8 V
-    - **nominal pack voltage:** about 51.1 V
-    - **low-cell absolute minimum:** about 38.5 V
-- Important caution about the Solis manual discussion:
-  - the assistant must not invent menu items that may not exist on the Solis RHI-3.6K-48ES-5G
-  - if the manual doesn’t expose direct bulk/float/low-voltage/equalization controls, then the inverter likely relies on battery type presets and/or BMS communication rather than generic custom-lithium voltage fields
-  - the exact battery settings available may be more limited than a generic custom-lithium inverter menu
-- Safe configuration principles to remember for this inverter and battery:
-  - use **Lithium** mode if supported
-  - if BMS comms are available and verified, use them; otherwise use the most conservative manual lithium/custom settings available
-  - inverter charge voltage must remain below the BMS high-voltage cutoff
-  - inverter low-voltage cutoff must remain above the BMS low-voltage cutoff
-  - inverter current limits must be within BMS and cable ratings
-  - avoid equalization and lead-acid style charging for this Li-ion pack
-- Safety-first starting point suggested for future reference, pending exact menu support:
-  - **mode:** custom lithium
-  - **charge voltage:** around **50.4 V** if the inverter is actually operating on a conservative charge ceiling, but note this number is only applicable if the menu/control scheme maps to a lower long-life target; the key point is to keep the pack well below the hard 4.2 V/cell limit unless the exact battery spec requires full charge
-  - **low cutoff:** around **44.0 V** to avoid weak-group overdischarge
-  - **equalization:** off
-  - **charge current:** conservative, limited by BMS/wiring
-  - **discharge current:** conservative, limited by BMS/wiring
-- Strong caution recorded after discussion:
-  - because these are Li-ion cells, exact safe inverter settings must not be guessed without the battery datasheet and the actual Solis menu names/options
-  - the user explicitly warned that getting the config wrong could burn the house down, so future advice must stay conservative and avoid unsupported assumptions
-- User concern about manual/menu availability:
-  - the user questioned whether the earlier quoted charge/float/low-voltage items actually exist in the Solis menu
-  - this should be treated as a strong indication that future guidance must be based on the exact manual pages or a photo of the inverter menu, not on generic inverter-lithium assumptions
-- Repository maintenance request recorded:
-  - user asked to append this inverter/battery safety information to `memory.txt` in the root of the `paulca99/arduino` repo
-  - repository existence and access were verified before updating the file
-  - `memory.txt` should remain the authoritative in-repo memory for future sessions
-
-## 2026-06-07
-
-- `BLE_BMS_MARK2` testing focused on dynamic Pylontech CAN discharge limits using weakest-cell voltage rather than pack average.
-- User observed a confusing mismatch between dashboards:
-  - battery/cell Grafana dashboard showed Battery 2 and Battery 3 BMS currents as `0.00 A`
-  - Solis/inverter Grafana dashboard and the physical inverter UI showed the inverter drawing about `90 W` from the battery, roughly `2 A` at about `45 V`
-- Practical conclusion: the Solis-side battery draw was real; the BMS current display appears to have low-current deadband/rounding and can show `0.00 A` even while the inverter is drawing around 2 A total.
-- Overnight discharge mystery resolved:
-  - the previous overnight drop from about `47 V` to about `43.8 V` was plausibly explained by the inverter itself continuing to draw around `90 W` from the battery after normal discharge had stopped at the `15%` SoC limit
-  - at `90 W`, overnight draw is significant: roughly `0.72 kWh` over 8 hours or `0.9 kWh` over 10 hours
-- Important Solis behavior learned:
-  - the inverter can stop normal/self-use discharge at the configured SoC reserve (`15%` seen today) while still drawing internal/standby/housekeeping power from the battery
-  - therefore SoC reserve alone is not enough protection for this uneven pack unless CAN/BMS discharge stop is obeyed or the battery is physically disconnected
-- Linear derate work/testing:
-  - earlier stepped derating was judged flawed because hard threshold jumps could cause voltage rebound/hunting
-  - preferred control is linear derating based on weakest/strongest cell millivolts
-  - initial idea was `3200 mV` upper and `3100 mV` lower, but this would still allow the inverter's ~2 A / 90 W draw until very close to 3.10 V
-  - for safer overnight testing, user decided to flash a version with the lower discharge cutoff moved up to about `3150 mV` before bed
-- Runtime observations from Grafana screenshots:
-  - around 21:25, pack voltages were about `45.25 V` / `45.24 V`, both BMS currents showed `0.00 A`, both SoC values were `15%`, and the weakest displayed cell was cell 8 at about `3.18 V`
-  - around 21:40, pack voltages were about `45.16 V` / `45.15 V`, cell 8 was about `3.17 V`, and the trend graph showed cell 8 falling steadily
-  - after flashing/testing the safer `3.15 V` cutoff behavior, a later screenshot showed Battery 2/3 around `44.89 V` / `44.88 V`, cell 8 at about `3.15 V`, and the cell 8 graph flattening rather than continuing its earlier decline
-- Practical conclusion from that late screenshot:
-  - the `3.15 V` discharge cutoff test looked promising because the weakest-cell trace appeared to flatten near the intended floor
-  - key validation remains checking the physical Solis UI / Solis dashboard battery power: if it drops from ~90 W discharge to near 0 W when CAN says `0 A` discharge / discharge request off, Solis is obeying the BMS/CAN stop for this draw
-  - if Solis continues drawing around 90 W despite `0 A` discharge being advertised, the safe plan is to disconnect the battery overnight
-- Safety lesson reinforced:
-  - for this battery, weakest-cell behavior must be the authority; pack voltage and BMS-reported aggregate current can both be misleading near the bottom
-  - future unattended operation should use a conservative weakest-cell cutoff/derate, and possibly a higher lower-bound such as `3150 mV` rather than waiting for `3100 mV`, unless further testing proves the inverter reliably stops earlier
-- Repository/code state note:
-  - the GitHub `master` files inspected during the session still appeared to show the older fixed-current CAN sender (`MAX_CHARGE_CURRENT` / `MAX_DISCHARGE_CURRENT`) rather than the linear-derate implementation, so the firmware being tested may have been built from a PR/branch or local version rather than the visible `master` at that moment
-  - future sessions should verify the actual flashed branch/commit before reasoning from `master`
+- Practical caution for energy accounting:
+  - Whole-house usage cannot be accurately derived from the Solis/grid metrics alone because another solar system is present and unmonitored.
+  - User clarified they do not care about whole-house usage for this task; the important quantity is how much AC power/energy is coming out of the Solis.
