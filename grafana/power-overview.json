@@ -102,14 +102,29 @@
             "type": "__expr__",
             "uid": "__expr__"
           },
-          "expression": "(-$A + abs($A)) / 2",
-          "hide": false,
+          "expression": "A",
+          "hide": true,
+          "reducer": "lastNotNull",
           "refId": "B",
+          "settings": {
+            "mode": "dropNN"
+          },
+          "type": "reduce"
+        },
+        {
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "expression": "(-$B + abs($B)) / 2",
+          "hide": false,
+          "refId": "C",
           "type": "math"
         }
       ],
       "title": "Grid Import",
-      "type": "stat"
+      "type": "stat",
+      "description": "Latest grid import using the Solis sign convention where negative grid power means import."
     },
     {
       "datasource": {
@@ -179,14 +194,29 @@
             "type": "__expr__",
             "uid": "__expr__"
           },
-          "expression": "($A + abs($A)) / 2",
-          "hide": false,
+          "expression": "A",
+          "hide": true,
+          "reducer": "lastNotNull",
           "refId": "B",
+          "settings": {
+            "mode": "dropNN"
+          },
+          "type": "reduce"
+        },
+        {
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "expression": "($B + abs($B)) / 2",
+          "hide": false,
+          "refId": "C",
           "type": "math"
         }
       ],
       "title": "Grid Export",
-      "type": "stat"
+      "type": "stat",
+      "description": "Latest grid export using the Solis sign convention where positive grid power means export."
     },
     {
       "datasource": {
@@ -627,14 +657,71 @@
             "type": "__expr__",
             "uid": "__expr__"
           },
-          "expression": "$A + $B - $C - $D",
-          "hide": false,
+          "expression": "A",
+          "hide": true,
+          "reducer": "lastNotNull",
           "refId": "E",
+          "settings": {
+            "mode": "dropNN"
+          },
+          "type": "reduce"
+        },
+        {
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "expression": "B",
+          "hide": true,
+          "reducer": "lastNotNull",
+          "refId": "F",
+          "settings": {
+            "mode": "dropNN"
+          },
+          "type": "reduce"
+        },
+        {
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "expression": "C",
+          "hide": true,
+          "reducer": "lastNotNull",
+          "refId": "G",
+          "settings": {
+            "mode": "dropNN"
+          },
+          "type": "reduce"
+        },
+        {
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "expression": "D",
+          "hide": true,
+          "reducer": "lastNotNull",
+          "refId": "H",
+          "settings": {
+            "mode": "dropNN"
+          },
+          "type": "reduce"
+        },
+        {
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "expression": "$E + $F - $G - $H",
+          "hide": false,
+          "refId": "I",
           "type": "math"
         }
       ],
       "title": "Estimated House Load",
-      "type": "stat"
+      "type": "stat",
+      "description": "Estimated house load = solis_inverter_active_power + fence_solar_ac_power - solis_grid_power - ac_bms_power. Negative grid power adds import; positive grid power removes export."
     },
     {
       "collapsed": false,
@@ -1811,6 +1898,6 @@
   "timezone": "browser",
   "title": "Power Overview",
   "uid": "power-overview-v1",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
