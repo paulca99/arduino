@@ -11,7 +11,7 @@ import requests
 DEFAULT_INFLUX_URL = "http://localhost:8086/write?db=power"
 DEFAULT_HOST_TAG = "server01"
 DEFAULT_SOURCE_TAG = "ac_bms_monitor"
-DEFAULT_AC_BMS_URL = "http://ac-battery-monitor.local/api/bms"
+DEFAULT_AC_BMS_URL = "http://esp32-9EA89C/api/bms"
 DEFAULT_INTERVAL_S = 2.0
 
 INFLUX_URL = DEFAULT_INFLUX_URL
