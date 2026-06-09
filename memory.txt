@@ -51,10 +51,56 @@
   - Whole-house usage cannot be accurately derived from the Solis/grid metrics alone because another solar system is present and unmonitored.
   - User clarified they do not care about whole-house usage for this task; the important quantity is how much AC power/energy is coming out of the Solis.
 
-- Physical generation meter validation test started:
+- Physical generation meter validation:
   - The generation meter is connected between the Solis inverter AC connection and the consumer unit and is the gold-standard reference for AC energy passing through that connection.
-  - Start reading recorded by user at `2026-06-09 10:44`: `34499.98 kWh`.
-  - Later comparison should use the second physical meter reading minus `34499.98 kWh` and compare against Grafana over the exact same time window, especially:
+  - Earlier readings before the latest Python/Grafana setup should be treated as historical only:
+    - `2026-06-09 10:44`: `34499.98 kWh`
+    - `2026-06-09 11:24`: `34500.04 kWh`
+  - User later reset validation after the Python script was messed up; clean baseline is:
+    - `2026-06-09 13:14`: `34501.30 kWh`
+  - First clean follow-up reading:
+    - `2026-06-09 13:45`: `34502.22 kWh`
+    - Delta from 13:14 baseline: `0.92 kWh` = `920 Wh` over `31 min`, average about `1.78 kW`.
+  - Later comparisons should use the physical reading minus `34501.30 kWh` for the full range from `13:14`, or minus `34502.22 kWh` for intervals after `13:45`, and compare against Grafana over the exact same time window, especially:
     - `Solis AC Output Wh / 1000`
     - `Solis AC Input Wh / 1000`
-    - possibly `Solis AC Output Wh - Solis AC Input Wh` or output+input depending on how the physical meter counts direction.
+    - `Solis AC Output Wh - Solis AC Input Wh`
+    - possibly output+input depending on how the physical meter counts direction.
+
+- Runtime reliability observation for `read_master2.py` / PR #81 branch:
+  - Running the PR branch showed intermittent Solis FC06 write-response timeouts and occasional Solis read no-response messages, while the ESP32 battery bridge continued responding.
+  - User increased timeout variables locally and reported it seemed much better.
+  - Suggested future reliability improvements: increase write/read timeouts, use a longer delay between Solis FC06 writes, optionally retry one failed FC06 write, and avoid unnecessary startup STOP/release write bursts when `STATE_UNKNOWN` starts with PV already recovered.
+
+- Fence / second solar inverter added to monitoring:
+  - The separate "fence" solar inverter is now reachable on the network at `http://tl-wr802n/real_time_data.xml`, though Wi-Fi may be flaky/intermittent.
+  - Example XML values observed from the inverter included:
+    - `p-ac` around `672 W`
+    - `e-today` around `1.0 kWh`
+    - `e-total` around `2400.0 kWh`
+    - grid voltage/current/frequency and PV1/PV2 values.
+  - Added repo-root script `fence_solar_to_influx.py` on `master` in commit `8273d2d59db45a8dad6893c113f6c04bad786c0c`.
+  - The script polls the XML endpoint and writes Influx measurements including:
+    - `fence_solar_ac_power`
+    - `fence_solar_pv_total_power`
+    - `fence_solar_grid_voltage`
+    - `fence_solar_grid_current`
+    - `fence_solar_grid_frequency`
+    - `fence_solar_energy_today`
+    - `fence_solar_energy_total`
+    - `fence_solar_online`
+    - `fence_solar_read_errors`
+    - `fence_solar_last_success_age_s`
+  - Dashboard was extended conceptually to include fence solar power, fence generated Wh from `fence_solar_energy_total`, total local solar, and an experimental estimated house load.
+
+- Experimental house-load / energy accounting formulas after adding fence solar:
+  - With current sign assumptions:
+    - `solis_inverter_active_power > 0` = Solis AC output
+    - `solis_inverter_active_power < 0` = AC going into Solis
+    - `solis_grid_power > 0` = export
+    - `solis_grid_power < 0` = import
+    - `fence_solar_ac_power > 0` = fence inverter AC output
+  - Estimated house load:
+    - `house_load ≈ fence_solar_ac_power + solis_inverter_active_power - solis_grid_power`
+  - If Solis signed AC is negative while fence solar is producing and site grid import is low/zero, part of the fence solar surplus may be going into the Solis battery via AC-side charging.
+  - Treat the estimated house-load panel as experimental until Solis grid sign/value and physical meter comparisons are confirmed.
