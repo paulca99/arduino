@@ -5,8 +5,7 @@
 #include <BLERemoteCharacteristic.h>
 #include <BLERemoteService.h>
 #include <WiFi.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
+#include <WebServer.h>
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -93,7 +92,7 @@ static BatteryState batteries[] = {
 
 static const int BATTERY_COUNT = sizeof(batteries) / sizeof(batteries[0]);
 static BLEScan* pBLEScan = nullptr;
-static AsyncWebServer server(80);
+static WebServer server(80);
 static unsigned long loopCount = 0;
 
 static int findBatteryByClient(BLEClient* client);
@@ -739,7 +738,7 @@ void setup() {
     Serial.println("WiFi not connected yet; HTTP server still started.");
   }
 
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+  server.on("/", []() {
     String body = F("AC_BMS_MONITOR OK\nTry /api/bms\n");
     body += F("Connected WiFi: ");
     body += (WiFi.status() == WL_CONNECTED) ? F("yes") : F("no");
@@ -747,15 +746,15 @@ void setup() {
     body += F("IP: ");
     body += WiFi.localIP().toString();
     body += '\n';
-    request->send(200, "text/plain", body);
+    server.send(200, "text/plain", body);
   });
 
-  server.on("/status", HTTP_GET, [](AsyncWebServerRequest* request) {
-    request->send(200, "text/plain", "AC_BMS_MONITOR running. Use /api/bms");
+  server.on("/status", []() {
+    server.send(200, "text/plain", "AC_BMS_MONITOR running. Use /api/bms");
   });
 
-  server.on("/api/bms", HTTP_GET, [](AsyncWebServerRequest* request) {
-    request->send(200, "application/json", buildJsonResponse());
+  server.on("/api/bms", []() {
+    server.send(200, "application/json", buildJsonResponse());
   });
 
   server.begin();
@@ -827,5 +826,6 @@ void loop() {
     printSummary();
   }
 
+  server.handleClient();
   delay(BETWEEN_CYCLES_MS);
 }
