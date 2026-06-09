@@ -156,7 +156,6 @@ def s16(v: int) -> int:
 
 def s32_from_regs(high: int, low: int) -> int:
     v = ((high & 0xFFFF) << 16) | (low & 0xFFFF)
-    # Convert unsigned 32-bit to signed two's-complement.
     return v - 0x100000000 if v & 0x80000000 else v
 
 
@@ -256,11 +255,14 @@ def decode_solis(regs: Dict[int, int]) -> dict:
     grid_v = round(regs.get(33074, 0) / 10.0, 1)
     grid_f = round(regs.get(33095, 0) / 100.0, 2)
     grid_power = s16(regs.get(33132, 0))
-    # 33079 (high word) + 33080 (low word): expected signed 32-bit
-    # Solis AC active inverter output power (W).
+
+    # Published Solis register pair is likely 33079-33080 for inverter
+    # active AC power. This script sends raw_addr = doc_reg - 1 and labels
+    # parsed registers from the requested start_reg, so use parsed keys
+    # 33080-33081 here. Temporary raw metrics below help confirm mapping.
     inverter_active_power = s32_from_regs(
-        regs.get(33079, 0),
         regs.get(33080, 0),
+        regs.get(33081, 0),
     )
 
     battery_current = round(s16(regs.get(33135, 0)) / 10.0, 1)
@@ -296,6 +298,9 @@ def decode_solis(regs: Dict[int, int]) -> dict:
         "pv2PowerW": pv2_power,
         "pvTotalPowerW": pv_total_power,
         "gridFrequencyRaw": regs.get(33095, 0),
+        "reg33079Raw": regs.get(33079, 0),
+        "reg33080Raw": regs.get(33080, 0),
+        "reg33081Raw": regs.get(33081, 0),
     }
 
 
@@ -319,6 +324,9 @@ def write_solis_metrics(s: dict, poll_count: int, read_errors: int, controller_s
     write_line("solis_poll_count", poll_count, SOLIS_SOURCE_TAG)
     write_line("solis_read_errors", read_errors, SOLIS_SOURCE_TAG)
     write_line("solis_reg_33095_raw", s["gridFrequencyRaw"], SOLIS_SOURCE_TAG)
+    write_line("solis_reg_33079_raw", s["reg33079Raw"], SOLIS_SOURCE_TAG)
+    write_line("solis_reg_33080_raw", s["reg33080Raw"], SOLIS_SOURCE_TAG)
+    write_line("solis_reg_33081_raw", s["reg33081Raw"], SOLIS_SOURCE_TAG)
 
     # Controller state as numeric metric:
     # UNKNOWN=0, NORMAL=1, BATTERY_OFF=2
@@ -851,3 +859,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
