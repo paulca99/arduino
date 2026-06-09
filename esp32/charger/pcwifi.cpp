@@ -27,8 +27,8 @@ extern int chargerPowerCreep;
 // Replace with your network credentials
 //const char* ssid = "TP-LINK_73F3";
 //const char* password = "DEADBEEF";
-const char* ssid = "mesh";
-const char* password = "deadbeef";
+const char* ssid = "TP-LINK_73F3";
+const char* password = "DEADBEEF";
 
 // Set web server port number to 80
 WiFiServer server(80);
