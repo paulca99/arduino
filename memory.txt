@@ -215,3 +215,33 @@
     - Solis AC Output Wh is AC-side energy through the Solis path.
     - House load, grid import/export, AC battery charge/discharge, and conversion losses all share the AC bus.
     - AC-side BMS power is DC-side battery power, not exact AC charger/inverter AC power.
+
+- Future multi-day FIT/battery analysis plan:
+  - Do not draw strong FIT or battery-degradation conclusions from the first partial day because several important data sources were only added on 2026-06-09.
+  - Let the full monitoring stack run for a few days, ideally including complete daylight charge cycles and overnight discharge cycles.
+  - When ready, prefer `curl`/Influx queries over Grafana screenshots so the numbers are explicit and reproducible.
+  - Main multi-day FIT question:
+    - Has `Solis AC Output Wh` over the selected period exceeded `Solis PV Generated Wh`?
+  - Interpret any excess with Solis battery SoC start/end/delta:
+    - `Solis AC Output Wh > Solis PV Generated Wh` with large SoC drop can be explained by stored energy being released.
+    - `Solis AC Output Wh > Solis PV Generated Wh` with similar start/end SoC is suspicious for FIT integrity.
+  - Also compare against the physical FIT/generation meter reading delta, because the physical meter remains the gold-standard reference for what actually passed through the FIT path.
+  - User can take a fresh FIT meter baseline after monitoring is stable and later compare physical meter delta with Influx `solis_ac_output_power` integral.
+  - Useful future `curl` query should include over a selected explicit time window, not just `now() - 2d`:
+    - Solis PV Generated Wh: integral of positive `solis_pv_total_power`
+    - Solis AC Output Wh: integral of `solis_ac_output_power`
+    - Solis AC Input Wh: integral of `solis_ac_input_power`
+    - DC Battery Charge Wh: integral of positive `solis_battery_power`
+    - DC Battery Discharge Wh: integral of negative `solis_battery_power` converted positive
+    - Fence Solar AC Generated Wh: integral of positive `fence_solar_ac_power`
+    - Fence `e-total` delta where available: `(LAST(fence_solar_energy_total) - FIRST(fence_solar_energy_total)) * 1000`
+    - AC Battery Charge Wh: integral of `ac_bms_charge_power`
+    - AC Battery Discharge Wh: integral of `ac_bms_discharge_power`
+    - Grid Import Wh: integral of negative `solis_grid_power` converted positive
+    - Grid Export Wh: integral of positive `solis_grid_power`
+    - Solis Battery SoC start/end/min/max
+  - Useful battery/inverter-health checks after a few days:
+    - Solis DC/PV -> AC discharge efficiency: `solis_ac_output_wh / (dc_battery_discharge_wh + solis_pv_generated_wh)` for periods where Solis is mostly discharging and PV is low.
+    - Approx usable DC battery Wh per SoC percent: `dc_battery_discharge_wh / (soc_start_percent - soc_end_percent)` over a clean discharge period.
+    - Watch for signs of battery degradation: SoC falling faster than expected for delivered Wh, heavy voltage sag under load, early low-voltage limits, and cell imbalance growth under load.
+  - Avoid using short after-sunset windows alone for FIT integrity; they naturally show AC output with little/no PV because stored energy is being released.
