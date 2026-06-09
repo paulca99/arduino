@@ -76,9 +76,28 @@ BATTERY_REG_COUNT = 80
 BATTERY_BLOCK_SIZE = 24
 BATTERY_COUNT = 3
 
-POLL_INTERVAL_S = 2.0
-REPLY_TIMEOUT_S = 0.60
-WRITE_REPLY_TIMEOUT_S = 1.80
+# Shared RS485 bus: Solis (slave 1) and ESP32 BLE battery bridge (slave 5) share
+# the same RS485 pair.  The ESP32 uses an auto-direction transceiver that can hold
+# the bus driven for a short time after its last byte.  Giving explicit quiet time
+# before transmitting to Solis, and after receiving from the battery bridge, allows
+# the transceiver to de-assert and the bus to settle.  Reliability is prioritised
+# over polling speed; these conservative defaults should be adjusted upward rather
+# than downward if Solis still shows intermittent no-response errors.
+RS485_PRE_SOLIS_SETTLE_S = 0.75    # quiet time before every Solis FC04 request
+RS485_POST_BATTERY_SETTLE_S = 0.25  # quiet time after battery-bridge FC03 response
+
+# Pacing between consecutive FC06 (write single register) calls to Solis.
+# Solis does not reliably echo each write at 0.10 s; 0.50 s gives it time to
+# process and de-assert its own RS485 driver before the next request.
+SOLIS_WRITE_DELAY_S = 0.5
+
+# Pause applied after any ToU / clock write sequence before resuming normal
+# polling.  Gives Solis time to complete internal register processing.
+SOLIS_POST_WRITE_RECOVERY_S = 2.0
+
+POLL_INTERVAL_S = 4.0
+REPLY_TIMEOUT_S = 2.0
+WRITE_REPLY_TIMEOUT_S = 4.0
 READ_IDLE_TIMEOUT_S = 0.2
 BUFFER_MAX = 8192
 
@@ -446,7 +465,7 @@ def sync_solis_clock_to_pi(ser: serial.Serial) -> bool:
     for reg, value in values:
         ok = write_solis_holding_reg(ser, reg, value)
         all_ok = all_ok and ok
-        time.sleep(0.10)
+        time.sleep(SOLIS_WRITE_DELAY_S)
 
     if all_ok:
         print("[tou] Solis clock sync OK")
@@ -495,7 +514,7 @@ def write_tou_registers(
     for reg, value in writes:
         ok = write_solis_holding_reg(ser, reg, value)
         all_ok = all_ok and ok
-        time.sleep(0.10)
+        time.sleep(SOLIS_WRITE_DELAY_S)
 
     return all_ok
 
@@ -548,6 +567,12 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
     else:
         print("[tou] BATTERY_OFF write failed; state unchanged")
 
+    # Allow Solis time to process the register writes and release the RS485 bus
+    # before normal polling resumes.
+    print(f"[tou] post-write recovery pause {SOLIS_POST_WRITE_RECOVERY_S}s")
+    time.sleep(SOLIS_POST_WRITE_RECOVERY_S)
+    flush_serial_input(ser)
+
     return ok
 
 
@@ -577,6 +602,12 @@ def exit_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool:
         print("[tou] NORMAL active")
     else:
         print("[tou] STOP/release write failed; state unchanged")
+
+    # Allow Solis time to process the register writes and release the RS485 bus
+    # before normal polling resumes.
+    print(f"[tou] post-write recovery pause {SOLIS_POST_WRITE_RECOVERY_S}s")
+    time.sleep(SOLIS_POST_WRITE_RECOVERY_S)
+    flush_serial_input(ser)
 
     return ok
 
@@ -610,17 +641,17 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
                 )
             return
 
-        if pv_recovered:
-            if can_attempt_tou_write(controller):
-                exit_battery_off(
-                    ser,
-                    controller,
-                    reason=f"startup/unknown and PV {pv:.1f}W > {BATTERY_OFF_EXIT_PV_W}W",
-                )
-            return
-
-        # No strong condition either way; treat as normal runtime, but do not write.
+        # On startup we do not know whether BATTERY_OFF is actually active on the
+        # Solis, so we must NOT fire the exit/STOP write burst just because PV has
+        # recovered.  Doing so causes a large FC06 write sequence that can upset
+        # Solis comms (as observed in the log: write burst -> repeated read failures).
+        # Instead, assume NORMAL and let the steady-state logic handle things cleanly
+        # on the next poll cycles.
         controller["state"] = STATE_NORMAL
+        print(
+            "[tou] startup/unknown: PV not low + SOC not low; "
+            "assuming NORMAL without ToU writes"
+        )
         return
 
     # Normal -> Battery-off.
@@ -775,12 +806,22 @@ def main():
     print(f"Solis: slave {SOLIS_SLAVE_ID}, FC04, regs {SOLIS_START_DOC_REG}-{SOLIS_END_DOC_REG}")
     print(f"Battery bridge: slave {BATTERY_SLAVE_ID}, FC03, regs {BATTERY_START_REG}-{BATTERY_START_REG + BATTERY_REG_COUNT - 1}")
     print("")
+    print("Timing / reliability constants:")
+    print(f"  POLL_INTERVAL_S              = {POLL_INTERVAL_S}s")
+    print(f"  REPLY_TIMEOUT_S              = {REPLY_TIMEOUT_S}s")
+    print(f"  WRITE_REPLY_TIMEOUT_S        = {WRITE_REPLY_TIMEOUT_S}s")
+    print(f"  RS485_PRE_SOLIS_SETTLE_S     = {RS485_PRE_SOLIS_SETTLE_S}s  (bus quiet before Solis request)")
+    print(f"  RS485_POST_BATTERY_SETTLE_S  = {RS485_POST_BATTERY_SETTLE_S}s  (bus quiet after battery-bridge response)")
+    print(f"  SOLIS_WRITE_DELAY_S          = {SOLIS_WRITE_DELAY_S}s  (inter-write pacing for FC06)")
+    print(f"  SOLIS_POST_WRITE_RECOVERY_S  = {SOLIS_POST_WRITE_RECOVERY_S}s  (pause after ToU write batch)")
+    print("")
     print("Battery-off controller:")
     print(f"  ENTER: PV < {BATTERY_OFF_ENTER_PV_W}W and SOC < {BATTERY_OFF_ENTER_SOC}%")
     print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W")
     print(f"  OFF  : sync clock, RUN+grid-charge, 0.0A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: disabled")
+    print("  Startup: if PV+SOC not low, assume NORMAL without writing ToU registers")
     print("")
 
     poll_count = 0
@@ -803,6 +844,12 @@ def main():
     ) as ser:
         while True:
             loop_start = time.monotonic()
+
+            # RS485 shared bus: give the ESP32 auto-direction transceiver time to
+            # release the bus before we address Solis.  Flush any stale bytes so
+            # the Solis request is not prefixed with noise.
+            time.sleep(RS485_PRE_SOLIS_SETTLE_S)
+            flush_serial_input(ser)
 
             # Poll Solis.
             solis_regs = poll_modbus(
@@ -859,6 +906,11 @@ def main():
                         f"temp={bat['temperature']} cells={bat['cellCount']}"
                     )
                     write_battery_metrics(bat, str(idx + 1))
+
+            # RS485 shared bus: allow the ESP32 auto-direction transceiver to
+            # fully de-assert after the battery-bridge response before the next
+            # Solis request in the following loop iteration.
+            time.sleep(RS485_POST_BATTERY_SETTLE_S)
 
             elapsed = time.monotonic() - loop_start
             sleep_for = POLL_INTERVAL_S - elapsed
