@@ -61,6 +61,10 @@
   - First clean follow-up reading:
     - `2026-06-09 13:45`: `34502.22 kWh`
     - Delta from 13:14 baseline: `0.92 kWh` = `920 Wh` over `31 min`, average about `1.78 kW`.
+  - Later meter reading:
+    - `2026-06-09 14:42`: `34502.77 kWh`
+    - Delta from 13:14 baseline: `1.47 kWh` = `1470 Wh` over `88 min`, average about `1.00 kW`.
+    - Delta from 13:45 reading: `0.55 kWh` = `550 Wh` over `57 min`, average about `579 W`.
   - Later comparisons should use the physical reading minus `34501.30 kWh` for the full range from `13:14`, or minus `34502.22 kWh` for intervals after `13:45`, and compare against Grafana over the exact same time window, especially:
     - `Solis AC Output Wh / 1000`
     - `Solis AC Input Wh / 1000`
@@ -93,14 +97,45 @@
     - `fence_solar_last_success_age_s`
   - Dashboard was extended conceptually to include fence solar power, fence generated Wh from `fence_solar_energy_total`, total local solar, and an experimental estimated house load.
 
-- Experimental house-load / energy accounting formulas after adding fence solar:
+- Extra AC-side charger / battery / inverter system discovered:
+  - There is another AC-side battery setup connected to the consumer unit, separate from the Solis DC-side batteries.
+  - It has an AC charger, batteries, and an inverter. It aims to keep grid power near zero by increasing charge into its own batteries when there is surplus.
+  - If grid goes into import, it switches a relay that turns off the charger and turns on the inverter; the inverter then tries to keep grid power near zero by discharging its batteries.
+  - This means `solis_grid_power ≈ 0` does not necessarily mean generation equals house load; the AC-side battery system may be absorbing or supplying the difference.
+  - This also means previous house-load estimates that only used Solis + fence solar + grid are incomplete unless the AC-side battery system is measured or inferred.
+
+- AC-side JBD Bluetooth BMS monitoring plan:
+  - Better plan than reverse-engineering the blue GTIL/SUN inverter is to extend `BLE_BMS_MARK2` to also read the JBD Bluetooth BMS units in the AC-side Solax/Growatt battery setup.
+  - These AC-side BMS readings must be kept completely separate from the DC-side `Growatt2` and `SP14S` batteries that feed Solis/Pylontech CAN control.
+  - Do not simply add the AC-side batteries into the existing `batteries[]` aggregate used for Solis CAN, or the Solis CAN current/SoC values could include the wrong battery bank.
+  - Suggested code design: add a role/group field, e.g. `ROLE_DC_SOLIS` vs `ROLE_AC_MONITOR`, and only allow `ROLE_DC_SOLIS` batteries to contribute to Pylontech CAN aggregate and DC battery current limits.
+  - The AC-side batteries can still be read over BLE and exposed in a new separate RS485 register block for the Pi to collect into Influx.
+  - Known AC-side BMS MACs to preserve:
+    - `AC1` / `Solax`: `A4:C1:37:20:4E:3B`
+    - `AC2` / `Growatt`: `A5:C2:37:49:C7:A2`
+  - Note: user typed AC2 as `A5:C2:37:49C7:A2`; normalized here to `A5:C2:37:49:C7:A2`, which also matches the existing disabled `BMS1_MAC` in `BLE_BMS_MARK2`.
+  - Possible future RS485 layout: keep existing DC register map unchanged for compatibility, then append an AC monitor block after existing DC registers with AC aggregate plus per-AC-battery data.
+  - BMS current sign from current JBD parser: positive current = battery charging, negative current = battery discharging.
+  - AC-side battery DC power can be estimated as `battery.voltage * battery.current`:
+    - positive = AC-side battery bank is charging
+    - negative = AC-side battery bank is discharging
+  - This measures DC battery power, not exact AC-side power; charger/inverter losses still need efficiency assumptions, but it should be much closer than having no AC-side battery measurement.
+
+- Experimental house-load / energy accounting formulas after adding fence solar and AC-side battery context:
   - With current sign assumptions:
     - `solis_inverter_active_power > 0` = Solis AC output
     - `solis_inverter_active_power < 0` = AC going into Solis
     - `solis_grid_power > 0` = export
     - `solis_grid_power < 0` = import
     - `fence_solar_ac_power > 0` = fence inverter AC output
-  - Estimated house load:
-    - `house_load ≈ fence_solar_ac_power + solis_inverter_active_power - solis_grid_power`
-  - If Solis signed AC is negative while fence solar is producing and site grid import is low/zero, part of the fence solar surplus may be going into the Solis battery via AC-side charging.
-  - Treat the estimated house-load panel as experimental until Solis grid sign/value and physical meter comparisons are confirmed.
+    - AC-side BMS DC power positive = AC-side batteries charging
+    - AC-side BMS DC power negative = AC-side batteries discharging
+  - Before measuring the AC-side battery system, partial estimated house load was:
+    - `house_load_partial ≈ fence_solar_ac_power + solis_inverter_active_power - solis_grid_power`
+  - After AC-side BMS monitoring is added, better approximation should be:
+    - `ac_battery_charge_dc_w = max(ac_bms_dc_power_w, 0)`
+    - `ac_battery_discharge_dc_w = max(-ac_bms_dc_power_w, 0)`
+    - `ac_battery_inverter_output_ac_w ≈ ac_battery_discharge_dc_w * inverter_efficiency`
+    - `ac_battery_charger_input_ac_w ≈ ac_battery_charge_dc_w / charger_efficiency`
+    - `house_load ≈ fence_solar_ac_power + solis_inverter_active_power + ac_battery_inverter_output_ac_w - ac_battery_charger_input_ac_w - solis_grid_power`
+  - Treat the estimated house-load panel as experimental until Solis grid sign/value, physical meter comparisons, and AC-side battery efficiency assumptions are confirmed.
