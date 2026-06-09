@@ -427,7 +427,7 @@
         "type": "__expr__",
         "uid": "__expr__"
       },
-      "description": "Solis AC Output Wh divided by Solis PV Generated Wh. Values above 100% suggest the FIT path delivered more energy than measured Solis PV production over the selected range.",
+      "description": "Solis AC Output Wh divided by Solis PV Generated Wh. Values above 100% suggest the FIT path delivered more energy than measured Solis PV production over the selected range. The expression adds a tiny epsilon to the denominator only to avoid divide-by-zero when PV generation is effectively zero, so interpret this panel alongside the absolute Wh totals.",
       "fieldConfig": {
         "defaults": {
           "color": {
