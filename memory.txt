@@ -300,3 +300,51 @@
 - Battery-health interpretation update:
   - Earlier apparent poor battery capacity from the bad `3761 Wh` bucket was likely a dashboard integration bug.
   - Raw overnight discharge around `8273 Wh` for a `99%` to `15%` SoC drop implies about `9.85 kWh` full-scale capacity, broadly consistent with `2 x GBLI5001` batteries.
+
+- FIT Integrity dashboard status:
+  - The top derived panels now work after fixing the Grafana transformation inputs.
+  - For a last-12-hours example, dashboard values were:
+    - Solis PV Generated Wh: `3751 Wh`
+    - Solis AC Output Wh: `4276 Wh`
+    - FIT Headroom Wh: `-525 Wh`
+    - Potential Non-Solis FIT Wh: `525 Wh`
+    - FIT Ratio: `114.0%`
+  - Interpretation: this is a warning for that short window, but likely explained by Solis DC battery SoC falling / battery discharge during the window. Short ranges that start with stored battery energy can show AC output greater than same-window PV; use daily/weekly windows and compare Solis SoC start/end.
+
+- Clean same-day physical FIT meter readings on 2026-06-10:
+  - `09:13`: `34513.02 kWh` clean baseline.
+  - `11:38`: `34514.80 kWh`; delta from 09:13 = `1.78 kWh` over 2h25m.
+  - `12:55`: `34516.02 kWh`; delta from 11:38 = `1.22 kWh`; delta from 09:13 = `3.00 kWh` over 3h42m.
+
+- Influx validation for 2026-06-10 09:13 to 11:38 local (08:13Z to 10:38Z):
+  - Physical FIT meter delta: `1780 Wh`.
+  - Influx `solis_ac_output_power` integral: `1712.939809951255 Wh`.
+  - Difference: about `67 Wh`, about `3.8%`; Influx captured about `96.2%` of physical meter delta.
+  - Other same-window Influx values:
+    - `solis_ac_input_wh`: `226.12170551787375 Wh`
+    - `solis_pv_generated_wh`: `2642.365121529743 Wh`
+    - `dc_battery_discharge_wh`: `1105.2890904110996 Wh`
+    - `dc_battery_charge_wh`: `1795.4472812670717 Wh`
+    - mean Solis AC output: `709.3088857545839 W`
+    - max Solis AC output: `3750 W`
+    - sample count: `2127`
+  - Interpretation: `solis_ac_output_power` is the right metric to compare with the physical FIT/generation meter; remaining small mismatch is plausible due to reading time precision, sampling/integration error, and meter/inverter tolerance.
+
+- Battery efficiency / FIT provenance observation:
+  - User expects Solis battery inefficiency to reduce any non-Solis energy that could later reappear through the FIT path.
+  - Working assumption from observations: roughly `1 kWh` into the Solis battery may return only around `0.8–0.88 kWh` as AC output, but this is approximate and should be tested over clean windows.
+  - Losses help but do not remove the need to monitor long-period FIT balance, especially when Solis battery start/end SoC are similar.
+
+- Solis AC input / current-limit register investigation:
+  - The Solis ToU charge current register is not suitable for capping normal CT-following AC input charge power, because when a ToU window is active it pins charge/discharge to that value rather than letting CT-following decide power.
+  - The reviewed Solis Modbus PDF did not reveal a clean dedicated "maximum AC input charge power while still CT-following" register.
+  - Best practical control for now is to cap the battery/BMS-advertised charge current over Pylontech CAN frame `0x351`, while leaving normal inverter/CT behaviour otherwise intact.
+  - This caps all Solis battery charging, including legitimate Solis PV charging, but is safer for FIT provenance testing.
+
+- BLE_BMS_MARK2 current-limit decision:
+  - Existing `BLE_BMS_MARK2/BLE_BMS_MARK2.ino` used one shared `PER_BATTERY_CURRENT_LIMIT_AX10 = 400U`, giving 40A per contributing battery for both charge and discharge.
+  - With two contributing batteries, that advertised 80A charge and 80A discharge.
+  - New desired behaviour: separate charge and discharge limits:
+    - charge: `25.0A` per contributing battery (`250` in x10 units), so two batteries advertise `50A` total max charge current.
+    - discharge: keep existing `40.0A` per contributing battery (`400` in x10 units), so two batteries still advertise `80A` total max discharge current.
+  - PR/task was started to split charge/discharge constants and keep all existing cell-voltage derating logic intact.
