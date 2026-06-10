@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Pi-side master poller.
+Pi-side Solis-only poller.
 
-- Polls Solis inverter as slave 1.
-- Polls ESP32 battery bridge as slave 5.
+- Polls Solis inverter as Modbus slave 1 (FC04 input registers).
 - Writes Solis metrics to InfluxDB.
-- Writes battery slot telemetry to InfluxDB as battery_1_*, battery_2_*, battery_3_*.
 - Adds Solis ToU low-battery protection logic.
 - Syncs the Solis inverter clock from the Pi clock whenever ToU registers are written.
+
+ESP32 BMS slave 5 telemetry is handled by the separate read_esp_slave5.py script
+on a dedicated second USB-RS485 adapter (CH340, /dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0).
 
 Battery protection logic:
 
@@ -49,17 +50,15 @@ import serial
 # Config
 # ----------------------------------------------------------------------
 
-PORT = "/dev/ttyUSB0"
+PORT = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A5010V5B-if00-port0"
 BAUDRATE = 9600
 
 INFLUX_URL = "http://localhost:8086/write?db=power"
 HOST_TAG = "server01"
 
 SOLIS_SOURCE_TAG = "solis_master"
-BATTERY_SOURCE_TAG = "battery_master"
 
 SOLIS_SLAVE_ID = 0x01
-BATTERY_SLAVE_ID = 0x05
 
 FUNC_READ_INPUT_REGS = 0x04
 FUNC_READ_HOLDING_REGS = 0x03
@@ -69,22 +68,6 @@ FUNC_WRITE_SINGLE_REG = 0x06
 SOLIS_START_DOC_REG = 33050
 SOLIS_END_DOC_REG = 33142
 SOLIS_REG_COUNT = SOLIS_END_DOC_REG - SOLIS_START_DOC_REG + 1  # 93
-
-# ESP32 battery bridge block
-BATTERY_START_REG = 0
-BATTERY_REG_COUNT = 80
-BATTERY_BLOCK_SIZE = 24
-BATTERY_COUNT = 3
-
-# Shared RS485 bus: Solis (slave 1) and ESP32 BLE battery bridge (slave 5) share
-# the same RS485 pair.  The ESP32 uses an auto-direction transceiver that can hold
-# the bus driven for a short time after its last byte.  Giving explicit quiet time
-# before transmitting to Solis, and after receiving from the battery bridge, allows
-# the transceiver to de-assert and the bus to settle.  Reliability is prioritised
-# over polling speed; these conservative defaults should be adjusted upward rather
-# than downward if Solis still shows intermittent no-response errors.
-RS485_PRE_SOLIS_SETTLE_S = 0.75    # quiet time before every Solis request
-RS485_POST_BATTERY_SETTLE_S = 0.25  # quiet time after battery-bridge FC03 response
 
 # Pacing between consecutive FC06 (write single register) calls to Solis.
 # Solis does not reliably echo each write at 0.10 s; 0.50 s gives it time to
@@ -179,9 +162,8 @@ def s32_from_regs(high: int, low: int) -> int:
 
 
 def build_request(slave_id: int, func: int, start_reg: int, count: int) -> bytes:
-    # For Solis, start_reg is documented register and frame uses raw_addr=start-1.
-    # For ESP32 slave 5, registers are 0-based and raw_addr is same as start_reg.
-    raw_addr = start_reg if slave_id == BATTERY_SLAVE_ID else (start_reg - 1)
+    # Solis documented register -> raw Modbus address is doc_reg - 1.
+    raw_addr = start_reg - 1
     frame = bytes([
         slave_id,
         func,
@@ -696,59 +678,6 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
 
 
 # ----------------------------------------------------------------------
-# Battery bridge decode / write
-# ----------------------------------------------------------------------
-
-def parse_battery_block(regs: Dict[int, int], battery_index: int) -> dict:
-    base = battery_index * BATTERY_BLOCK_SIZE + 8
-
-    enabled = regs.get(base + 0, 0) == 1
-    has_data = regs.get(base + 1, 0) == 1
-    voltage = regs.get(base + 2, 0) / 100.0
-    current = s16(regs.get(base + 3, 0)) / 100.0
-    soc = regs.get(base + 4, 0)
-    charge_mos = regs.get(base + 5, 0) == 1
-    discharge_mos = regs.get(base + 6, 0) == 1
-    temp_raw = s16(regs.get(base + 7, 0))
-    temperature = None if temp_raw == 0 else (temp_raw / 10.0)
-    cell_count = regs.get(base + 8, 0)
-
-    cells = []
-    for i in range(14):
-        if i < cell_count:
-            cells.append(regs.get(base + 9 + i, 0))
-
-    return {
-        "enabled": enabled,
-        "hasData": has_data,
-        "voltage": voltage,
-        "current": current,
-        "soc": soc,
-        "chargeMos": charge_mos,
-        "dischargeMos": discharge_mos,
-        "temperature": temperature,
-        "cellCount": cell_count,
-        "cells": cells,
-    }
-
-
-def write_battery_metrics(bat: dict, battery_name: str):
-    meas = f"battery_{battery_name}"
-    write_line(f"{meas}_enabled", 1 if bat["enabled"] else 0, BATTERY_SOURCE_TAG)
-    write_line(f"{meas}_has_data", 1 if bat["hasData"] else 0, BATTERY_SOURCE_TAG)
-    write_line(f"{meas}_voltage", round(bat["voltage"], 2), BATTERY_SOURCE_TAG)
-    write_line(f"{meas}_current", round(bat["current"], 2), BATTERY_SOURCE_TAG)
-    write_line(f"{meas}_soc", bat["soc"], BATTERY_SOURCE_TAG)
-    write_line(f"{meas}_charge_mos", 1 if bat["chargeMos"] else 0, BATTERY_SOURCE_TAG)
-    write_line(f"{meas}_discharge_mos", 1 if bat["dischargeMos"] else 0, BATTERY_SOURCE_TAG)
-    write_line(f"{meas}_temperature", bat["temperature"], BATTERY_SOURCE_TAG)
-    write_line(f"{meas}_cell_count", bat["cellCount"], BATTERY_SOURCE_TAG)
-
-    for idx, mv in enumerate(bat["cells"], start=1):
-        write_line(f"{meas}_cell_{idx}_mv", mv, BATTERY_SOURCE_TAG)
-
-
-# ----------------------------------------------------------------------
 # Polling helpers
 # ----------------------------------------------------------------------
 
@@ -802,16 +731,14 @@ def poll_modbus(
 # ----------------------------------------------------------------------
 
 def main():
-    print(f"Starting master poller on {PORT} @ {BAUDRATE}")
+    print(f"Starting Solis-only poller on {PORT} @ {BAUDRATE}")
     print(f"Solis: slave {SOLIS_SLAVE_ID}, FC04, regs {SOLIS_START_DOC_REG}-{SOLIS_END_DOC_REG}")
-    print(f"Battery bridge: slave {BATTERY_SLAVE_ID}, FC03, regs {BATTERY_START_REG}-{BATTERY_START_REG + BATTERY_REG_COUNT - 1}")
+    print(f"Influx URL: {INFLUX_URL}")
     print("")
     print("Timing / reliability constants:")
     print(f"  POLL_INTERVAL_S              = {POLL_INTERVAL_S}s")
     print(f"  REPLY_TIMEOUT_S              = {REPLY_TIMEOUT_S}s")
     print(f"  WRITE_REPLY_TIMEOUT_S        = {WRITE_REPLY_TIMEOUT_S}s")
-    print(f"  RS485_PRE_SOLIS_SETTLE_S     = {RS485_PRE_SOLIS_SETTLE_S}s  (bus quiet before Solis request)")
-    print(f"  RS485_POST_BATTERY_SETTLE_S  = {RS485_POST_BATTERY_SETTLE_S}s  (bus quiet after battery-bridge response)")
     print(f"  SOLIS_WRITE_DELAY_S          = {SOLIS_WRITE_DELAY_S}s  (inter-write pacing for FC06)")
     print(f"  SOLIS_POST_WRITE_RECOVERY_S  = {SOLIS_POST_WRITE_RECOVERY_S}s  (pause after ToU write batch)")
     print("")
@@ -845,10 +772,6 @@ def main():
         while True:
             loop_start = time.monotonic()
 
-            # RS485 shared bus: give the ESP32 auto-direction transceiver time to
-            # release the bus before we address Solis.  Flush any stale bytes so
-            # the Solis request is not prefixed with noise.
-            time.sleep(RS485_PRE_SOLIS_SETTLE_S)
             flush_serial_input(ser)
 
             # Poll Solis.
@@ -878,39 +801,6 @@ def main():
             else:
                 print("[solis] FAIL: no response")
                 read_errors += 1
-
-            # Poll ESP32 battery bridge.
-            battery_regs = poll_modbus(
-                ser,
-                BATTERY_SLAVE_ID,
-                FUNC_READ_HOLDING_REGS,
-                BATTERY_START_REG,
-                BATTERY_REG_COUNT,
-                label="battery5",
-                debug=True,
-            )
-
-            if battery_regs is None:
-                print("[battery5] FAIL: no response from slave 5")
-                read_errors += 1
-            else:
-                print(f"[battery5] OK: got {len(battery_regs)} registers")
-
-                for idx in range(BATTERY_COUNT):
-                    bat = parse_battery_block(battery_regs, idx)
-                    print(
-                        f"[battery5] slot={idx + 1} enabled={bat['enabled']} "
-                        f"hasData={bat['hasData']} V={bat['voltage']:.2f} "
-                        f"I={bat['current']:.2f} SOC={bat['soc']} "
-                        f"chg={bat['chargeMos']} dischg={bat['dischargeMos']} "
-                        f"temp={bat['temperature']} cells={bat['cellCount']}"
-                    )
-                    write_battery_metrics(bat, str(idx + 1))
-
-            # RS485 shared bus: allow the ESP32 auto-direction transceiver to
-            # fully de-assert after the battery-bridge response before the next
-            # Solis request in the following loop iteration.
-            time.sleep(RS485_POST_BATTERY_SETTLE_S)
 
             elapsed = time.monotonic() - loop_start
             sleep_for = POLL_INTERVAL_S - elapsed
