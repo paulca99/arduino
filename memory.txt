@@ -245,3 +245,37 @@
     - Approx usable DC battery Wh per SoC percent: `dc_battery_discharge_wh / (soc_start_percent - soc_end_percent)` over a clean discharge period.
     - Watch for signs of battery degradation: SoC falling faster than expected for delivered Wh, heavy voltage sag under load, early low-voltage limits, and cell imbalance growth under load.
   - Avoid using short after-sunset windows alone for FIT integrity; they naturally show AC output with little/no PV because stored energy is being released.
+
+## 2026-06-10
+
+- New clean physical FIT/generation meter baseline:
+  - `2026-06-10 09:13`: `34513.02 kWh`.
+  - This should be used as the new baseline for later same-day comparisons once all data sources are stable.
+
+- Comparison from previous physical meter reading:
+  - Previous recorded physical FIT meter reading: `2026-06-09 14:42`: `34502.77 kWh`.
+  - Delta to the new reading: `10.25 kWh` over `2026-06-09 14:42` to `2026-06-10 09:13`.
+
+- Influx comparison for that same period:
+  - Raw direct `solis_ac_output_power` integral: `9607.456713295494 Wh` (`9.607 kWh`).
+  - `solis_ac_input_power` integral: `237.28331197433772 Wh`.
+  - Signed/net Solis AC integral: `9370.152529425724 Wh`.
+  - `solis_pv_total_power` positive integral: `4090.511885753512 Wh`.
+  - `solis_battery_power` discharge integral: `9695.924099956703 Wh`.
+  - `solis_battery_power` charge integral: `5465.294373017865 Wh`.
+
+- Interpretation/caveats:
+  - The physical FIT meter advanced `10.25 kWh`; Influx Solis AC output saw about `9.607 kWh`, a difference of about `0.643 kWh` / `6.3%`.
+  - This mismatch is plausible because the Solis Python poller was being stopped/started during 2026-06-09 testing, so some readings may have been missed.
+  - AC-side battery data was not working until around `2026-06-09 19:00`, so any whole-house AC-bus balance, estimated house load, or AC-battery provenance analysis before about 19:00 is incomplete.
+  - The missing AC battery data affects house-load / AC-bus / provenance calculations, but does not directly invalidate the basic comparison of physical FIT meter delta vs `solis_ac_output_power` integral.
+  - Future clean comparisons should use the new `2026-06-10 09:13` / `34513.02 kWh` baseline and later readings, after Solis, fence solar, and AC BMS pollers have been running continuously.
+
+- Energy integration bug discovered:
+  - Grafana energy bucket panels using `INTEGRAL("p", 1h)` over grouped `time(2s) fill(0)` were undercounting badly.
+  - Example same overnight window showed Grafana `Battery Discharge Wh = 3761 Wh`, but raw direct Influx integral of `solis_battery_power` discharge was `8273.269910584186 Wh`; mean-power cross-check was about `8685 Wh`.
+  - Do not use `fill(0)` for sampled power integration unless missing samples truly mean zero power. Use direct raw `INTEGRAL("value", 1h)` or a safe fill strategy.
+
+- Battery-health interpretation update:
+  - Earlier apparent poor battery capacity from the bad `3761 Wh` bucket was likely a dashboard integration bug.
+  - Raw overnight discharge around `8273 Wh` for a `99%` to `15%` SoC drop implies about `9.85 kWh` full-scale capacity, broadly consistent with `2 x GBLI5001` batteries.
