@@ -236,7 +236,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "hide": true,
+          "hide": false,
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
@@ -248,7 +248,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "hide": true,
+          "hide": false,
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "B",
@@ -359,7 +359,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "hide": true,
+          "hide": false,
           "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh * 0.5\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
@@ -371,7 +371,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "hide": true,
+          "hide": false,
           "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh * 0.5\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "B",
@@ -523,7 +523,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "hide": true,
+          "hide": false,
           "query": "SELECT 100 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh * 100\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
@@ -535,7 +535,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "hide": true,
+          "hide": false,
           "query": "SELECT 0.0001 + INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh + ε\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "B",
