@@ -65,7 +65,8 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define RECONNECT_INTERVAL_MS     30000
 #define MAX_PACKET_LEN             128
 #define MAX_CELLS                   24
-#define PER_BATTERY_CURRENT_LIMIT_AX10 400U  // 40.0A per fresh usable battery
+#define PER_BATTERY_CHARGE_CURRENT_LIMIT_AX10    250U  // 25.0A per fresh usable battery, 50.0A total with two batteries
+#define PER_BATTERY_DISCHARGE_CURRENT_LIMIT_AX10 400U  // 40.0A per fresh usable battery, existing behavior
 #define DISCHARGE_DERATE_UPPER_MV   3200U
 #define DISCHARGE_DERATE_LOWER_MV   3100U
 #define DISCHARGE_DERATE_RANGE_MV   (DISCHARGE_DERATE_UPPER_MV - DISCHARGE_DERATE_LOWER_MV)
@@ -568,22 +569,22 @@ static AggregateSnapshot buildAggregateSnapshot(unsigned long now) {
     }
 
     uint32_t baseChargeLimitRaw =
-        (uint32_t)snap.chargeContributingBatteries * (uint32_t)PER_BATTERY_CURRENT_LIMIT_AX10;
+        (uint32_t)snap.chargeContributingBatteries * (uint32_t)PER_BATTERY_CHARGE_CURRENT_LIMIT_AX10;
     uint32_t baseDischargeLimitRaw =
-        (uint32_t)snap.dischargeContributingBatteries * (uint32_t)PER_BATTERY_CURRENT_LIMIT_AX10;
+        (uint32_t)snap.dischargeContributingBatteries * (uint32_t)PER_BATTERY_DISCHARGE_CURRENT_LIMIT_AX10;
     uint16_t baseChargeLimitAx10 = baseChargeLimitRaw > 0xFFFFU ? 0xFFFFU : (uint16_t)baseChargeLimitRaw;
     uint16_t baseDischargeLimitAx10 = baseDischargeLimitRaw > 0xFFFFU ? 0xFFFFU
                                                                        : (uint16_t)baseDischargeLimitRaw;
 
     if (snap.chargeContributingBatteries > 1 &&
         chargeCellDataCount < snap.chargeContributingBatteries &&
-        baseChargeLimitAx10 > PER_BATTERY_CURRENT_LIMIT_AX10) {
-        baseChargeLimitAx10 = PER_BATTERY_CURRENT_LIMIT_AX10;
+        baseChargeLimitAx10 > PER_BATTERY_CHARGE_CURRENT_LIMIT_AX10) {
+        baseChargeLimitAx10 = PER_BATTERY_CHARGE_CURRENT_LIMIT_AX10;
     }
     if (snap.dischargeContributingBatteries > 1 &&
         dischargeCellDataCount < snap.dischargeContributingBatteries &&
-        baseDischargeLimitAx10 > PER_BATTERY_CURRENT_LIMIT_AX10) {
-        baseDischargeLimitAx10 = PER_BATTERY_CURRENT_LIMIT_AX10;
+        baseDischargeLimitAx10 > PER_BATTERY_DISCHARGE_CURRENT_LIMIT_AX10) {
+        baseDischargeLimitAx10 = PER_BATTERY_DISCHARGE_CURRENT_LIMIT_AX10;
     }
 
     snap.chargeCurrentLimitAx10 = baseChargeLimitAx10;
