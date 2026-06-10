@@ -366,8 +366,8 @@
     },
     {
       "datasource": {
-        "type": "__expr__",
-        "uid": "__expr__"
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
       },
       "fieldConfig": {
         "defaults": {
@@ -422,7 +422,7 @@
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT MEAN(\"value\") FROM \"fence_solar_ac_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'fence_solar' GROUP BY time($__interval) fill(previous)",
+          "query": "SELECT LAST(\"value\") FROM \"fence_solar_ac_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'fence_solar'",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -434,7 +434,7 @@
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT MEAN(\"value\") FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ GROUP BY time($__interval) fill(previous)",
+          "query": "SELECT LAST(\"value\") FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -597,8 +597,8 @@
     },
     {
       "datasource": {
-        "type": "__expr__",
-        "uid": "__expr__"
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
       },
       "fieldConfig": {
         "defaults": {
@@ -653,19 +653,19 @@
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT MEAN(\"value\") FROM \"fence_solar_ac_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'fence_solar' GROUP BY time($__interval) fill(previous)",
+          "query": "SELECT LAST(\"value\") FROM \"fence_solar_ac_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'fence_solar'",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
-          "alias": "Solis Inverter Active",
+          "alias": "Solis Signed AC Power",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT MEAN(\"value\") FROM \"solis_inverter_active_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ GROUP BY time($__interval) fill(previous)",
+          "query": "SELECT LAST(\"value\") FROM \"solis_inverter_active_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -677,21 +677,9 @@
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT MEAN(\"value\") FROM \"solis_grid_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ GROUP BY time($__interval) fill(previous)",
+          "query": "SELECT LAST(\"value\") FROM \"solis_grid_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "C",
-          "resultFormat": "time_series"
-        },
-        {
-          "alias": "AC BMS Power",
-          "datasource": {
-            "type": "influxdb",
-            "uid": "${DS_INFLUXDB}"
-          },
-          "hide": true,
-          "query": "SELECT MEAN(\"value\") FROM \"ac_bms_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor' GROUP BY time($__interval) fill(previous)",
-          "rawQuery": true,
-          "refId": "D",
           "resultFormat": "time_series"
         },
         {
@@ -699,9 +687,9 @@
             "type": "__expr__",
             "uid": "__expr__"
           },
-          "expression": "$A + $B - $C - $D",
+          "expression": "$A + $B - $C",
           "hide": false,
-          "refId": "E",
+          "refId": "D",
           "type": "math"
         }
       ],
@@ -962,7 +950,32 @@
           },
           "unit": "watt"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "__systemRef": "hideSeriesFrom",
+            "matcher": {
+              "id": "byNames",
+              "options": {
+                "mode": "exclude",
+                "names": [
+                  "Solis AC Output Power"
+                ],
+                "prefix": "All except:",
+                "readOnly": true
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": true
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 10,
@@ -1302,8 +1315,7 @@
                 "value": null
               }
             ]
-          },
-          "unit": "none"
+          }
         },
         "overrides": []
       },
@@ -1771,6 +1783,7 @@
         "y": 45
       },
       "id": 28,
+      "panels": [],
       "title": "AC Battery Monitor",
       "type": "row"
     },
@@ -1790,8 +1803,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -1856,8 +1868,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -1922,8 +1933,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -1988,8 +1998,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -2054,8 +2063,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -2120,8 +2128,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -2186,8 +2193,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -2285,8 +2291,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -2405,8 +2410,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -2538,7 +2542,7 @@
     }
   ],
   "preload": false,
-  "refresh": "5s",
+  "refresh": "",
   "schemaVersion": 40,
   "tags": [
     "solis",
@@ -2609,13 +2613,13 @@
     ]
   },
   "time": {
-    "from": "now-15m",
-    "to": "now"
+    "from": "2026-06-09T17:01:25.315Z",
+    "to": "2026-06-10T05:01:05.213Z"
   },
   "timepicker": {},
   "timezone": "browser",
   "title": "Solis Energy Flow",
   "uid": "solis-energy-flow",
-  "version": 5,
+  "version": 6,
   "weekStart": ""
 }
