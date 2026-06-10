@@ -2,7 +2,7 @@
 
 - Async web library issue resolved for ESP32 Arduino v3:
   - `esp32/charger/pcwifi.cpp` had been using `#include <ESPAsyncWebSrv.h>` / `ESPAsyncWebSrv`, which was the suspicious/incorrect async web library family for the current setup.
-  - The working fix was to use the ESP32Async library pair consistently: `AsyncTCP` + `ESPAsyncWebServer` with headers `#include <AsyncTCP.h>` and `#include <ESPAsyncWebServer.h>`.
+  - The working async-web fix was to use the ESP32Async library pair consistently: `AsyncTCP` + `ESPAsyncWebServer` with headers `#include <AsyncTCP.h>` and `#include <ESPAsyncWebServer.h>`.
   - Future ESP32 async web work in this repo should avoid mixing `ESPAsyncWebSrv` / old async-web variants with ESP32Async `ESPAsyncWebServer`.
 
 - Solis ToU/grid-charge behavior learned:
@@ -12,31 +12,40 @@
   - If grid charging should only be allowed in emergency/battery-off protection, future code may need a no-grid-charge STOP value (previously discussed candidate: `1`) rather than `33`; verify carefully before changing production behavior.
 
 - Pi/Grafana Solis AC active power work:
-  - User wanted to know how much power is coming out of the Solis itself, independent of `solis_grid_power`, because the site grid/meter value can be affected by a separate unmonitored solar system.
+  - User wanted to know how much power is coming out of the Solis itself, independent of `solis_grid_power`, because the site grid/meter value can be affected by a separate solar system and the AC-side battery system.
   - The useful live register pair for Solis AC active/inverter power is not the originally decoded parsed keys `33079-33080`; live testing showed that produced zero.
   - With this script's `doc_reg - 1` request convention and parsed-key labeling, the useful pair is parsed keys `33080-33081`, decoded as signed 32-bit watts using high word then low word.
-  - Helper used:
-    - `s32_from_regs(high, low)` combines `(high << 16) | low` then converts from unsigned 32-bit two's complement to signed.
+  - Helper used: `s32_from_regs(high, low)` combines `(high << 16) | low` then converts from unsigned 32-bit two's complement to signed.
   - Live Grafana testing confirmed `33080-33081` is a useful AC-side Solis flow metric: it moved with real conditions and reacted during a ~900 W kettle test.
 
 - Observed sign convention for `solis_inverter_active_power` decoded from parsed keys `33080-33081`:
-  - positive = AC power coming out of the Solis / Solis supplying AC load or export
-  - negative = AC power going into the Solis / AC-grid-assisted charging side
+  - positive = AC power coming out of the Solis / Solis supplying AC load or export.
+  - negative = AC power going into the Solis / AC-grid-assisted charging side.
   - Therefore do not globally invert this value.
   - Best metric model is to keep the signed raw metric and also emit split metrics:
     - `solis_inverter_active_power` = signed raw AC-side Solis flow
     - `solis_ac_output_power = max(solis_inverter_active_power, 0)`
     - `solis_ac_input_power = max(-solis_inverter_active_power, 0)`
-  - Grafana should integrate `solis_ac_output_power` for "Solis AC Output Wh" and `solis_ac_input_power` for "Solis AC Input Wh".
+  - Grafana should integrate `solis_ac_output_power` for `Solis AC Output Wh` and `solis_ac_input_power` for `Solis AC Input Wh`.
 
-- Example live observations supporting the sign convention:
+- Confirmed Solis grid power sign convention:
+  - `solis_grid_power < 0` = grid import.
+  - `solis_grid_power > 0` = grid export.
+  - Therefore:
+    - `grid_import_w = max(-solis_grid_power, 0)`
+    - `grid_export_w = max(solis_grid_power, 0)`
+  - Be careful not to assume the more common opposite sign convention in future dashboards or formulas.
+
+- Example live observations supporting the Solis AC sign convention:
   - Snapshot with PV about `532 W`, battery charging about `703 W`, and Solis AC active power about `-290 W` suggested AC-side input was supplementing PV into battery charge.
   - Later snapshot with PV about `2.02 kW`, battery charging about `2.49 kW`, and signed Solis AC active around `-780 W` again supported negative as AC power going into Solis.
   - During/around the kettle test, signed Solis AC active moved positive when the Solis appeared to be supplying AC-side load, supporting positive as AC output.
 
-- Grafana dashboard direction:
-  - A new energy-flow dashboard was drafted around selected-time-range Wh panels.
-  - Preferred energy panels now use pre-split metrics rather than Grafana-side positive/negative variants:
+- Grafana dashboard direction and pitfalls:
+  - `grafana/energy-dash.json` is the broad Solis/fence/AC-BMS energy-flow dashboard.
+  - `grafana/power-overview.json` was added as a simple live power-flow overview.
+  - `grafana/fit-integrity.json` is planned/being added as a FIT accounting dashboard.
+  - Preferred energy panels use pre-split metrics rather than Grafana-side positive/negative variants:
     - Solis AC Output Wh = integral of `solis_ac_output_power`
     - Solis AC Input Wh = integral of `solis_ac_input_power`
     - PV Generated Wh = integral of `solis_pv_total_power`
@@ -46,10 +55,8 @@
     - `solis_reg_33079_raw`
     - `solis_reg_33080_raw`
     - `solis_reg_33081_raw`
-
-- Practical caution for energy accounting:
-  - Whole-house usage cannot be accurately derived from the Solis/grid metrics alone because another solar system is present and unmonitored.
-  - User clarified they do not care about whole-house usage for this task; the important quantity is how much AC power/energy is coming out of the Solis.
+  - Grafana 11.4 expression/stat panels can show `No data` if math is applied directly to grouped time series. For stat math panels such as Grid Import, Grid Export, FIT Ratio, or House Load, prefer either a single-value raw InfluxQL query or the pattern: query -> reduce `lastNotNull` -> math expression.
+  - Broken/new overview panels seen during testing included `Grid Import`, `Grid Export`, and `Estimated House Load`; fix with reduced scalar expressions and the corrected grid sign convention.
 
 - Physical generation meter validation:
   - The generation meter is connected between the Solis inverter AC connection and the consumer unit and is the gold-standard reference for AC energy passing through that connection.
@@ -76,15 +83,14 @@
   - User increased timeout variables locally and reported it seemed much better.
   - Suggested future reliability improvements: increase write/read timeouts, use a longer delay between Solis FC06 writes, optionally retry one failed FC06 write, and avoid unnecessary startup STOP/release write bursts when `STATE_UNKNOWN` starts with PV already recovered.
 
-- Fence / second solar inverter added to monitoring:
-  - The separate "fence" solar inverter is now reachable on the network at `http://tl-wr802n/real_time_data.xml`, though Wi-Fi may be flaky/intermittent.
-  - Example XML values observed from the inverter included:
+- Fence / second solar inverter monitoring:
+  - The separate `fence` solar inverter is reachable at `http://tl-wr802n/real_time_data.xml`, though Wi-Fi may be flaky/intermittent.
+  - Example XML values observed included:
     - `p-ac` around `672 W`
     - `e-today` around `1.0 kWh`
     - `e-total` around `2400.0 kWh`
     - grid voltage/current/frequency and PV1/PV2 values.
-  - Added repo-root script `fence_solar_to_influx.py` on `master` in commit `8273d2d59db45a8dad6893c113f6c04bad786c0c`.
-  - The script polls the XML endpoint and writes Influx measurements including:
+  - Repo-root script `fence_solar_to_influx.py` polls the XML endpoint and writes Influx measurements including:
     - `fence_solar_ac_power`
     - `fence_solar_pv_total_power`
     - `fence_solar_grid_voltage`
@@ -95,7 +101,9 @@
     - `fence_solar_online`
     - `fence_solar_read_errors`
     - `fence_solar_last_success_age_s`
-  - Dashboard was extended conceptually to include fence solar power, fence generated Wh from `fence_solar_energy_total`, total local solar, and an experimental estimated house load.
+  - The fence inverter has no battery backup, so it is expected to stop responding after dark and reappear after sunrise.
+  - `fence_solar_to_influx.py` handles this gracefully: read failures return `ok=False`, increment `fence_solar_read_errors`, write `fence_solar_online = 0`, update `fence_solar_last_success_age_s`, and keep retrying.
+  - It does not write stale power values when offline. Usually the final valid evening power should be near `0 W`; if the inverter drops abruptly while still nonzero, Grafana `fill(previous)` panels may visually hold the last nonzero value overnight. Use `fence_solar_online` / last-success age to identify stale data if needed.
 
 - Extra AC-side charger / battery / inverter system discovered:
   - There is another AC-side battery setup connected to the consumer unit, separate from the Solis DC-side batteries.
@@ -104,38 +112,136 @@
   - This means `solis_grid_power ≈ 0` does not necessarily mean generation equals house load; the AC-side battery system may be absorbing or supplying the difference.
   - This also means previous house-load estimates that only used Solis + fence solar + grid are incomplete unless the AC-side battery system is measured or inferred.
 
-- AC-side JBD Bluetooth BMS monitoring plan:
-  - Better plan than reverse-engineering the blue GTIL/SUN inverter is to extend `BLE_BMS_MARK2` to also read the JBD Bluetooth BMS units in the AC-side Solax/Growatt battery setup.
-  - These AC-side BMS readings must be kept completely separate from the DC-side `Growatt2` and `SP14S` batteries that feed Solis/Pylontech CAN control.
-  - Do not simply add the AC-side batteries into the existing `batteries[]` aggregate used for Solis CAN, or the Solis CAN current/SoC values could include the wrong battery bank.
-  - Suggested code design: add a role/group field, e.g. `ROLE_DC_SOLIS` vs `ROLE_AC_MONITOR`, and only allow `ROLE_DC_SOLIS` batteries to contribute to Pylontech CAN aggregate and DC battery current limits.
-  - The AC-side batteries can still be read over BLE and exposed in a new separate RS485 register block for the Pi to collect into Influx.
+- AC-side JBD Bluetooth BMS monitoring implementation/plan:
+  - Better plan than reverse-engineering the blue GTIL/SUN inverter was to monitor the JBD Bluetooth BMS units in the AC-side Solax/Growatt battery setup.
+  - Existing ESP32 BLE setup could reliably hold 3 persistent JBD BLE connections but not 4, so AC-side batteries should be handled by a second ESP32.
+  - User does not have a second UART/RS485 adapter, so the second ESP32 AC monitor exposes Wi-Fi JSON instead of RS485.
+  - New sketch folder: `AC-battery-monitor/`.
+  - The sketch should connect once at startup to the two AC-side JBD BLE BMS units, keep connections open, poll packet `0x03` frequently and packet `0x04` less frequently, and expose `/api/bms` over HTTP JSON.
   - Known AC-side BMS MACs to preserve:
-    - `AC1` / `Solax`: `A4:C1:37:20:4E:3B`
-    - `AC2` / `Growatt`: `A5:C2:37:49:C7:A2`
-  - Note: user typed AC2 as `A5:C2:37:49C7:A2`; normalized here to `A5:C2:37:49:C7:A2`, which also matches the existing disabled `BMS1_MAC` in `BLE_BMS_MARK2`.
-  - Possible future RS485 layout: keep existing DC register map unchanged for compatibility, then append an AC monitor block after existing DC registers with AC aggregate plus per-AC-battery data.
-  - BMS current sign from current JBD parser: positive current = battery charging, negative current = battery discharging.
-  - AC-side battery DC power can be estimated as `battery.voltage * battery.current`:
+    - `AC_Solax`: `a4:c1:37:20:4e:3b`
+    - `AC_Growatt`: `a5:c2:37:49:c7:a2`
+  - These AC-side BMS readings must be kept completely separate from the DC-side `Growatt2` and `SP14S` batteries that feed Solis/Pylontech CAN control.
+  - Do not add the AC-side batteries into the existing `batteries[]` aggregate used for Solis CAN, or Solis CAN current/SoC values could include the wrong battery bank.
+  - JBD current sign from the current parser: positive current = battery charging, negative current = battery discharging.
+  - AC-side battery DC power is estimated as `voltage * current`:
     - positive = AC-side battery bank is charging
     - negative = AC-side battery bank is discharging
-  - This measures DC battery power, not exact AC-side power; charger/inverter losses still need efficiency assumptions, but it should be much closer than having no AC-side battery measurement.
+  - This measures DC battery-side power, not exact AC-side charger/inverter power; charger/inverter losses still need efficiency assumptions.
+  - The AC monitor JSON aggregate voltage was observed as the sum of the two pack voltages (~93 V) rather than representative pack voltage (~46 V). Until fixed, use per-battery voltages `ac_bms_ac_solax_voltage` and `ac_bms_ac_growatt_voltage`, not aggregate `ac_bms_voltage`, for dashboards.
 
-- Experimental house-load / energy accounting formulas after adding fence solar and AC-side battery context:
-  - With current sign assumptions:
+- AC-side BMS Influx polling:
+  - Root script `read-ac-batteries.py` polls the AC ESP32 JSON endpoint and writes to InfluxDB.
+  - Default/source tag used: `source=ac_bms_monitor`, host `server01`.
+  - Confirmed AC BMS Influx measurements include:
+    - aggregate: `ac_bms_connected_count`, `ac_bms_battery_count`, `ac_bms_valid`, `ac_bms_voltage`, `ac_bms_current`, `ac_bms_power`, `ac_bms_charge_power`, `ac_bms_discharge_power`, `ac_bms_temperature`, `ac_bms_last_poll_ok`, `ac_bms_error_count`
+    - per Solax: `ac_bms_ac_solax_voltage`, `ac_bms_ac_solax_current`, `ac_bms_ac_solax_power`, `ac_bms_ac_solax_soc`, `ac_bms_ac_solax_temperature`, `ac_bms_ac_solax_cell_count`, `ac_bms_ac_solax_min_cell_mv`, `ac_bms_ac_solax_max_cell_mv`, `ac_bms_ac_solax_cell_delta_mv`, `ac_bms_ac_solax_ok_reads`, `ac_bms_ac_solax_failed_reads`, `ac_bms_ac_solax_disconnect_count`, `ac_bms_ac_solax_last_good_ms_ago`
+    - per Growatt: `ac_bms_ac_growatt_voltage`, `ac_bms_ac_growatt_current`, `ac_bms_ac_growatt_power`, `ac_bms_ac_growatt_soc`, `ac_bms_ac_growatt_temperature`, `ac_bms_ac_growatt_cell_count`, `ac_bms_ac_growatt_min_cell_mv`, `ac_bms_ac_growatt_max_cell_mv`, `ac_bms_ac_growatt_cell_delta_mv`, `ac_bms_ac_growatt_ok_reads`, `ac_bms_ac_growatt_failed_reads`, `ac_bms_ac_growatt_disconnect_count`, `ac_bms_ac_growatt_last_good_ms_ago`
+  - Confirmed live example: `ac_bms_ac_growatt_power = -272.7 W`, meaning AC_Growatt was discharging at about `273 W`.
+  - AC BMS power sign convention:
+    - `ac_bms_power < 0` = AC-side batteries discharging
+    - `ac_bms_power > 0` = AC-side batteries charging
+    - `ac_bms_discharge_power` is positive when discharging
+    - `ac_bms_charge_power` is positive when charging
+  - If `read-ac-batteries.py` is stopped, Grafana AC panels show no/old data; restart the Python poller before diagnosing dashboard query issues.
+
+- ESP32 AC monitor HTTP reliability observation:
+  - Python initially showed `Read timed out` while manual `curl` sometimes worked.
+  - A likely issue is synchronous `WebServer` only being serviced at the end of a loop dominated by BLE polling/waits.
+  - Better pattern for synchronous ESP32 `WebServer` is to call `server.handleClient()` via a helper such as `serviceWeb()` inside BLE wait loops and between batteries, not only once at the end of `loop()`.
+  - Python poller should support a configurable HTTP timeout; a longer timeout can be a workaround, but servicing HTTP during BLE waits is the better ESP32-side fix.
+
+- Experimental house-load / AC-bus accounting formulas after adding fence solar and AC-side battery context:
+  - Confirmed/current sign assumptions:
     - `solis_inverter_active_power > 0` = Solis AC output
     - `solis_inverter_active_power < 0` = AC going into Solis
     - `solis_grid_power > 0` = export
     - `solis_grid_power < 0` = import
     - `fence_solar_ac_power > 0` = fence inverter AC output
-    - AC-side BMS DC power positive = AC-side batteries charging
-    - AC-side BMS DC power negative = AC-side batteries discharging
-  - Before measuring the AC-side battery system, partial estimated house load was:
-    - `house_load_partial ≈ fence_solar_ac_power + solis_inverter_active_power - solis_grid_power`
-  - After AC-side BMS monitoring is added, better approximation should be:
-    - `ac_battery_charge_dc_w = max(ac_bms_dc_power_w, 0)`
-    - `ac_battery_discharge_dc_w = max(-ac_bms_dc_power_w, 0)`
-    - `ac_battery_inverter_output_ac_w ≈ ac_battery_discharge_dc_w * inverter_efficiency`
-    - `ac_battery_charger_input_ac_w ≈ ac_battery_charge_dc_w / charger_efficiency`
-    - `house_load ≈ fence_solar_ac_power + solis_inverter_active_power + ac_battery_inverter_output_ac_w - ac_battery_charger_input_ac_w - solis_grid_power`
-  - Treat the estimated house-load panel as experimental until Solis grid sign/value, physical meter comparisons, and AC-side battery efficiency assumptions are confirmed.
+    - `ac_bms_power > 0` = AC-side batteries charging
+    - `ac_bms_power < 0` = AC-side batteries discharging
+  - Simple signed house-load approximation now used for overview dashboards:
+    - `house_load ≈ solis_inverter_active_power + fence_solar_ac_power - solis_grid_power - ac_bms_power`
+  - Equivalent split-flow form:
+    - `house_load ≈ solis_ac_output_power - solis_ac_input_power + fence_solar_ac_power + ac_bms_discharge_power - ac_bms_charge_power + grid_import_w - grid_export_w`
+  - This is still approximate because AC BMS power is battery DC-side power; charger/inverter efficiency losses are not directly measured.
+  - For strict AC-bus balance, do not double-count Solis PV/DC battery with Solis AC output. `solis_ac_output_power`/`solis_ac_input_power` are the AC-side Solis flow; Solis PV and DC battery power are useful context but not separate AC-bus sources/drains in the same balance.
+
+- FIT integrity / energy provenance goal:
+  - Core motivation for the monitoring: Solis panels are on Feed-in Tariff (FIT), but the fence solar is not.
+  - The Solis can pump power into its DC batteries before the FIT/generation meter. If it uses too much fence/AC-side energy to charge those batteries, later discharge through the FIT meter could create a false impression of Solis-generated energy.
+  - User wants to ensure that over extended periods the total energy released through the FIT/Solis meter/path is not more than the energy produced by the Solis PV panels.
+  - It is acceptable if energy through the FIT path is less than Solis PV production; it is not acceptable to receive FIT payments for energy not produced by Solis panels.
+  - Headline FIT check:
+    - `Solis AC Output Energy <= Solis PV Generated Energy`
+  - Useful FIT dashboard metrics:
+    - `Solis PV Generated Wh` = integral of positive `solis_pv_total_power`
+    - `Solis AC Output Wh` = integral of `solis_ac_output_power`
+    - `FIT Headroom Wh = Solis PV Generated Wh - Solis AC Output Wh`
+    - `Potential Non-Solis FIT Wh = max(Solis AC Output Wh - Solis PV Generated Wh, 0)`
+    - `FIT Ratio % = Solis AC Output Wh / Solis PV Generated Wh * 100`
+  - Interpretation:
+    - FIT Headroom >= 0 and FIT Ratio <= 100% is OK.
+    - Potential Non-Solis FIT Wh > 0 or FIT Ratio > 100% is a warning/investigation prompt.
+  - Important caveat: short ranges can look suspicious if the Solis battery starts full and ends empty, because stored energy may have been generated by Solis PV earlier. FIT integrity is most meaningful over daily/weekly/FIT-review periods and should show Solis battery SoC start/end/delta context.
+  - Context panels should include Solis AC Input Wh, Fence Solar Generated Wh, DC battery charge/discharge Wh, AC battery charge/discharge Wh, Solis Battery SoC, Fence Online, and AC Poll OK.
+
+- Evening / after-sunset energy bucket observations:
+  - Near sunset snapshot showed approximately:
+    - `Solis AC Output Wh = 83 Wh`
+    - `Solis AC Input Wh = 0 Wh`
+    - `Solis PV Generated Wh = 1 Wh`
+    - `Fence Solar Generated Wh = 0 Wh`
+    - `DC Battery Discharge Wh = 94 Wh`
+    - `AC Battery Charge Wh = 72 Wh`
+    - `AC Battery Discharge Wh = 0 Wh`
+  - At first glance this suggested Solis DC battery -> AC output efficiency around `83 / 94 = 88%` and apparent whole-chain movement into the AC battery around `72 / 94 = 77%`, but that second interpretation was wrong/incomplete because there was also house load. Do not attribute all Solis AC output to AC battery charging unless the house/grid balance proves it.
+  - Past-hour after-sunset snapshot showed approximately:
+    - `Solis AC Output Wh = 504 Wh`
+    - `Solis AC Input Wh = 0 Wh`
+    - `Solis PV Generated Wh = 6 Wh`
+    - `Fence Solar Generated Wh = 0 Wh`
+    - `DC Battery Discharge Wh = 595 Wh`
+    - `AC Battery Charge Wh = 66 Wh`
+    - `AC Battery Discharge Wh = 68 Wh`
+  - For that hour, Solis was mostly running from the DC battery rather than PV. Rough Solis DC/PV -> AC output efficiency estimate:
+    - `504 / (595 + 6) ≈ 84%`
+    - or just battery discharge basis: `504 / 595 ≈ 85%`
+  - AC-side battery was nearly neutral in that past-hour view:
+    - `AC Battery Discharge Wh - AC Battery Charge Wh = 68 - 66 = +2 Wh`, essentially no material net contribution.
+  - FIT interpretation: hourly or short after-sunset ranges will naturally show `Solis AC Output Wh` much greater than `Solis PV Generated Wh` because stored DC-battery energy is being released. That is not automatically a FIT-integrity problem. The FIT check is meaningful over longer periods and should be interpreted with Solis battery SoC start/end/delta.
+  - Efficiency estimates from these buckets are approximate because:
+    - Solis DC battery discharge Wh is DC-side battery energy.
+    - Solis AC Output Wh is AC-side energy through the Solis path.
+    - House load, grid import/export, AC battery charge/discharge, and conversion losses all share the AC bus.
+    - AC-side BMS power is DC-side battery power, not exact AC charger/inverter AC power.
+
+- Future multi-day FIT/battery analysis plan:
+  - Do not draw strong FIT or battery-degradation conclusions from the first partial day because several important data sources were only added on 2026-06-09.
+  - Let the full monitoring stack run for a few days, ideally including complete daylight charge cycles and overnight discharge cycles.
+  - When ready, prefer `curl`/Influx queries over Grafana screenshots so the numbers are explicit and reproducible.
+  - Main multi-day FIT question:
+    - Has `Solis AC Output Wh` over the selected period exceeded `Solis PV Generated Wh`?
+  - Interpret any excess with Solis battery SoC start/end/delta:
+    - `Solis AC Output Wh > Solis PV Generated Wh` with large SoC drop can be explained by stored energy being released.
+    - `Solis AC Output Wh > Solis PV Generated Wh` with similar start/end SoC is suspicious for FIT integrity.
+  - Also compare against the physical FIT/generation meter reading delta, because the physical meter remains the gold-standard reference for what actually passed through the FIT path.
+  - User can take a fresh FIT meter baseline after monitoring is stable and later compare physical meter delta with Influx `solis_ac_output_power` integral.
+  - Useful future `curl` query should include over a selected explicit time window, not just `now() - 2d`:
+    - Solis PV Generated Wh: integral of positive `solis_pv_total_power`
+    - Solis AC Output Wh: integral of `solis_ac_output_power`
+    - Solis AC Input Wh: integral of `solis_ac_input_power`
+    - DC Battery Charge Wh: integral of positive `solis_battery_power`
+    - DC Battery Discharge Wh: integral of negative `solis_battery_power` converted positive
+    - Fence Solar AC Generated Wh: integral of positive `fence_solar_ac_power`
+    - Fence `e-total` delta where available: `(LAST(fence_solar_energy_total) - FIRST(fence_solar_energy_total)) * 1000`
+    - AC Battery Charge Wh: integral of `ac_bms_charge_power`
+    - AC Battery Discharge Wh: integral of `ac_bms_discharge_power`
+    - Grid Import Wh: integral of negative `solis_grid_power` converted positive
+    - Grid Export Wh: integral of positive `solis_grid_power`
+    - Solis Battery SoC start/end/min/max
+  - Useful battery/inverter-health checks after a few days:
+    - Solis DC/PV -> AC discharge efficiency: `solis_ac_output_wh / (dc_battery_discharge_wh + solis_pv_generated_wh)` for periods where Solis is mostly discharging and PV is low.
+    - Approx usable DC battery Wh per SoC percent: `dc_battery_discharge_wh / (soc_start_percent - soc_end_percent)` over a clean discharge period.
+    - Watch for signs of battery degradation: SoC falling faster than expected for delivered Wh, heavy voltage sag under load, early low-voltage limits, and cell imbalance growth under load.
+  - Avoid using short after-sunset windows alone for FIT integrity; they naturally show AC output with little/no PV because stored energy is being released.
