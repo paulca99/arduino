@@ -286,7 +286,7 @@
             },
             "mode": "binary",
             "reduce": {
-              "reducer": "sum"
+              "reducer": "lastNotNull"
             },
             "replaceFields": true
           }
@@ -409,7 +409,7 @@
             },
             "mode": "binary",
             "reduce": {
-              "reducer": "sum"
+              "reducer": "lastNotNull"
             },
             "replaceFields": false
           }
@@ -420,7 +420,7 @@
             "alias": "Abs Half Output Minus PV Wh",
             "mode": "unary",
             "reduce": {
-              "reducer": "sum"
+              "reducer": "lastNotNull"
             },
             "replaceFields": false,
             "unary": {
@@ -450,7 +450,7 @@
             },
             "mode": "binary",
             "reduce": {
-              "reducer": "sum"
+              "reducer": "lastNotNull"
             },
             "replaceFields": true
           }
@@ -573,7 +573,7 @@
             },
             "mode": "binary",
             "reduce": {
-              "reducer": "sum"
+              "reducer": "lastNotNull"
             },
             "replaceFields": true
           }
