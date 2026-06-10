@@ -246,6 +246,27 @@
     - Watch for signs of battery degradation: SoC falling faster than expected for delivered Wh, heavy voltage sag under load, early low-voltage limits, and cell imbalance growth under load.
   - Avoid using short after-sunset windows alone for FIT integrity; they naturally show AC output with little/no PV because stored energy is being released.
 
+- Core dashboard / FIT accounting objective to remember:
+  - The current goal is not to make generic Grafana panels; it is to build a thorough understanding of how all components in the house electrical system interact, then produce meaningful, insightful Grafana dashboards from that model.
+  - Dashboards should make it easy to see whether `PVOUT` / Solis AC output / energy through the Solis FIT path matches watts/energy through the physical FIT/generation meter.
+  - Verify Solis has not released/exported more AC energy through the FIT meter than Solis PV actually produced, except where explained by a Solis battery SoC decrease from previously stored Solis PV energy.
+  - Solis PV is FIT-eligible; fence solar is not. Avoid FIT payments for energy that originated from non-Solis sources such as fence solar, grid/AC-side energy, or the AC-side battery system.
+  - Mental model and dashboards must include all known components:
+    - Solis PV
+    - Solis DC battery
+    - Solis inverter AC output/input
+    - physical FIT/generation meter
+    - fence solar inverter
+    - AC-side battery/charger/inverter system
+    - grid import/export
+    - estimated house load
+  - Use these confirmed sign conventions:
+    - `solis_grid_power < 0` = import, `> 0` = export
+    - `solis_inverter_active_power > 0` = Solis AC output, `< 0` = AC into Solis
+    - `solis_battery_power > 0` = Solis battery charging, `< 0` = discharging
+    - `ac_bms_power > 0` = AC-side batteries charging, `< 0` = discharging
+  - Future analysis should use Influx/curl output and physical FIT meter readings over explicit multi-day windows, not screenshots or first-day partial data.
+  - For future dashboard PRs, every panel should help explain energy provenance, FIT integrity, or system behaviour; avoid misleading dashboards that double-count Solis PV/DC battery alongside Solis AC output in AC-bus balance.
 ## 2026-06-10
 
 - New clean physical FIT/generation meter baseline:
