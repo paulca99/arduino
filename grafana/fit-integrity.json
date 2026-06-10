@@ -354,25 +354,25 @@
       "pluginVersion": "11.4.0",
       "targets": [
         {
-          "alias": "Solis AC Output Wh × 0.5",
+          "alias": "Solis AC Output Wh * 0.5",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh × 0.5\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh * 0.5\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
-          "alias": "Solis PV Generated Wh × 0.5",
+          "alias": "Solis PV Generated Wh * 0.5",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh × 0.5\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
+          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh * 0.5\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -396,14 +396,14 @@
               "left": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Solis AC Output Wh × 0.5"
+                  "options": "Solis AC Output Wh * 0.5"
                 }
               },
               "operator": "-",
               "right": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Solis PV Generated Wh × 0.5"
+                  "options": "Solis PV Generated Wh * 0.5"
                 }
               }
             },
@@ -518,13 +518,13 @@
       "pluginVersion": "11.4.0",
       "targets": [
         {
-          "alias": "Solis AC Output Wh x100",
+          "alias": "Solis AC Output Wh * 100",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT 100 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh x100\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "query": "SELECT 100 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh * 100\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -560,7 +560,7 @@
               "left": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Solis AC Output Wh x100"
+                  "options": "Solis AC Output Wh * 100"
                 }
               },
               "operator": "/",
