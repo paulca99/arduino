@@ -240,7 +240,7 @@
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
-          "resultFormat": "time_series"
+          "resultFormat": "table"
         },
         {
           "datasource": {
@@ -266,7 +266,7 @@
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "C",
-          "resultFormat": "time_series"
+          "resultFormat": "table"
         },
         {
           "datasource": {
@@ -366,7 +366,7 @@
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
-          "resultFormat": "time_series"
+          "resultFormat": "table"
         },
         {
           "datasource": {
@@ -392,7 +392,7 @@
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "C",
-          "resultFormat": "time_series"
+          "resultFormat": "table"
         },
         {
           "datasource": {
@@ -492,7 +492,7 @@
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
-          "resultFormat": "time_series"
+          "resultFormat": "table"
         },
         {
           "datasource": {
@@ -518,7 +518,7 @@
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "C",
-          "resultFormat": "time_series"
+          "resultFormat": "table"
         },
         {
           "datasource": {
@@ -1060,7 +1060,8 @@
             "uid": "${DS_INFLUXDB}"
           },
           "query": "SELECT -1 * INTEGRAL(\"value\", 1h) AS \"Grid Import Wh\" FROM \"solis_grid_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" < 0",
-          "resultFormat": "time_series"
+          "resultFormat": "time_series",
+          "rawQuery": true
         }
       ],
       "options": {
@@ -1088,7 +1089,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "noValue": "0"
         },
         "overrides": []
       }
@@ -1116,7 +1118,8 @@
             "uid": "${DS_INFLUXDB}"
           },
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Grid Export Wh\" FROM \"solis_grid_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
-          "resultFormat": "time_series"
+          "resultFormat": "time_series",
+          "rawQuery": true
         }
       ],
       "options": {
@@ -1144,7 +1147,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "noValue": "0"
         },
         "overrides": []
       }
@@ -1546,19 +1550,19 @@
       "pluginVersion": "11.4.0",
       "targets": [
         {
-          "alias": "AC Poll OK",
+          "alias": "AC BMS Valid",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": false,
-          "query": "SELECT LAST(\"value\") AS \"AC Poll OK\" FROM \"ac_bms_poll_ok\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor'",
+          "query": "SELECT LAST(\"value\") AS \"AC BMS Valid\" FROM \"ac_bms_valid\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor'",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         }
       ],
-      "title": "AC Poll OK",
+      "title": "AC BMS Valid",
       "type": "stat"
     }
   ],
