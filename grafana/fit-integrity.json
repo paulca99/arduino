@@ -391,7 +391,7 @@
         {
           "id": "calculateField",
           "options": {
-            "alias": "Scaled Output Minus PV Wh",
+            "alias": "0.5 * (Output - PV) Wh",
             "binary": {
               "left": {
                 "matcher": {
@@ -417,14 +417,14 @@
         {
           "id": "calculateField",
           "options": {
-            "alias": "Abs Scaled Output Minus PV Wh",
+            "alias": "abs(0.5 * (Output - PV) Wh)",
             "mode": "unary",
             "reduce": {
               "reducer": "lastNotNull"
             },
             "replaceFields": false,
             "unary": {
-              "fieldName": "Scaled Output Minus PV Wh",
+              "fieldName": "0.5 * (Output - PV) Wh",
               "operator": "abs"
             }
           }
@@ -437,14 +437,14 @@
               "left": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Scaled Output Minus PV Wh"
+                  "options": "0.5 * (Output - PV) Wh"
                 }
               },
               "operator": "+",
               "right": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Abs Scaled Output Minus PV Wh"
+                  "options": "abs(0.5 * (Output - PV) Wh)"
                 }
               }
             },
