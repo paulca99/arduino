@@ -172,8 +172,8 @@
     },
     {
       "datasource": {
-        "type": "__expr__",
-        "uid": "__expr__"
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
       },
       "description": "Solis PV Generated Wh minus Solis AC Output Wh. Negative values mean the FIT path output exceeded measured Solis PV production. Short ranges can look suspicious if the Solis battery started fuller than it ended, so use daily/weekly review windows with SoC context.",
       "fieldConfig": {
@@ -243,20 +243,6 @@
           "resultFormat": "time_series"
         },
         {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "A",
-          "hide": true,
-          "reducer": "lastNotNull",
-          "refId": "B",
-          "settings": {
-            "mode": "dropNN"
-          },
-          "type": "reduce"
-        },
-        {
           "alias": "Solis PV Generated Wh",
           "datasource": {
             "type": "influxdb",
@@ -265,41 +251,52 @@
           "hide": true,
           "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
-          "refId": "C",
+          "refId": "B",
           "resultFormat": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "C",
-          "hide": true,
-          "reducer": "lastNotNull",
-          "refId": "D",
-          "settings": {
-            "mode": "dropNN"
-          },
-          "type": "reduce"
-        },
-        {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "$D - $B",
-          "hide": false,
-          "refId": "E",
-          "type": "math"
         }
       ],
       "title": "FIT Headroom Wh",
-      "type": "stat"
+      "type": "stat",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "FIT Headroom Wh",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis PV Generated Wh"
+                }
+              },
+              "operator": "-",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis AC Output Wh"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "replaceFields": true
+          }
+        }
+      ]
     },
     {
       "datasource": {
-        "type": "__expr__",
-        "uid": "__expr__"
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
       },
       "description": "Positive excess of Solis AC Output Wh above Solis PV Generated Wh. This should stay at zero over longer FIT review periods.",
       "fieldConfig": {
@@ -357,75 +354,113 @@
       "pluginVersion": "11.4.0",
       "targets": [
         {
-          "alias": "Solis AC Output Wh",
+          "alias": "Half Solis AC Output Wh",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Half Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "A",
-          "hide": true,
-          "reducer": "lastNotNull",
-          "refId": "B",
-          "settings": {
-            "mode": "dropNN"
-          },
-          "type": "reduce"
-        },
-        {
-          "alias": "Solis PV Generated Wh",
+          "alias": "Half Solis PV Generated Wh",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
+          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Half Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
-          "refId": "C",
+          "refId": "B",
           "resultFormat": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "C",
-          "hide": true,
-          "reducer": "lastNotNull",
-          "refId": "D",
-          "settings": {
-            "mode": "dropNN"
-          },
-          "type": "reduce"
-        },
-        {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "((($B - $D) + abs($B - $D)) / 2)",
-          "hide": false,
-          "refId": "E",
-          "type": "math"
         }
       ],
       "title": "Potential Non-Solis FIT Wh",
-      "type": "stat"
+      "type": "stat",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "Half Output Minus PV Wh",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Half Solis AC Output Wh"
+                }
+              },
+              "operator": "-",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Half Solis PV Generated Wh"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "Abs Half Output Minus PV Wh",
+            "mode": "unary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "replaceFields": false,
+            "unary": {
+              "fieldName": "Half Output Minus PV Wh",
+              "operator": "abs"
+            }
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "Potential Non-Solis FIT Wh",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Half Output Minus PV Wh"
+                }
+              },
+              "operator": "+",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Abs Half Output Minus PV Wh"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "replaceFields": true
+          }
+        }
+      ]
     },
     {
       "datasource": {
-        "type": "__expr__",
-        "uid": "__expr__"
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
       },
       "description": "Solis AC Output Wh divided by Solis PV Generated Wh. Values above 100% suggest the FIT path delivered more energy than measured Solis PV production over the selected range. The expression adds a tiny epsilon to the denominator only to avoid divide-by-zero when PV generation is effectively zero, so interpret this panel alongside the absolute Wh totals.",
       "fieldConfig": {
@@ -483,30 +518,16 @@
       "pluginVersion": "11.4.0",
       "targets": [
         {
-          "alias": "Solis AC Output Wh",
+          "alias": "Solis AC Output Wh x100",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "query": "SELECT 100 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh x100\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "A",
-          "hide": true,
-          "reducer": "lastNotNull",
-          "refId": "B",
-          "settings": {
-            "mode": "dropNN"
-          },
-          "type": "reduce"
         },
         {
           "alias": "Solis PV Generated Wh",
@@ -515,38 +536,49 @@
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
+          "query": "SELECT 0.0001 + INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
-          "refId": "C",
+          "refId": "B",
           "resultFormat": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "C",
-          "hide": true,
-          "reducer": "lastNotNull",
-          "refId": "D",
-          "settings": {
-            "mode": "dropNN"
-          },
-          "type": "reduce"
-        },
-        {
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "expression": "(100 * $B) / ($D + 0.0001)",
-          "hide": false,
-          "refId": "E",
-          "type": "math"
         }
       ],
       "title": "FIT Ratio %",
-      "type": "stat"
+      "type": "stat",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "FIT Ratio %",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis AC Output Wh x100"
+                }
+              },
+              "operator": "/",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis PV Generated Wh"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "replaceFields": true
+          }
+        }
+      ]
     },
     {
       "datasource": {
