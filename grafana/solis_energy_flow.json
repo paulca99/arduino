@@ -1117,7 +1117,7 @@
               }
             ]
           },
-          "unit": "watth"
+          "unit": "none"
         },
         "overrides": []
       },
@@ -1153,7 +1153,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"Solis AC Output Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -1164,7 +1164,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"Solis AC Input Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_ac_input_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Input Wh\" FROM \"solis_ac_input_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -1194,7 +1194,7 @@
               }
             ]
           },
-          "unit": "watth"
+          "unit": "none"
         },
         "overrides": []
       },
@@ -1230,7 +1230,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"Solis PV Generated Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0 GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -1241,29 +1241,29 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT (LAST(\"value\") - FIRST(\"value\")) * 1000 AS \"Fence Solar Generated Wh\" FROM \"fence_solar_energy_total\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'fence_solar'",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Fence Solar Generated Wh\" FROM \"fence_solar_ac_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'fence_solar' AND \"value\" > 0",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
         },
         {
-          "alias": "Battery Charge Wh",
+          "alias": "DC Battery Charge Wh",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"Battery Charge Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0 GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"DC Battery Charge Wh\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "C",
           "resultFormat": "time_series"
         },
         {
-          "alias": "Battery Discharge Wh",
+          "alias": "DC Battery Discharge Wh",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT -1 * INTEGRAL(\"p\", 1h) AS \"Battery Discharge Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" < 0 GROUP BY time(2s) fill(0))",
+          "query": "SELECT -1 * INTEGRAL(\"value\", 1h) AS \"DC Battery Discharge Wh\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" < 0",
           "rawQuery": true,
           "refId": "D",
           "resultFormat": "time_series"
@@ -1274,7 +1274,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"AC Battery Charge Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"ac_bms_charge_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor' GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"AC Battery Charge Wh\" FROM \"ac_bms_charge_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor'",
           "rawQuery": true,
           "refId": "E",
           "resultFormat": "time_series"
@@ -1285,7 +1285,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"AC Battery Discharge Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"ac_bms_discharge_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor' GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"AC Battery Discharge Wh\" FROM \"ac_bms_discharge_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor'",
           "rawQuery": true,
           "refId": "F",
           "resultFormat": "time_series"
@@ -1358,7 +1358,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"Solis AC Output Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -1369,7 +1369,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"Solis AC Input Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_ac_input_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Input Wh\" FROM \"solis_ac_input_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -1380,7 +1380,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"Solis PV Generated Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0 GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "C",
           "resultFormat": "time_series"
@@ -1391,29 +1391,29 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT (LAST(\"value\") - FIRST(\"value\")) * 1000 AS \"Fence Solar Generated Wh\" FROM \"fence_solar_energy_total\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'fence_solar'",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Fence Solar Generated Wh\" FROM \"fence_solar_ac_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'fence_solar' AND \"value\" > 0",
           "rawQuery": true,
           "refId": "D",
           "resultFormat": "time_series"
         },
         {
-          "alias": "Battery Charge Wh",
+          "alias": "DC Battery Charge Wh",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"Battery Charge Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0 GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"DC Battery Charge Wh\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "E",
           "resultFormat": "time_series"
         },
         {
-          "alias": "Battery Discharge Wh",
+          "alias": "DC Battery Discharge Wh",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT -1 * INTEGRAL(\"p\", 1h) AS \"Battery Discharge Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" < 0 GROUP BY time(2s) fill(0))",
+          "query": "SELECT -1 * INTEGRAL(\"value\", 1h) AS \"DC Battery Discharge Wh\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" < 0",
           "rawQuery": true,
           "refId": "F",
           "resultFormat": "time_series"
@@ -1424,7 +1424,7 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"AC Battery Charge Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"ac_bms_charge_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor' GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"AC Battery Charge Wh\" FROM \"ac_bms_charge_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor'",
           "rawQuery": true,
           "refId": "G",
           "resultFormat": "time_series"
@@ -1435,9 +1435,29 @@
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
-          "query": "SELECT INTEGRAL(\"p\", 1h) AS \"AC Battery Discharge Wh\" FROM (SELECT MEAN(\"value\") AS \"p\" FROM \"ac_bms_discharge_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor' GROUP BY time(2s) fill(0))",
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"AC Battery Discharge Wh\" FROM \"ac_bms_discharge_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" = 'ac_bms_monitor'",
           "rawQuery": true,
           "refId": "H",
+          "resultFormat": "time_series"
+        },
+        {
+          "refId": "I",
+          "alias": "Grid Import Wh",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "query": "SELECT -1 * INTEGRAL(\"value\", 1h) AS \"Grid Import Wh\" FROM \"solis_grid_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" < 0",
+          "resultFormat": "time_series"
+        },
+        {
+          "refId": "J",
+          "alias": "Grid Export Wh",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Grid Export Wh\" FROM \"solis_grid_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "resultFormat": "time_series"
         }
       ],
