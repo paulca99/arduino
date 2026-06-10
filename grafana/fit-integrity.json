@@ -354,25 +354,25 @@
       "pluginVersion": "11.4.0",
       "targets": [
         {
-          "alias": "Half Solis AC Output Wh",
+          "alias": "Solis AC Output Wh × 0.5",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Half Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh × 0.5\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
-          "alias": "Half Solis PV Generated Wh",
+          "alias": "Solis PV Generated Wh × 0.5",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Half Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
+          "query": "SELECT 0.5 * INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh × 0.5\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -391,19 +391,19 @@
         {
           "id": "calculateField",
           "options": {
-            "alias": "Half Output Minus PV Wh",
+            "alias": "Scaled Output Minus PV Wh",
             "binary": {
               "left": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Half Solis AC Output Wh"
+                  "options": "Solis AC Output Wh × 0.5"
                 }
               },
               "operator": "-",
               "right": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Half Solis PV Generated Wh"
+                  "options": "Solis PV Generated Wh × 0.5"
                 }
               }
             },
@@ -417,14 +417,14 @@
         {
           "id": "calculateField",
           "options": {
-            "alias": "Abs Half Output Minus PV Wh",
+            "alias": "Abs Scaled Output Minus PV Wh",
             "mode": "unary",
             "reduce": {
               "reducer": "lastNotNull"
             },
             "replaceFields": false,
             "unary": {
-              "fieldName": "Half Output Minus PV Wh",
+              "fieldName": "Scaled Output Minus PV Wh",
               "operator": "abs"
             }
           }
@@ -437,14 +437,14 @@
               "left": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Half Output Minus PV Wh"
+                  "options": "Scaled Output Minus PV Wh"
                 }
               },
               "operator": "+",
               "right": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Abs Half Output Minus PV Wh"
+                  "options": "Abs Scaled Output Minus PV Wh"
                 }
               }
             },
@@ -530,13 +530,13 @@
           "resultFormat": "time_series"
         },
         {
-          "alias": "Solis PV Generated Wh",
+          "alias": "Solis PV Generated Wh + ε",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": true,
-          "query": "SELECT 0.0001 + INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
+          "query": "SELECT 0.0001 + INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh + ε\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -567,7 +567,7 @@
               "right": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Solis PV Generated Wh"
+                  "options": "Solis PV Generated Wh + ε"
                 }
               }
             },
