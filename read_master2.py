@@ -5,7 +5,7 @@ Pi-side Solis-only poller.
 - Polls Solis inverter as Modbus slave 1 (FC04 input registers).
 - Writes Solis metrics to InfluxDB.
 - Adds Solis ToU low-battery protection logic.
-- Syncs the Solis inverter clock from the Pi clock whenever ToU registers are written.
+- Syncs the Solis inverter clock from the Pi clock once at startup only.
 
 ESP32 BMS slave 5 telemetry is handled by the separate read_esp_slave5.py script
 on a dedicated second USB-RS485 adapter (CH340, /dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0).
@@ -15,16 +15,15 @@ Battery protection logic:
 NORMAL / UNKNOWN:
   If gridPower < 0 W (importing) AND Solis SOC < 16% AND batteryDirectionFlag == 1 (discharging):
     Write Solis ToU:
-      sync Solis clock to Pi time
       RUN with grid-charge allowed
-      charge current 0.1A
+      charge current 0.5A (kick)
       charge window now-2min -> now+12h
+    After 20 s, if still BATTERY_OFF: write charge current 0.0A (hold)
     state = BATTERY_OFF
 
 BATTERY_OFF:
   If (pvTotalPowerW > 100W AND gridPower > 0W (exporting)) OR Solis SOC >= 20%:
     Write Solis ToU:
-      sync Solis clock to Pi time
       STOP with grid-charge allowed
       charge current 10.0A
       charge window 00:00 -> 00:00
@@ -32,11 +31,14 @@ BATTERY_OFF:
 
 BATTERY_OFF refresh:
   If still grid importing, SOC < 16%, and battery discharging, and the current 12h
-  OFF window has less than 2 hours remaining, refresh the OFF window.
+  OFF window has less than 2 hours remaining, refresh the OFF window with a new 0.5A
+  kick followed by the same 20 s -> 0.0A hold sequence.
 
-No persistent state is used. On startup, the script forces the Solis inverter into
-NORMAL/STOP state (STOP + grid-charge, 10.0A, 00:00 -> 00:00) so the script and inverter
-begin aligned. Live conditions then quickly re-enter BATTERY_OFF if needed.
+No persistent state is used. On startup, the script:
+  1. Syncs the Solis inverter clock to Pi time (once only).
+  2. Forces the Solis inverter into NORMAL/STOP state (STOP + grid-charge, 10.0A,
+     00:00 -> 00:00) so the script and inverter begin aligned.
+  Live conditions then quickly re-enter BATTERY_OFF if needed.
 """
 
 import time
@@ -95,8 +97,8 @@ STATE_BATTERY_OFF = "BATTERY_OFF"
 
 BATTERY_OFF_EXIT_PV_W = 100.0
 BATTERY_OFF_EXIT_GRID_EXPORT_W = 0.0
-BATTERY_OFF_EXIT_SOC = 20
-BATTERY_OFF_ENTER_SOC = 17
+BATTERY_OFF_EXIT_SOC = 18
+BATTERY_OFF_ENTER_SOC = 16
 BATTERY_OFF_ENTER_GRID_IMPORT_W = 0.0  # enter when grid < this (negative = importing)
 
 # batteryDirectionFlag value that indicates the battery is discharging
@@ -131,8 +133,15 @@ REG_CLOCK_SECOND = 43006
 TOU_STOP = 33  # self-use + allow grid charge; ToU stopped
 TOU_RUN = 35   # self-use + ToU run + allow grid charge
 
+TOU_CURRENT_0_0A = 0
 TOU_CURRENT_0_1A = 1
+TOU_CURRENT_0_5A = 5
 TOU_CURRENT_10_0A = 100
+# Note: REG_TOU_CHARGE_CURRENT stores current in units of 0.1 A (x10).
+# e.g. TOU_CURRENT_0_5A = 5 -> 0.5 A; TOU_CURRENT_10_0A = 100 -> 10.0 A.
+
+# Seconds after entering/refreshing BATTERY_OFF before writing 0.0A hold current.
+BATTERY_OFF_HOLD_DELAY_S = 30
 
 
 # ----------------------------------------------------------------------
@@ -473,10 +482,11 @@ def write_tou_registers(
     end_minute: int,
 ) -> bool:
     """
-    Sync the Solis clock, then write the six confirmed ToU registers.
+    Write the six confirmed ToU registers.
+    Clock sync is performed only once at startup; it is not repeated here.
+    RUN/STOP is written last so the configuration registers are set before
+    the mode is activated.
     """
-    clock_ok = sync_solis_clock_to_pi(ser)
-
     writes_config = [
         (REG_TOU_CHARGE_CURRENT, current_x10),
         (REG_TOU_START_HOUR, start_hour),
@@ -488,7 +498,7 @@ def write_tou_registers(
     writes_run_stop = [(REG_TOU_RUN_STOP, run_stop)]
     writes = writes_config + writes_run_stop
 
-    all_ok = clock_ok
+    all_ok = True
     for reg, value in writes:
         ok = write_solis_holding_reg(ser, reg, value)
         all_ok = all_ok and ok
@@ -520,7 +530,7 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
     print("=" * 80)
     print(f"[tou] ENTER/REFRESH BATTERY_OFF: {reason}")
     print(
-        f"[tou] Target: RUN+grid-charge, 0.1A, "
+        f"[tou] Target: RUN+grid-charge, 0.5A kick -> 0.0A hold after {BATTERY_OFF_HOLD_DELAY_S}s, "
         f"{window['start_text']} -> {window['end_text']}"
     )
     print("=" * 80)
@@ -530,7 +540,7 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
     ok = write_tou_registers(
         ser=ser,
         run_stop=TOU_RUN,
-        current_x10=TOU_CURRENT_0_1A,
+        current_x10=TOU_CURRENT_0_5A,
         start_hour=window["start_hour"],
         start_minute=window["start_minute"],
         end_hour=window["end_hour"],
@@ -540,7 +550,8 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
     if ok:
         controller["state"] = STATE_BATTERY_OFF
         controller["battery_off_until_ts"] = window["end_timestamp"]
-        print("[tou] BATTERY_OFF active")
+        controller["battery_off_hold_ts"] = time.time() + BATTERY_OFF_HOLD_DELAY_S
+        print(f"[tou] BATTERY_OFF active (0.5A kick); 0.0A hold scheduled in {BATTERY_OFF_HOLD_DELAY_S}s")
     else:
         print("[tou] BATTERY_OFF write failed; state unchanged")
 
@@ -558,6 +569,9 @@ def exit_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool:
     print(f"[tou] EXIT BATTERY_OFF: {reason}")
     print("[tou] Target: STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("=" * 80)
+
+    # Clear any pending 0.0A hold – we are leaving BATTERY_OFF.
+    controller["battery_off_hold_ts"] = None
 
     controller["last_tou_write_ts"] = time.time()
 
@@ -589,6 +603,42 @@ def exit_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool:
 def can_attempt_tou_write(controller: dict) -> bool:
     last = controller.get("last_tou_write_ts", 0)
     return (time.time() - last) >= TOU_MIN_WRITE_INTERVAL_S
+
+
+def apply_battery_off_hold(ser: serial.Serial, controller: dict) -> None:
+    """
+    Non-blocking check for the pending 0.0A hold step after a BATTERY_OFF kick.
+
+    Called once per poll loop.  If the hold time has elapsed and the controller
+    is still in BATTERY_OFF, write only the charge-current register to 0.0A.
+    On failure, the hold is rescheduled for TOU_MIN_WRITE_INTERVAL_S later to
+    avoid write spam.  The hold is cleared automatically if the controller has
+    left BATTERY_OFF since the kick was issued.
+    """
+    hold_ts = controller.get("battery_off_hold_ts")
+    if hold_ts is None:
+        return
+    if time.time() < hold_ts:
+        return
+
+    if controller.get("state") != STATE_BATTERY_OFF:
+        # Left BATTERY_OFF since the kick; discard the pending hold.
+        controller["battery_off_hold_ts"] = None
+        return
+
+    print("[tou] BATTERY_OFF hold: writing 0.0A charge current (post-kick settle step)")
+    ok = write_solis_holding_reg(ser, REG_TOU_CHARGE_CURRENT, TOU_CURRENT_0_0A)
+    flush_serial_input(ser)
+
+    if ok:
+        print("[tou] BATTERY_OFF hold: 0.0A write OK; hold complete")
+        controller["battery_off_hold_ts"] = None
+    else:
+        controller["battery_off_hold_ts"] = time.time() + TOU_MIN_WRITE_INTERVAL_S
+        print(
+            f"[tou] BATTERY_OFF hold: 0.0A write FAILED; "
+            f"will retry in {TOU_MIN_WRITE_INTERVAL_S}s"
+        )
 
 
 def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict) -> None:
@@ -755,10 +805,12 @@ def main():
     print("Battery-off controller:")
     print(f"  ENTER: grid < {BATTERY_OFF_ENTER_GRID_IMPORT_W}W (importing) AND SOC < {BATTERY_OFF_ENTER_SOC}% AND battery discharging (flag={BATTERY_DIRECTION_DISCHARGING})")
     print(f"  EXIT : (PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W exporting) OR SOC >= {BATTERY_OFF_EXIT_SOC}%")
-    print(f"  OFF  : sync clock, RUN+grid-charge, 0.1A, now{BATTERY_OFF_START_OFFSET_MINUTES:+d}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
-    print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
+    print(f"  OFF  : RUN+grid-charge, 0.5A kick, now{BATTERY_OFF_START_OFFSET_MINUTES:+d}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
+    print(f"         then 0.0A hold after {BATTERY_OFF_HOLD_DELAY_S}s if still BATTERY_OFF")
+    print("  RELEASE: STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: not used")
-    print("  Startup: forces Solis ToU to NORMAL/STOP so script and inverter begin aligned;")
+    print("  Startup: syncs Solis clock to Pi time (once only), then forces Solis ToU to")
+    print("           NORMAL/STOP so script and inverter begin aligned;")
     print("           live conditions then decide whether to re-enter BATTERY_OFF immediately")
     print("")
 
@@ -769,6 +821,7 @@ def main():
         "state": STATE_UNKNOWN,
         "battery_off_until_ts": None,
         "last_tou_write_ts": 0,
+        "battery_off_hold_ts": None,
     }
 
     with serial.Serial(
@@ -780,6 +833,19 @@ def main():
         timeout=READ_IDLE_TIMEOUT_S,
         write_timeout=1,
     ) as ser:
+        # ------------------------------------------------------------------
+        # Startup clock sync: sync the Solis RTC to Pi time once on startup.
+        # This is the only time the clock is synced; subsequent ToU writes
+        # do not repeat the clock sync.
+        # ------------------------------------------------------------------
+        print("[startup] Syncing Solis clock to Pi time (startup only)...")
+        clock_ok = sync_solis_clock_to_pi(ser)
+        if clock_ok:
+            print("[startup] Solis clock sync OK")
+        else:
+            print("[startup] WARNING: Solis clock sync had failures; continuing")
+        print("")
+
         # ------------------------------------------------------------------
         # Startup normalization: force Solis ToU to NORMAL/STOP so the
         # script and inverter start in a known aligned state.  After this,
@@ -840,6 +906,9 @@ def main():
             else:
                 print("[solis] FAIL: no response")
                 read_errors += 1
+
+            # Check for pending BATTERY_OFF 0.0A hold step (non-blocking).
+            apply_battery_off_hold(ser, controller)
 
             elapsed = time.monotonic() - loop_start
             sleep_for = POLL_INTERVAL_S - elapsed
