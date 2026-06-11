@@ -137,6 +137,8 @@ TOU_CURRENT_0_0A = 0
 TOU_CURRENT_0_1A = 1
 TOU_CURRENT_0_5A = 5
 TOU_CURRENT_10_0A = 100
+# Note: REG_TOU_CHARGE_CURRENT stores current in units of 0.1 A (x10).
+# e.g. TOU_CURRENT_0_5A = 5 -> 0.5 A; TOU_CURRENT_10_0A = 100 -> 10.0 A.
 
 # Seconds after entering/refreshing BATTERY_OFF before writing 0.0A hold current.
 BATTERY_OFF_HOLD_DELAY_S = 20
@@ -632,8 +634,7 @@ def apply_battery_off_hold(ser: serial.Serial, controller: dict) -> None:
         print("[tou] BATTERY_OFF hold: 0.0A write OK; hold complete")
         controller["battery_off_hold_ts"] = None
     else:
-        retry_at = time.time() + TOU_MIN_WRITE_INTERVAL_S
-        controller["battery_off_hold_ts"] = retry_at
+        controller["battery_off_hold_ts"] = time.time() + TOU_MIN_WRITE_INTERVAL_S
         print(
             f"[tou] BATTERY_OFF hold: 0.0A write FAILED; "
             f"will retry in {TOU_MIN_WRITE_INTERVAL_S}s"
