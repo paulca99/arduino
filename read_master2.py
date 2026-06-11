@@ -22,7 +22,7 @@ NORMAL / UNKNOWN:
     state = BATTERY_OFF
 
 BATTERY_OFF:
-  If pvTotalPowerW > 100W AND gridPower > 0W (exporting):
+  If (pvTotalPowerW > 100W AND gridPower > 0W (exporting)) OR Solis SOC >= 20%:
     Write Solis ToU:
       sync Solis clock to Pi time
       STOP with grid-charge allowed
@@ -70,13 +70,13 @@ SOLIS_END_DOC_REG = 33142
 SOLIS_REG_COUNT = SOLIS_END_DOC_REG - SOLIS_START_DOC_REG + 1  # 93
 
 # Pacing between consecutive FC06 (write single register) calls to Solis.
-# Solis does not reliably echo each write at 0.10 s; 0.50 s gives it time to
-# process and de-assert its own RS485 driver before the next request.
-SOLIS_WRITE_DELAY_S = 0.5
+# Keep inter-write spacing to protect FC06 reliability while reducing the
+# previous conservative 0.50 s delay.
+SOLIS_WRITE_DELAY_S = 0.25
 
-# Pause applied after any ToU / clock write sequence before resuming normal
-# polling.  Gives Solis time to complete internal register processing.
-SOLIS_POST_WRITE_RECOVERY_S = 2.0
+# Optional pause after ToU / clock write sequence before polling resumes.
+# Set to 0.0 to skip fixed recovery delay and resume normal polling immediately.
+SOLIS_POST_WRITE_RECOVERY_S = 0.0
 
 POLL_INTERVAL_S = 2.0
 REPLY_TIMEOUT_S = 2.0
@@ -94,6 +94,7 @@ STATE_BATTERY_OFF = "BATTERY_OFF"
 
 BATTERY_OFF_EXIT_PV_W = 100.0
 BATTERY_OFF_EXIT_GRID_EXPORT_W = 0.0
+BATTERY_OFF_EXIT_SOC = 20
 BATTERY_OFF_ENTER_SOC = 17
 BATTERY_OFF_ENTER_GRID_IMPORT_W = 0.0  # enter when grid < this (negative = importing)
 
@@ -542,10 +543,9 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
     else:
         print("[tou] BATTERY_OFF write failed; state unchanged")
 
-    # Allow Solis time to process the register writes and release the RS485 bus
-    # before normal polling resumes.
-    print(f"[tou] post-write recovery pause {SOLIS_POST_WRITE_RECOVERY_S}s")
-    time.sleep(SOLIS_POST_WRITE_RECOVERY_S)
+    if SOLIS_POST_WRITE_RECOVERY_S > 0:
+        print(f"[tou] post-write recovery pause {SOLIS_POST_WRITE_RECOVERY_S}s")
+        time.sleep(SOLIS_POST_WRITE_RECOVERY_S)
     flush_serial_input(ser)
 
     return ok
@@ -577,10 +577,9 @@ def exit_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool:
     else:
         print("[tou] STOP/release write failed; state unchanged")
 
-    # Allow Solis time to process the register writes and release the RS485 bus
-    # before normal polling resumes.
-    print(f"[tou] post-write recovery pause {SOLIS_POST_WRITE_RECOVERY_S}s")
-    time.sleep(SOLIS_POST_WRITE_RECOVERY_S)
+    if SOLIS_POST_WRITE_RECOVERY_S > 0:
+        print(f"[tou] post-write recovery pause {SOLIS_POST_WRITE_RECOVERY_S}s")
+        time.sleep(SOLIS_POST_WRITE_RECOVERY_S)
     flush_serial_input(ser)
 
     return ok
@@ -605,12 +604,14 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
     )
     pv_recovered = pv > BATTERY_OFF_EXIT_PV_W
     grid_exporting = grid > BATTERY_OFF_EXIT_GRID_EXPORT_W
-    exit_ready = pv_recovered and grid_exporting
+    soc_recovered = soc >= BATTERY_OFF_EXIT_SOC
+    exit_ready = (pv_recovered and grid_exporting) or soc_recovered
 
     print(
         f"[tou] state={state} pv={pv:.1f}W grid={grid:.1f}W soc={soc}% "
         f"batt_dir_flag={battery_direction_flag} entry_ready={entry_ready} "
-        f"pv_recovered={pv_recovered} grid_exporting={grid_exporting} exit_ready={exit_ready}"
+        f"pv_recovered={pv_recovered} grid_exporting={grid_exporting} "
+        f"soc_recovered={soc_recovered} exit_ready={exit_ready}"
     )
 
     # Startup recovery.
@@ -656,8 +657,12 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
                     ser,
                     controller,
                     reason=(
-                        f"PV {pv:.1f}W > {BATTERY_OFF_EXIT_PV_W}W "
-                        f"AND grid {grid:.1f}W > {BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)"
+                        f"SOC {soc}% >= {BATTERY_OFF_EXIT_SOC}% recovery"
+                        if soc_recovered
+                        else (
+                            f"PV {pv:.1f}W > {BATTERY_OFF_EXIT_PV_W}W "
+                            f"AND grid {grid:.1f}W > {BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)"
+                        )
                     ),
                 )
             return
@@ -744,11 +749,11 @@ def main():
     print(f"  REPLY_TIMEOUT_S              = {REPLY_TIMEOUT_S}s")
     print(f"  WRITE_REPLY_TIMEOUT_S        = {WRITE_REPLY_TIMEOUT_S}s")
     print(f"  SOLIS_WRITE_DELAY_S          = {SOLIS_WRITE_DELAY_S}s  (inter-write pacing for FC06)")
-    print(f"  SOLIS_POST_WRITE_RECOVERY_S  = {SOLIS_POST_WRITE_RECOVERY_S}s  (pause after ToU write batch)")
+    print(f"  SOLIS_POST_WRITE_RECOVERY_S  = {SOLIS_POST_WRITE_RECOVERY_S}s  (0 disables fixed post-write pause)")
     print("")
     print("Battery-off controller:")
     print(f"  ENTER: grid < {BATTERY_OFF_ENTER_GRID_IMPORT_W}W (importing) AND SOC < {BATTERY_OFF_ENTER_SOC}% AND battery discharging (flag={BATTERY_DIRECTION_DISCHARGING})")
-    print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)")
+    print(f"  EXIT : (PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W exporting) OR SOC >= {BATTERY_OFF_EXIT_SOC}%")
     print(f"  OFF  : sync clock, RUN+grid-charge, 0.1A, now{BATTERY_OFF_START_OFFSET_MINUTES:+d}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: disabled")
