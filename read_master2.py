@@ -13,7 +13,7 @@ on a dedicated second USB-RS485 adapter (CH340, /dev/serial/by-id/usb-1a86_USB2.
 Battery protection logic:
 
 NORMAL / UNKNOWN:
-  If pvTotalPowerW < 80W and Solis SOC < 16%:
+  If gridPower < 0 W (importing) AND Solis SOC < 16% AND batteryDirectionFlag == 1 (discharging):
     Write Solis ToU:
       sync Solis clock to Pi time
       RUN with grid-charge allowed
@@ -22,7 +22,7 @@ NORMAL / UNKNOWN:
     state = BATTERY_OFF
 
 BATTERY_OFF:
-  If pvTotalPowerW > 250W AND gridPower > 0W (exporting):
+  If pvTotalPowerW > 100W AND gridPower > 0W (exporting):
     Write Solis ToU:
       sync Solis clock to Pi time
       STOP with grid-charge allowed
@@ -31,10 +31,10 @@ BATTERY_OFF:
     state = NORMAL
 
 BATTERY_OFF refresh:
-  If still pvTotalPowerW < 80W and SOC < 16%, and the current 12h
+  If still grid importing, SOC < 16%, and battery discharging, and the current 12h
   OFF window has less than 2 hours remaining, refresh the OFF window.
 
-No persistent state is used. On script restart, live PV/SOC conditions decide
+No persistent state is used. On script restart, live grid/SOC/battery conditions decide
 whether to write a fresh OFF window or release with STOP.
 """
 
@@ -92,10 +92,13 @@ STATE_UNKNOWN = "UNKNOWN"
 STATE_NORMAL = "NORMAL"
 STATE_BATTERY_OFF = "BATTERY_OFF"
 
-BATTERY_OFF_ENTER_PV_W = 80.0
-BATTERY_OFF_EXIT_PV_W = 250.0
+BATTERY_OFF_EXIT_PV_W = 100.0
 BATTERY_OFF_EXIT_GRID_EXPORT_W = 0.0
 BATTERY_OFF_ENTER_SOC = 16
+BATTERY_OFF_ENTER_GRID_IMPORT_W = 0.0  # enter when grid < this (negative = importing)
+
+# batteryDirectionFlag value that indicates the battery is discharging
+BATTERY_DIRECTION_DISCHARGING = 1
 
 BATTERY_OFF_START_DELAY_MINUTES = 1
 BATTERY_OFF_WINDOW_HOURS = 12
@@ -592,27 +595,32 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
     pv = float(s.get("pvTotalPowerW", 0.0))
     grid = float(s.get("gridPower", 0.0))
     soc = int(s.get("batterySoc", 0))
+    battery_direction_flag = int(s.get("batteryDirectionFlag", 0))
     state = controller.get("state", STATE_UNKNOWN)
 
-    low_pv_low_soc = pv < BATTERY_OFF_ENTER_PV_W and soc < BATTERY_OFF_ENTER_SOC
+    entry_ready = (
+        grid < BATTERY_OFF_ENTER_GRID_IMPORT_W
+        and soc < BATTERY_OFF_ENTER_SOC
+        and battery_direction_flag == BATTERY_DIRECTION_DISCHARGING
+    )
     pv_recovered = pv > BATTERY_OFF_EXIT_PV_W
     grid_exporting = grid > BATTERY_OFF_EXIT_GRID_EXPORT_W
     exit_ready = pv_recovered and grid_exporting
 
     print(
         f"[tou] state={state} pv={pv:.1f}W grid={grid:.1f}W soc={soc}% "
-        f"low_pv_low_soc={low_pv_low_soc} pv_recovered={pv_recovered} "
-        f"grid_exporting={grid_exporting} exit_ready={exit_ready}"
+        f"batt_dir_flag={battery_direction_flag} entry_ready={entry_ready} "
+        f"pv_recovered={pv_recovered} grid_exporting={grid_exporting} exit_ready={exit_ready}"
     )
 
     # Startup recovery.
     if state == STATE_UNKNOWN:
-        if low_pv_low_soc:
+        if entry_ready:
             if can_attempt_tou_write(controller):
                 enter_battery_off(
                     ser,
                     controller,
-                    reason=f"startup/unknown and PV {pv:.1f}W < {BATTERY_OFF_ENTER_PV_W}W, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%",
+                    reason=f"startup/unknown: grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, battery discharging",
                 )
             return
 
@@ -624,19 +632,19 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
         # on the next poll cycles.
         controller["state"] = STATE_NORMAL
         print(
-            "[tou] startup/unknown: PV not low + SOC not low; "
+            "[tou] startup/unknown: entry conditions not met (grid not importing or SOC not low or battery not discharging); "
             "assuming NORMAL without ToU writes"
         )
         return
 
     # Normal -> Battery-off.
     if state == STATE_NORMAL:
-        if low_pv_low_soc:
+        if entry_ready:
             if can_attempt_tou_write(controller):
                 enter_battery_off(
                     ser,
                     controller,
-                    reason=f"PV {pv:.1f}W < {BATTERY_OFF_ENTER_PV_W}W, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%",
+                    reason=f"grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, battery discharging",
                 )
         return
 
@@ -660,14 +668,14 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
         else:
             remaining_s = off_until - time.time()
 
-        if low_pv_low_soc and remaining_s < BATTERY_OFF_REFRESH_WHEN_REMAINING_S:
+        if entry_ready and remaining_s < BATTERY_OFF_REFRESH_WHEN_REMAINING_S:
             if can_attempt_tou_write(controller):
                 enter_battery_off(
                     ser,
                     controller,
                     reason=(
                         f"refresh rolling OFF window, remaining={remaining_s / 3600.0:.2f}h, "
-                        f"PV {pv:.1f}W, SOC {soc}%"
+                        f"grid {grid:.1f}W importing, SOC {soc}%, battery discharging"
                     ),
                 )
         return
@@ -739,12 +747,12 @@ def main():
     print(f"  SOLIS_POST_WRITE_RECOVERY_S  = {SOLIS_POST_WRITE_RECOVERY_S}s  (pause after ToU write batch)")
     print("")
     print("Battery-off controller:")
-    print(f"  ENTER: PV < {BATTERY_OFF_ENTER_PV_W}W and SOC < {BATTERY_OFF_ENTER_SOC}%")
+    print(f"  ENTER: grid < {BATTERY_OFF_ENTER_GRID_IMPORT_W}W (importing) AND SOC < {BATTERY_OFF_ENTER_SOC}% AND battery discharging (flag={BATTERY_DIRECTION_DISCHARGING})")
     print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)")
     print(f"  OFF  : sync clock, RUN+grid-charge, 0.1A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: disabled")
-    print("  Startup: if PV+SOC not low, assume NORMAL without writing ToU registers")
+    print("  Startup: if entry conditions not met, assume NORMAL without writing ToU registers")
     print("")
 
     poll_count = 0
