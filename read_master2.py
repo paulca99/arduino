@@ -34,10 +34,15 @@ BATTERY_OFF refresh:
   If still grid importing, SOC < 16%, and battery discharging, and the current 12h
   OFF window has less than 2 hours remaining, refresh the OFF window.
 
-No persistent state is used. On script restart, live grid/SOC/battery conditions decide
-whether to write a fresh OFF window or release with STOP.
+Controller state (NORMAL / BATTERY_OFF) is persisted to a local JSON file so that
+it survives script restarts and Pi reboots. On startup the saved state is loaded;
+if the file is missing, corrupt, or the saved BATTERY_OFF window has expired, the
+script falls back safely to STATE_UNKNOWN and lets live conditions decide.
 """
 
+import json
+import os
+import tempfile
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -132,6 +137,11 @@ TOU_RUN = 35   # self-use + ToU run + allow grid charge
 
 TOU_CURRENT_0_1A = 1
 TOU_CURRENT_10_0A = 100
+
+# Path for the JSON file that persists controller state across restarts / reboots.
+# /var/tmp is writable without special permissions and survives normal reboots
+# (unlike /tmp which is typically tmpfs).
+CONTROLLER_STATE_FILE = "/var/tmp/read_master2_battery_off_state.json"
 
 
 # ----------------------------------------------------------------------
@@ -540,6 +550,7 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
         controller["state"] = STATE_BATTERY_OFF
         controller["battery_off_until_ts"] = window["end_timestamp"]
         print("[tou] BATTERY_OFF active")
+        save_controller_state(controller, reason=reason)
     else:
         print("[tou] BATTERY_OFF write failed; state unchanged")
 
@@ -574,6 +585,7 @@ def exit_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool:
         controller["state"] = STATE_NORMAL
         controller["battery_off_until_ts"] = None
         print("[tou] NORMAL active")
+        save_controller_state(controller, reason=reason)
     else:
         print("[tou] STOP/release write failed; state unchanged")
 
@@ -588,6 +600,93 @@ def exit_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool:
 def can_attempt_tou_write(controller: dict) -> bool:
     last = controller.get("last_tou_write_ts", 0)
     return (time.time() - last) >= TOU_MIN_WRITE_INTERVAL_S
+
+
+# ----------------------------------------------------------------------
+# Controller state persistence
+# ----------------------------------------------------------------------
+
+def load_controller_state() -> dict:
+    """
+    Load persisted controller state from CONTROLLER_STATE_FILE.
+
+    Returns a controller dict with keys: state, battery_off_until_ts, last_tou_write_ts.
+    Falls back safely to STATE_UNKNOWN with a warning log if the file is missing,
+    corrupt, or contains an expired BATTERY_OFF window.
+    """
+    default = {
+        "state": STATE_UNKNOWN,
+        "battery_off_until_ts": None,
+        "last_tou_write_ts": 0,
+    }
+
+    try:
+        with open(CONTROLLER_STATE_FILE, "r") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"[tou] state file not found ({CONTROLLER_STATE_FILE}); starting as UNKNOWN")
+        return default
+    except Exception as e:
+        print(f"[tou] WARN: could not read state file ({CONTROLLER_STATE_FILE}): {e}; starting as UNKNOWN")
+        return default
+
+    state = data.get("state")
+    if state not in (STATE_UNKNOWN, STATE_NORMAL, STATE_BATTERY_OFF):
+        print(f"[tou] WARN: invalid state '{state}' in state file; starting as UNKNOWN")
+        return default
+
+    battery_off_until_ts = data.get("battery_off_until_ts")
+
+    if state == STATE_BATTERY_OFF:
+        if battery_off_until_ts is None or battery_off_until_ts <= time.time():
+            saved_at = data.get("saved_at", "unknown")
+            print(
+                f"[tou] persisted BATTERY_OFF window has expired or is missing "
+                f"(saved_at={saved_at}); starting as UNKNOWN"
+            )
+            return default
+
+    saved_at = data.get("saved_at", "unknown")
+    reason = data.get("reason", "")
+    print(
+        f"[tou] loaded persisted state={state} battery_off_until_ts={battery_off_until_ts} "
+        f"saved_at={saved_at} reason={reason!r}"
+    )
+
+    return {
+        "state": state,
+        "battery_off_until_ts": battery_off_until_ts,
+        "last_tou_write_ts": 0,
+    }
+
+
+def save_controller_state(controller: dict, reason: str = "") -> None:
+    """
+    Atomically persist controller state to CONTROLLER_STATE_FILE.
+
+    Writes to a temp file in the same directory then renames so a crash or
+    power-cut cannot leave a half-written JSON file.
+    """
+    data = {
+        "state": controller.get("state", STATE_UNKNOWN),
+        "battery_off_until_ts": controller.get("battery_off_until_ts"),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "reason": reason,
+    }
+
+    state_dir = os.path.dirname(CONTROLLER_STATE_FILE) or "."
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=state_dir, prefix=".read_master2_state_tmp_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp_path, CONTROLLER_STATE_FILE)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        print(f"[tou] state persisted: state={data['state']} battery_off_until_ts={data['battery_off_until_ts']} -> {CONTROLLER_STATE_FILE}")
+    except Exception as e:
+        print(f"[tou] WARN: could not save state file ({CONTROLLER_STATE_FILE}): {e}")
 
 
 def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict) -> None:
@@ -629,11 +728,13 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
         # Solis, so we must NOT fire the exit/STOP write burst just because PV has
         # recovered.  Doing so causes a large FC06 write sequence that can upset
         # Solis comms (as observed in the log: write burst -> repeated read failures).
-        # Instead, assume NORMAL and let the steady-state logic handle things cleanly
+        # STATE_UNKNOWN is only reached when no valid persisted state was found
+        # (first run, corrupt/missing file, or expired BATTERY_OFF window).
+        # Assume NORMAL and let the steady-state logic handle things cleanly
         # on the next poll cycles.
         controller["state"] = STATE_NORMAL
         print(
-            "[tou] startup/unknown: entry conditions not met (grid not importing or SOC not low or battery not discharging); "
+            "[tou] startup/unknown: no valid persisted state and entry conditions not met; "
             "assuming NORMAL without ToU writes"
         )
         return
@@ -756,18 +857,16 @@ def main():
     print(f"  EXIT : (PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W exporting) OR SOC >= {BATTERY_OFF_EXIT_SOC}%")
     print(f"  OFF  : sync clock, RUN+grid-charge, 0.1A, now{BATTERY_OFF_START_OFFSET_MINUTES:+d}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
-    print("  State persistence: disabled")
-    print("  Startup: if entry conditions not met, assume NORMAL without writing ToU registers")
+    print(f"  State persistence: enabled ({CONTROLLER_STATE_FILE})")
+    print("  Startup: state loaded from file; UNKNOWN only if file missing/corrupt/expired")
     print("")
 
     poll_count = 0
     read_errors = 0
 
-    controller = {
-        "state": STATE_UNKNOWN,
-        "battery_off_until_ts": None,
-        "last_tou_write_ts": 0,
-    }
+    controller = load_controller_state()
+    print(f"[tou] startup controller state: {controller['state']} battery_off_until_ts={controller.get('battery_off_until_ts')}")
+    print("")
 
     with serial.Serial(
         port=PORT,
