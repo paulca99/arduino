@@ -34,8 +34,9 @@ BATTERY_OFF refresh:
   If still grid importing, SOC < 16%, and battery discharging, and the current 12h
   OFF window has less than 2 hours remaining, refresh the OFF window.
 
-No persistent state is used. On script restart, live grid/SOC/battery conditions decide
-whether to write a fresh OFF window or release with STOP.
+No persistent state is used. On startup, the script forces the Solis inverter into
+NORMAL/STOP state (STOP + grid-charge, 10.0A, 00:00 -> 00:00) so the script and inverter
+begin aligned. Live conditions then quickly re-enter BATTERY_OFF if needed.
 """
 
 import time
@@ -756,8 +757,9 @@ def main():
     print(f"  EXIT : (PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W exporting) OR SOC >= {BATTERY_OFF_EXIT_SOC}%")
     print(f"  OFF  : sync clock, RUN+grid-charge, 0.1A, now{BATTERY_OFF_START_OFFSET_MINUTES:+d}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
-    print("  State persistence: disabled")
-    print("  Startup: if entry conditions not met, assume NORMAL without writing ToU registers")
+    print("  State persistence: not used")
+    print("  Startup: forces Solis ToU to NORMAL/STOP so script and inverter begin aligned;")
+    print("           live conditions then decide whether to re-enter BATTERY_OFF immediately")
     print("")
 
     poll_count = 0
@@ -778,6 +780,34 @@ def main():
         timeout=READ_IDLE_TIMEOUT_S,
         write_timeout=1,
     ) as ser:
+        # ------------------------------------------------------------------
+        # Startup normalization: force Solis ToU to NORMAL/STOP so the
+        # script and inverter start in a known aligned state.  After this,
+        # last_tou_write_ts is reset to 0 so the very next valid poll can
+        # enter BATTERY_OFF immediately if live conditions require it.
+        # ------------------------------------------------------------------
+        print("[startup] Forcing Solis ToU to NORMAL/STOP (startup normalization)...")
+        startup_ok = exit_battery_off(
+            ser,
+            controller,
+            reason="startup normalization: forcing Solis ToU to NORMAL/STOP so script and inverter begin aligned",
+        )
+        if startup_ok:
+            controller["state"] = STATE_NORMAL
+            controller["battery_off_until_ts"] = None
+            # Reset throttle so the next poll can enter BATTERY_OFF without delay.
+            controller["last_tou_write_ts"] = 0
+            print("[startup] Startup normalization succeeded: Solis ToU is NORMAL/STOP, controller state = NORMAL")
+        else:
+            # Safe fallback: proceed as NORMAL so the loop can enter BATTERY_OFF
+            # on the first poll if live conditions require it.  We do not crash
+            # because the poller must remain long-running.
+            print("[startup] WARNING: startup normalization write failed; proceeding as NORMAL (safe fallback)")
+            controller["state"] = STATE_NORMAL
+            controller["battery_off_until_ts"] = None
+            controller["last_tou_write_ts"] = 0
+        print("")
+
         while True:
             loop_start = time.monotonic()
 
