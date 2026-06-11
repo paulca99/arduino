@@ -22,7 +22,7 @@ NORMAL / UNKNOWN:
     state = BATTERY_OFF
 
 BATTERY_OFF:
-  If pvTotalPowerW > 350W AND gridPower > 0W (exporting):
+  If pvTotalPowerW > 250W AND gridPower > 0W (exporting):
     Write Solis ToU:
       sync Solis clock to Pi time
       STOP with grid-charge allowed
@@ -93,7 +93,7 @@ STATE_NORMAL = "NORMAL"
 STATE_BATTERY_OFF = "BATTERY_OFF"
 
 BATTERY_OFF_ENTER_PV_W = 80.0
-BATTERY_OFF_EXIT_PV_W = 350.0
+BATTERY_OFF_EXIT_PV_W = 250.0
 BATTERY_OFF_EXIT_GRID_EXPORT_W = 0.0
 BATTERY_OFF_ENTER_SOC = 15
 
