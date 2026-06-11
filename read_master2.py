@@ -22,7 +22,7 @@ NORMAL / UNKNOWN:
     state = BATTERY_OFF
 
 BATTERY_OFF:
-  If (pvTotalPowerW > 100W AND gridPower > 0W exporting) OR Solis SOC >= 20%:
+  If (pvTotalPowerW > 100W AND gridPower > 0W (exporting)) OR Solis SOC >= 20%:
     Write Solis ToU:
       sync Solis clock to Pi time
       STOP with grid-charge allowed
@@ -70,12 +70,12 @@ SOLIS_END_DOC_REG = 33142
 SOLIS_REG_COUNT = SOLIS_END_DOC_REG - SOLIS_START_DOC_REG + 1  # 93
 
 # Pacing between consecutive FC06 (write single register) calls to Solis.
-# 0.10 s has been unreliable; 0.25 s is a modest speed-up while retaining
-# inter-write spacing for reliable echoes.
+# Keep inter-write spacing to protect FC06 reliability while reducing the
+# previous conservative 0.50 s delay.
 SOLIS_WRITE_DELAY_S = 0.25
 
 # Optional pause after ToU / clock write sequence before polling resumes.
-# Set to 0.0 to skip fixed recovery delay.
+# Set to 0.0 to skip fixed recovery delay and resume normal polling immediately.
 SOLIS_POST_WRITE_RECOVERY_S = 0.0
 
 POLL_INTERVAL_S = 2.0
