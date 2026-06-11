@@ -18,7 +18,7 @@ NORMAL / UNKNOWN:
       sync Solis clock to Pi time
       RUN with grid-charge allowed
       charge current 0.1A
-      charge window now+2min -> now+12h
+      charge window now-2min -> now+12h
     state = BATTERY_OFF
 
 BATTERY_OFF:
@@ -100,7 +100,7 @@ BATTERY_OFF_ENTER_GRID_IMPORT_W = 0.0  # enter when grid < this (negative = impo
 # batteryDirectionFlag value that indicates the battery is discharging
 BATTERY_DIRECTION_DISCHARGING = 1
 
-BATTERY_OFF_START_DELAY_MINUTES = 1
+BATTERY_OFF_START_OFFSET_MINUTES = -2  # negative = start is in the past so window is immediately active
 BATTERY_OFF_WINDOW_HOURS = 12
 BATTERY_OFF_REFRESH_WHEN_REMAINING_S = 2 * 60 * 60
 
@@ -497,7 +497,7 @@ def write_tou_registers(
 
 def calc_battery_off_window():
     now = datetime.now()
-    start = now + timedelta(minutes=BATTERY_OFF_START_DELAY_MINUTES)
+    start = now + timedelta(minutes=BATTERY_OFF_START_OFFSET_MINUTES)
     end = now + timedelta(hours=BATTERY_OFF_WINDOW_HOURS)
 
     return {
@@ -749,7 +749,7 @@ def main():
     print("Battery-off controller:")
     print(f"  ENTER: grid < {BATTERY_OFF_ENTER_GRID_IMPORT_W}W (importing) AND SOC < {BATTERY_OFF_ENTER_SOC}% AND battery discharging (flag={BATTERY_DIRECTION_DISCHARGING})")
     print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)")
-    print(f"  OFF  : sync clock, RUN+grid-charge, 0.1A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
+    print(f"  OFF  : sync clock, RUN+grid-charge, 0.1A, now{BATTERY_OFF_START_OFFSET_MINUTES:+d}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: disabled")
     print("  Startup: if entry conditions not met, assume NORMAL without writing ToU registers")
