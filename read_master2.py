@@ -97,8 +97,8 @@ STATE_BATTERY_OFF = "BATTERY_OFF"
 
 BATTERY_OFF_EXIT_PV_W = 100.0
 BATTERY_OFF_EXIT_GRID_EXPORT_W = 0.0
-BATTERY_OFF_EXIT_SOC = 20
-BATTERY_OFF_ENTER_SOC = 17
+BATTERY_OFF_EXIT_SOC = 18
+BATTERY_OFF_ENTER_SOC = 16
 BATTERY_OFF_ENTER_GRID_IMPORT_W = 0.0  # enter when grid < this (negative = importing)
 
 # batteryDirectionFlag value that indicates the battery is discharging
@@ -141,7 +141,7 @@ TOU_CURRENT_10_0A = 100
 # e.g. TOU_CURRENT_0_5A = 5 -> 0.5 A; TOU_CURRENT_10_0A = 100 -> 10.0 A.
 
 # Seconds after entering/refreshing BATTERY_OFF before writing 0.0A hold current.
-BATTERY_OFF_HOLD_DELAY_S = 20
+BATTERY_OFF_HOLD_DELAY_S = 30
 
 
 # ----------------------------------------------------------------------
