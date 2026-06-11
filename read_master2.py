@@ -17,7 +17,7 @@ NORMAL / UNKNOWN:
     Write Solis ToU:
       sync Solis clock to Pi time
       RUN with grid-charge allowed
-      charge current 0.0A
+      charge current 0.1A
       charge window now+2min -> now+12h
     state = BATTERY_OFF
 
@@ -126,7 +126,7 @@ REG_CLOCK_SECOND = 43006
 TOU_STOP = 33  # self-use + allow grid charge; ToU stopped
 TOU_RUN = 35   # self-use + ToU run + allow grid charge
 
-TOU_CURRENT_0_0A = 0
+TOU_CURRENT_0_1A = 1
 TOU_CURRENT_10_0A = 100
 
 
@@ -466,18 +466,9 @@ def write_tou_registers(
     start_minute: int,
     end_hour: int,
     end_minute: int,
-    run_stop_last: bool,
 ) -> bool:
     """
     Sync the Solis clock, then write the six confirmed ToU registers.
-
-    run_stop_last=True:
-      Write config first, then RUN/STOP. Used when entering RUN so stale
-      settings are not briefly enabled.
-
-    run_stop_last=False:
-      Write RUN/STOP first, then config. Used when exiting BATTERY_OFF so
-      STOP happens immediately.
     """
     clock_ok = sync_solis_clock_to_pi(ser)
 
@@ -490,8 +481,7 @@ def write_tou_registers(
     ]
 
     writes_run_stop = [(REG_TOU_RUN_STOP, run_stop)]
-
-    writes = writes_config + writes_run_stop if run_stop_last else writes_run_stop + writes_config
+    writes = writes_config + writes_run_stop
 
     all_ok = clock_ok
     for reg, value in writes:
@@ -525,7 +515,7 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
     print("=" * 80)
     print(f"[tou] ENTER/REFRESH BATTERY_OFF: {reason}")
     print(
-        f"[tou] Target: RUN+grid-charge, 0.0A, "
+        f"[tou] Target: RUN+grid-charge, 0.1A, "
         f"{window['start_text']} -> {window['end_text']}"
     )
     print("=" * 80)
@@ -535,12 +525,11 @@ def enter_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool
     ok = write_tou_registers(
         ser=ser,
         run_stop=TOU_RUN,
-        current_x10=TOU_CURRENT_0_0A,
+        current_x10=TOU_CURRENT_0_1A,
         start_hour=window["start_hour"],
         start_minute=window["start_minute"],
         end_hour=window["end_hour"],
         end_minute=window["end_minute"],
-        run_stop_last=True,
     )
 
     if ok:
@@ -576,7 +565,6 @@ def exit_battery_off(ser: serial.Serial, controller: dict, reason: str) -> bool:
         start_minute=0,
         end_hour=0,
         end_minute=0,
-        run_stop_last=False,
     )
 
     if ok:
@@ -753,7 +741,7 @@ def main():
     print("Battery-off controller:")
     print(f"  ENTER: PV < {BATTERY_OFF_ENTER_PV_W}W and SOC < {BATTERY_OFF_ENTER_SOC}%")
     print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)")
-    print(f"  OFF  : sync clock, RUN+grid-charge, 0.0A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
+    print(f"  OFF  : sync clock, RUN+grid-charge, 0.1A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: disabled")
     print("  Startup: if PV+SOC not low, assume NORMAL without writing ToU registers")
