@@ -78,7 +78,7 @@ SOLIS_WRITE_DELAY_S = 0.5
 # polling.  Gives Solis time to complete internal register processing.
 SOLIS_POST_WRITE_RECOVERY_S = 2.0
 
-POLL_INTERVAL_S = 4.0
+POLL_INTERVAL_S = 2.0
 REPLY_TIMEOUT_S = 2.0
 WRITE_REPLY_TIMEOUT_S = 4.0
 READ_IDLE_TIMEOUT_S = 0.2
