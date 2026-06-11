@@ -22,7 +22,7 @@ NORMAL / UNKNOWN:
     state = BATTERY_OFF
 
 BATTERY_OFF:
-  If pvTotalPowerW > 110W:
+  If pvTotalPowerW > 110W AND gridPower > +100W (exporting):
     Write Solis ToU:
       sync Solis clock to Pi time
       STOP with grid-charge allowed
@@ -94,6 +94,7 @@ STATE_BATTERY_OFF = "BATTERY_OFF"
 
 BATTERY_OFF_ENTER_PV_W = 80.0
 BATTERY_OFF_EXIT_PV_W = 110.0
+BATTERY_OFF_EXIT_GRID_EXPORT_W = 100.0
 BATTERY_OFF_ENTER_SOC = 15
 
 BATTERY_OFF_START_DELAY_MINUTES = 2
@@ -601,15 +602,19 @@ def can_attempt_tou_write(controller: dict) -> bool:
 
 def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict) -> None:
     pv = float(s.get("pvTotalPowerW", 0.0))
+    grid = float(s.get("gridPower", 0.0))
     soc = int(s.get("batterySoc", 0))
     state = controller.get("state", STATE_UNKNOWN)
 
     low_pv_low_soc = pv < BATTERY_OFF_ENTER_PV_W and soc < BATTERY_OFF_ENTER_SOC
     pv_recovered = pv > BATTERY_OFF_EXIT_PV_W
+    grid_exporting = grid > BATTERY_OFF_EXIT_GRID_EXPORT_W
+    exit_ready = pv_recovered and grid_exporting
 
     print(
-        f"[tou] state={state} pv={pv:.1f}W soc={soc}% "
-        f"low_pv_low_soc={low_pv_low_soc} pv_recovered={pv_recovered}"
+        f"[tou] state={state} pv={pv:.1f}W grid={grid:.1f}W soc={soc}% "
+        f"low_pv_low_soc={low_pv_low_soc} pv_recovered={pv_recovered} "
+        f"grid_exporting={grid_exporting} exit_ready={exit_ready}"
     )
 
     # Startup recovery.
@@ -649,12 +654,15 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
 
     # Battery-off -> Normal, or refresh rolling 12h window.
     if state == STATE_BATTERY_OFF:
-        if pv_recovered:
+        if exit_ready:
             if can_attempt_tou_write(controller):
                 exit_battery_off(
                     ser,
                     controller,
-                    reason=f"PV {pv:.1f}W > {BATTERY_OFF_EXIT_PV_W}W",
+                    reason=(
+                        f"PV {pv:.1f}W > {BATTERY_OFF_EXIT_PV_W}W "
+                        f"AND grid {grid:.1f}W > {BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)"
+                    ),
                 )
             return
 
@@ -744,7 +752,7 @@ def main():
     print("")
     print("Battery-off controller:")
     print(f"  ENTER: PV < {BATTERY_OFF_ENTER_PV_W}W and SOC < {BATTERY_OFF_ENTER_SOC}%")
-    print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W")
+    print(f"  EXIT : PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)")
     print(f"  OFF  : sync clock, RUN+grid-charge, 0.0A, now+{BATTERY_OFF_START_DELAY_MINUTES}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print("  RELEASE: sync clock, STOP+grid-charge, 10.0A, 00:00 -> 00:00")
     print("  State persistence: disabled")
