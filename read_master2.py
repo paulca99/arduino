@@ -105,7 +105,7 @@ BATTERY_OFF_WINDOW_HOURS = 12
 BATTERY_OFF_REFRESH_WHEN_REMAINING_S = 2 * 60 * 60
 
 # Avoid retry-spamming failed writes every 2 seconds.
-TOU_MIN_WRITE_INTERVAL_S = 60
+TOU_MIN_WRITE_INTERVAL_S = 20
 
 # Confirmed Solis holding-register mapping for this Pi script:
 # The script uses doc_reg - 1 as the raw Modbus address.
