@@ -176,6 +176,10 @@ def s32_from_regs(high: int, low: int) -> int:
     return v - 0x100000000 if v & 0x80000000 else v
 
 
+def u32_from_regs(high: int, low: int) -> int:
+    return ((high & 0xFFFF) << 16) | (low & 0xFFFF)
+
+
 def build_request(slave_id: int, func: int, start_reg: int, count: int) -> bytes:
     # Solis documented register -> raw Modbus address is doc_reg - 1.
     raw_addr = start_reg - 1
@@ -294,7 +298,13 @@ def decode_solis(regs: Dict[int, int]) -> dict:
 
     pv1_power = round(pv1_v * pv1_i, 1)
     pv2_power = round(pv2_v * pv2_i, 1)
+    # Existing metric is derived from PV voltage/current and therefore inherits
+    # current-register quantization (0.1A steps).
     pv_total_power = round(pv1_power + pv2_power, 1)
+    # Direct Solis PV/DC power decode from published register pair 33057-33058.
+    # Keep both derived and direct metrics live for validation/comparison before
+    # switching dashboards over to the direct metric.
+    pv_total_power_direct = u32_from_regs(regs.get(33057, 0), regs.get(33058, 0))
 
     battery_power = round(battery_voltage * battery_current, 1)
     if battery_direction_flag == 1:
@@ -320,7 +330,10 @@ def decode_solis(regs: Dict[int, int]) -> dict:
         "pv1PowerW": pv1_power,
         "pv2PowerW": pv2_power,
         "pvTotalPowerW": pv_total_power,
+        "pvTotalPowerDirectW": pv_total_power_direct,
         "gridFrequencyRaw": regs.get(33095, 0),
+        "reg33057Raw": regs.get(33057, 0),
+        "reg33058Raw": regs.get(33058, 0),
         "reg33079Raw": regs.get(33079, 0),
         "reg33080Raw": regs.get(33080, 0),
         "reg33081Raw": regs.get(33081, 0),
@@ -345,10 +358,15 @@ def write_solis_metrics(s: dict, poll_count: int, read_errors: int, controller_s
     write_line("solis_battery_power", s["batteryPowerW"], SOLIS_SOURCE_TAG)
     write_line("solis_pv1_power", s["pv1PowerW"], SOLIS_SOURCE_TAG)
     write_line("solis_pv2_power", s["pv2PowerW"], SOLIS_SOURCE_TAG)
+    # Derived from voltage/current (includes 0.1A current-register quantization).
     write_line("solis_pv_total_power", s["pvTotalPowerW"], SOLIS_SOURCE_TAG)
+    # Direct Solis PV/DC power decode from register pair 33057-33058.
+    write_line("solis_pv_total_power_direct", s["pvTotalPowerDirectW"], SOLIS_SOURCE_TAG)
     write_line("solis_poll_count", poll_count, SOLIS_SOURCE_TAG)
     write_line("solis_read_errors", read_errors, SOLIS_SOURCE_TAG)
     write_line("solis_reg_33095_raw", s["gridFrequencyRaw"], SOLIS_SOURCE_TAG)
+    write_line("solis_reg_33057_raw", s["reg33057Raw"], SOLIS_SOURCE_TAG)
+    write_line("solis_reg_33058_raw", s["reg33058Raw"], SOLIS_SOURCE_TAG)
     write_line("solis_reg_33079_raw", s["reg33079Raw"], SOLIS_SOURCE_TAG)
     write_line("solis_reg_33080_raw", s["reg33080Raw"], SOLIS_SOURCE_TAG)
     write_line("solis_reg_33081_raw", s["reg33081Raw"], SOLIS_SOURCE_TAG)
@@ -794,6 +812,9 @@ def main():
     print(f"Starting Solis-only poller on {PORT} @ {BAUDRATE}")
     print(f"Solis: slave {SOLIS_SLAVE_ID}, FC04, regs {SOLIS_START_DOC_REG}-{SOLIS_END_DOC_REG}")
     print(f"Influx URL: {INFLUX_URL}")
+    print("PV power metrics:")
+    print("  solis_pv_total_power         = derived (PV voltage/current; current quantized to 0.1A)")
+    print("  solis_pv_total_power_direct  = direct decode from Solis regs 33057-33058 (validate before dashboard switch)")
     print("")
     print("Timing / reliability constants:")
     print(f"  POLL_INTERVAL_S              = {POLL_INTERVAL_S}s")
