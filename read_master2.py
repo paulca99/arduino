@@ -656,7 +656,7 @@ def load_controller_state() -> dict:
     return {
         "state": state,
         "battery_off_until_ts": battery_off_until_ts,
-        "last_tou_write_ts": 0,
+        "last_tou_write_ts": data.get("last_tou_write_ts", 0),
     }
 
 
@@ -670,19 +670,23 @@ def save_controller_state(controller: dict, reason: str = "") -> None:
     data = {
         "state": controller.get("state", STATE_UNKNOWN),
         "battery_off_until_ts": controller.get("battery_off_until_ts"),
+        "last_tou_write_ts": controller.get("last_tou_write_ts", 0),
         "saved_at": datetime.now().isoformat(timespec="seconds"),
         "reason": reason,
     }
 
     state_dir = os.path.dirname(CONTROLLER_STATE_FILE) or "."
     try:
-        fd, tmp_path = tempfile.mkstemp(dir=state_dir, prefix=".read_master2_state_tmp_")
+        fd, tmp_path = tempfile.mkstemp(dir=state_dir, prefix="read_master2_state_tmp_")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f)
             os.replace(tmp_path, CONTROLLER_STATE_FILE)
         except Exception:
-            os.unlink(tmp_path)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
             raise
         print(f"[tou] state persisted: state={data['state']} battery_off_until_ts={data['battery_off_until_ts']} -> {CONTROLLER_STATE_FILE}")
     except Exception as e:
