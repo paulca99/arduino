@@ -95,7 +95,7 @@ STATE_BATTERY_OFF = "BATTERY_OFF"
 BATTERY_OFF_EXIT_PV_W = 100.0
 BATTERY_OFF_EXIT_GRID_EXPORT_W = 0.0
 BATTERY_OFF_EXIT_SOC = 20
-BATTERY_OFF_ENTER_SOC = 16
+BATTERY_OFF_ENTER_SOC = 17
 BATTERY_OFF_ENTER_GRID_IMPORT_W = 0.0  # enter when grid < this (negative = importing)
 
 # batteryDirectionFlag value that indicates the battery is discharging
