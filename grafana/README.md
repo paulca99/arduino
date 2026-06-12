@@ -149,4 +149,4 @@ In Grafana 11.4, these derived FIT stat panels are implemented with panel transf
 
 **Important:** These ratios are only meaningful over a time window where start and end Solis battery SoC are equal (or accounted for). Overnight windows will naturally show AC output > PV generated because the battery was discharging.
 
-Low-PV ranges can also look artificially inefficient because fixed inverter self-consumption (~50–80 W observed overnight) is a larger fraction of available PV; at higher PV (~2–3 kW), no-battery ratio is typically expected around ~96–98%.
+Low-PV ranges can also look artificially inefficient because fixed inverter self-consumption (~50–80 W observed overnight) is a larger fraction of available PV; at higher PV (~2–3 kW), the **battery-adjusted FIT ratio** is typically expected around ~96–98%.

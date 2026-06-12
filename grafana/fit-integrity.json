@@ -653,7 +653,7 @@
         "type": "influxdb",
         "uid": "${DS_INFLUXDB}"
       },
-      "description": "Estimated no-battery AC output: Solis AC Output Wh + DC Battery Net Wh - Solis AC Input Wh. Battery power sign convention: positive = charging, negative = discharging.",
+      "description": "Hypothetical AC output estimate if the Solis battery were not connected: Solis AC Output Wh + DC Battery Net Wh - Solis AC Input Wh. Battery power sign convention: positive = charging, negative = discharging.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -806,7 +806,7 @@
         "type": "influxdb",
         "uid": "${DS_INFLUXDB}"
       },
-      "description": "100 * (Solis AC Output Wh + DC Battery Net Wh - Solis AC Input Wh) / Solis PV Generated Wh. Use with DC Battery Net Wh context to see battery impact.",
+      "description": "Hypothetical FIT ratio if the Solis battery were not connected: 100 * (Solis AC Output Wh + DC Battery Net Wh - Solis AC Input Wh) / Solis PV Generated Wh. Use this alongside DC Battery Net Wh to understand battery impact on the raw FIT ratio.",
       "fieldConfig": {
         "defaults": {
           "color": {
