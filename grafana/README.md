@@ -141,7 +141,12 @@ Derived metrics:
 | FIT Headroom Wh | `Solis PV Generated Wh − Solis AC Output Wh` |
 | Potential Non-Solis FIT Wh | `max(Solis AC Output Wh − Solis PV Generated Wh, 0)` |
 | FIT Ratio % | `Solis AC Output Wh / Solis PV Generated Wh × 100` |
+| DC Battery Net Wh | `∫ solis_battery_power dt` (positive = charging, negative = discharging) |
+| Battery-Adjusted No-Battery AC Wh | `Solis AC Output Wh + DC Battery Net Wh − Solis AC Input Wh` |
+| Battery-Adjusted FIT Ratio % | `Battery-Adjusted No-Battery AC Wh / Solis PV Generated Wh × 100` |
 
 In Grafana 11.4, these derived FIT stat panels are implemented with panel transformations over the raw Influx integral queries rather than `__expr__` reduce/math chains, because the expression path was still triggering `500 Internal Server Error` for these range-total calculations.
 
 **Important:** These ratios are only meaningful over a time window where start and end Solis battery SoC are equal (or accounted for). Overnight windows will naturally show AC output > PV generated because the battery was discharging.
+
+Low-PV ranges can also look artificially inefficient because fixed inverter self-consumption (~50–80 W observed overnight) is a larger fraction of available PV; at higher PV (~2–3 kW), no-battery ratio is typically expected around ~96–98%.

@@ -530,13 +530,13 @@
           "resultFormat": "time_series"
         },
         {
-          "alias": "Solis PV Generated Wh + ε",
+          "alias": "Solis PV Generated Wh + \u03b5",
           "datasource": {
             "type": "influxdb",
             "uid": "${DS_INFLUXDB}"
           },
           "hide": false,
-          "query": "SELECT 0.0001 + INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh + ε\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
+          "query": "SELECT 0.0001 + INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh + \u03b5\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -567,7 +567,7 @@
               "right": {
                 "matcher": {
                   "id": "byName",
-                  "options": "Solis PV Generated Wh + ε"
+                  "options": "Solis PV Generated Wh + \u03b5"
                 }
               }
             },
@@ -649,12 +649,432 @@
       "type": "stat"
     },
     {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Estimated no-battery AC output: Solis AC Output Wh + DC Battery Net Wh - Solis AC Input Wh. Battery power sign convention: positive = charging, negative = discharging.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 5
+      },
+      "id": 23,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "alias": "Solis AC Output Wh",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "hide": false,
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "DC Battery Net Wh",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "hide": false,
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"DC Battery Net Wh\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "rawQuery": true,
+          "refId": "B",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "Solis AC Input Wh",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "hide": false,
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"Solis AC Input Wh\" FROM \"solis_ac_input_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "rawQuery": true,
+          "refId": "C",
+          "resultFormat": "time_series"
+        }
+      ],
+      "title": "Battery-Adjusted No-Battery AC Wh",
+      "type": "stat",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "AC Output + DC Battery Net Wh",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis AC Output Wh"
+                }
+              },
+              "operator": "+",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "DC Battery Net Wh"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "lastNotNull"
+            },
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "Battery-Adjusted No-Battery AC Wh",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "AC Output + DC Battery Net Wh"
+                }
+              },
+              "operator": "-",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis AC Input Wh"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "lastNotNull"
+            },
+            "replaceFields": true
+          }
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "100 * (Solis AC Output Wh + DC Battery Net Wh - Solis AC Input Wh) / Solis PV Generated Wh. Use with DC Battery Net Wh context to see battery impact.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 100
+              },
+              {
+                "color": "red",
+                "value": 105
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 5
+      },
+      "id": 24,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "alias": "Solis AC Output Wh * 100",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "hide": false,
+          "query": "SELECT 100 * INTEGRAL(\"value\", 1h) AS \"Solis AC Output Wh * 100\" FROM \"solis_ac_output_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "DC Battery Net Wh * 100",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "hide": false,
+          "query": "SELECT 100 * INTEGRAL(\"value\", 1h) AS \"DC Battery Net Wh * 100\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "rawQuery": true,
+          "refId": "B",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "Solis AC Input Wh * 100",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "hide": false,
+          "query": "SELECT 100 * INTEGRAL(\"value\", 1h) AS \"Solis AC Input Wh * 100\" FROM \"solis_ac_input_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "rawQuery": true,
+          "refId": "C",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "Solis PV Generated Wh + \u03b5",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "hide": false,
+          "query": "SELECT 0.0001 + INTEGRAL(\"value\", 1h) AS \"Solis PV Generated Wh + \u03b5\" FROM \"solis_pv_total_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/ AND \"value\" > 0",
+          "rawQuery": true,
+          "refId": "D",
+          "resultFormat": "time_series"
+        }
+      ],
+      "title": "Battery-Adjusted FIT Ratio %",
+      "type": "stat",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "(AC Output + DC Battery Net) * 100",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis AC Output Wh * 100"
+                }
+              },
+              "operator": "+",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "DC Battery Net Wh * 100"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "lastNotNull"
+            },
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "Battery-Adjusted No-Battery AC Wh * 100",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "(AC Output + DC Battery Net) * 100"
+                }
+              },
+              "operator": "-",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis AC Input Wh * 100"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "lastNotNull"
+            },
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "Battery-Adjusted FIT Ratio %",
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Battery-Adjusted No-Battery AC Wh * 100"
+                }
+              },
+              "operator": "/",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Solis PV Generated Wh + \u03b5"
+                }
+              }
+            },
+            "mode": "binary",
+            "reduce": {
+              "reducer": "lastNotNull"
+            },
+            "replaceFields": true
+          }
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Integrated net DC battery energy over the selected range. Negative means battery assisted AC output (discharging). Positive means PV energy was diverted into battery (charging).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "semi-dark-blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 5
+      },
+      "id": 25,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "alias": "DC Battery Net Wh",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "hide": false,
+          "query": "SELECT INTEGRAL(\"value\", 1h) AS \"DC Battery Net Wh\" FROM \"solis_battery_power\" WHERE $timeFilter AND \"host\" = '$host' AND \"source\" =~ /^${source:regex}$/",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series"
+        }
+      ],
+      "title": "DC Battery Net Wh",
+      "type": "stat"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 9
       },
       "id": 8,
       "panels": [],
@@ -691,7 +1111,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 6
+        "y": 10
       },
       "id": 9,
       "options": {
@@ -759,7 +1179,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 6
+        "y": 10
       },
       "id": 10,
       "options": {
@@ -827,7 +1247,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 6
+        "y": 10
       },
       "id": 11,
       "options": {
@@ -895,7 +1315,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 6
+        "y": 10
       },
       "id": 12,
       "options": {
@@ -963,7 +1383,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 6
+        "y": 10
       },
       "id": 13,
       "options": {
@@ -1031,7 +1451,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 6
+        "y": 10
       },
       "id": 14,
       "options": {
@@ -1070,12 +1490,25 @@
       "type": "stat"
     },
     {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "id": 15,
+      "panels": [],
+      "title": "Range Context",
+      "type": "row"
+    },
+    {
       "id": 21,
       "title": "Grid Import Wh",
       "type": "stat",
       "gridPos": {
         "x": 0,
-        "y": 10,
+        "y": 14,
         "h": 4,
         "w": 4
       },
@@ -1133,7 +1566,7 @@
       "type": "stat",
       "gridPos": {
         "x": 4,
-        "y": 10,
+        "y": 14,
         "h": 4,
         "w": 4
       },
@@ -1184,19 +1617,6 @@
         },
         "overrides": []
       }
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 10
-      },
-      "id": 15,
-      "panels": [],
-      "title": "Range Context",
-      "type": "row"
     },
     {
       "datasource": {
@@ -1261,13 +1681,13 @@
         "h": 8,
         "w": 18,
         "x": 0,
-        "y": 11
+        "y": 15
       },
       "id": 16,
       "options": {
         "legend": {
           "calcs": [
-            "lastNotNull",
+            "min",
             "mean",
             "max"
           ],
@@ -1404,13 +1824,13 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 11
+        "y": 15
       },
       "id": 17,
       "options": {
         "legend": {
           "calcs": [
-            "lastNotNull",
+            "min",
             "mean",
             "max"
           ],
@@ -1446,7 +1866,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 19
+        "y": 23
       },
       "id": 18,
       "panels": [],
@@ -1487,7 +1907,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 20
+        "y": 24
       },
       "id": 19,
       "options": {
@@ -1559,7 +1979,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 20
+        "y": 24
       },
       "id": 20,
       "options": {
@@ -1596,6 +2016,27 @@
       ],
       "title": "AC BMS Valid",
       "type": "stat"
+    },
+    {
+      "id": 26,
+      "type": "text",
+      "title": "FIT Interpretation Notes",
+      "gridPos": {
+        "x": 8,
+        "y": 24,
+        "h": 4,
+        "w": 16
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Interpretation guidance for raw and battery-adjusted FIT ratios.",
+      "options": {
+        "content": "Raw FIT ratio = Solis AC output / Solis PV generated.\\n\\nBattery-adjusted no-battery estimate = Solis AC Output Wh + DC Battery Net Wh - Solis AC Input Wh.\\n\\nNegative DC battery net means the battery was discharging and inflating raw AC output. Positive DC battery net means PV was charging the battery and suppressing raw AC output.\\n\\nAt low PV, fixed inverter self-consumption (~50-80 W observed overnight) can make apparent efficiency look low. At ~2-3 kW PV, expected no-battery FIT ratio is roughly 96-98%.",
+        "mode": "markdown"
+      },
+      "pluginVersion": "11.4.0"
     }
   ],
   "preload": false,
@@ -1675,6 +2116,6 @@
   "timezone": "browser",
   "title": "FIT Integrity",
   "uid": "fit-integrity-v1",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
