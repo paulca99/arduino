@@ -2,7 +2,7 @@
 """
 Read ESP32 BLE_BMS_MARK2 Modbus slave 5 only.
 
-- Polls ESP32 battery bridge as Modbus slave 5.
+- Polls ESP32 battery bridge as slave 5.
 - Reads holding registers 0..79 using FC03.
 - Writes battery slot telemetry to InfluxDB as:
   - battery_1_*
@@ -24,7 +24,7 @@ import serial
 # Config
 # ----------------------------------------------------------------------
 
-PORT = "/dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0"
+PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ACB030913-if00"
 BAUDRATE = 9600
 
 INFLUX_URL = "http://localhost:8086/write?db=power"
