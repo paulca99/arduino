@@ -1,4 +1,5 @@
 #include "driver/twai.h"
+#include <math.h>
 
 // -----------------------------------------------------------------------
 // Pylontech CAN protocol for Solis S5-EH1P3.6K-L
@@ -30,10 +31,67 @@
 // e.g. 13S → 546, 14S → 588
 #define PACK_MAX_V10            ((uint16_t)((PACK_SERIES_CELLS) * 4.20f * 10.0f + 0.5f))
 
+// SoC curve reference: authored for 14S pack voltages. Scale voltages by
+// PACK_SERIES_CELLS / 14 so 13S packs work automatically.
+#define SOC_REF_SERIES          14.0f
+#define SOC_SCALE               ((float)(PACK_SERIES_CELLS) / SOC_REF_SERIES)
+
 // Battery limits — Boston Power Swing 5300 NMC, 13S 18P (by default)
 // Cell max: 4.20V, Cell min: 2.75V, Pack: 54.6V / 35.75V, Capacity: ~95Ah
 #define MAX_CHARGE_VOLTAGE      PACK_MAX_V10   // PACK_SERIES_CELLS x 4.20V NMC (x10)
 static uint32_t aliveCounter = 0;
+
+// -----------------------------------------------------------------------
+// SOC_EMA_TAU_S — EMA time constant for the voltage-based SoC filter.
+//
+// Using instantaneous pack voltage to derive SoC causes the reported SoC
+// to rebound immediately when the inverter stops drawing current (voltage
+// recovers). That can make the inverter think the battery is usable again,
+// re-enable discharge, sag voltage, and oscillate near low SoC thresholds.
+//
+// We smooth the voltage with an exponential moving average before converting
+// it to SoC. Set SOC_EMA_TAU_S to 0 to disable smoothing.
+// -----------------------------------------------------------------------
+#define SOC_EMA_TAU_S   120.0f   // EMA time constant ≈ 2-minute smoothing window
+
+// -----------------------------------------------------------------------
+// voltageToSoc — NMC discharge curve lookup + linear interpolation
+// Input: pack voltage (V). Output: SoC 0–100%.
+// Curve is authored for a 14S reference pack; voltages are scaled by
+// SOC_SCALE (= PACK_SERIES_CELLS / 14) so 13S packs work automatically.
+// Based on Boston Power Swing 5300 NMC cell characterisation.
+// -----------------------------------------------------------------------
+static uint8_t voltageToSoc(float packV) {
+    // {14S reference pack voltage, SoC%} — must be in descending voltage order
+    static const float curve[][2] = {
+        {58.8f, 100},
+        {56.0f,  80},
+        {53.9f,  70},
+        {52.5f,  60},
+        {51.1f,  50},
+        {49.7f,  40},
+        {48.3f,  30},
+        {46.2f,  20},
+        {44.1f,  10},
+        {38.5f,   0},
+    };
+    const uint8_t points = sizeof(curve) / sizeof(curve[0]);
+
+    if (packV >= curve[0][0] * SOC_SCALE)          return 100;
+    if (packV <= curve[points - 1][0] * SOC_SCALE) return 0;
+
+    for (uint8_t i = 0; i < points - 1; i++) {
+        float vHigh = curve[i][0]     * SOC_SCALE;
+        float socHigh = curve[i][1];
+        float vLow = curve[i + 1][0]  * SOC_SCALE;
+        float socLow = curve[i + 1][1];
+        if (packV <= vHigh && packV > vLow) {
+            float t = (packV - vLow) / (vHigh - vLow);
+            return (uint8_t)(socLow + t * (socHigh - socLow) + 0.5f);
+        }
+    }
+    return 0;
+}
 
 // -----------------------------------------------------------------------
 // Helper — transmit one CAN frame, print warning if it fails
@@ -101,11 +159,34 @@ static void can_send_limits(uint16_t chargeCurrentLimitAx10,
 // -----------------------------------------------------------------------
 // 0x355 — SoC and SoH
 //
-// Reports the highest SoC value received from any contributing BMS.
-// SoH is assumed 100% as the JBD BMS does not report it.
+// Reports SoC to the inverter from pack voltage rather than the BMS-reported
+// coulomb-counter SoC, because the BMS SoC can drift over time. The incoming
+// measuredSoc is deliberately unused here; RS485 telemetry can still expose
+// raw BMS SoC separately.
 // -----------------------------------------------------------------------
-static void can_send_soc(uint8_t measuredSoc) {
-    uint8_t soc = measuredSoc > 100 ? 100 : measuredSoc;
+static void can_send_soc(float packVoltage, uint8_t measuredSoc) {
+    (void)measuredSoc;
+
+    static float filteredV = -1.0f;
+    static unsigned long lastEmaMs = 0;
+
+    float rawV = packVoltage;
+    unsigned long nowMs = millis();
+
+    if (rawV > 0.0f) {
+        if (filteredV < 0.0f) {
+            filteredV = rawV;
+        } else if (SOC_EMA_TAU_S > 0.0f && lastEmaMs != 0) {
+            float dtSec = (nowMs - lastEmaMs) * 1.0e-3f;
+            float alpha = 1.0f - expf(-dtSec / SOC_EMA_TAU_S);
+            filteredV += alpha * (rawV - filteredV);
+        } else {
+            filteredV = rawV;
+        }
+        lastEmaMs = nowMs;
+    }
+
+    uint8_t soc = voltageToSoc(filteredV);
     uint8_t soh = 100;
 
     twai_message_t msg;
@@ -117,7 +198,8 @@ static void can_send_soc(uint8_t measuredSoc) {
     msg.data[2] = soh;
     msg.data[3] = 0x00;
     if (canSend(msg)) {
-        Serial.printf("[CAN TX 0x355] SoC=%u%% SoH=%u%%\n", soc, soh);
+        Serial.printf("[CAN TX 0x355] SoC=%u%% SoH=%u%% voltage=%.2fV filtered=%.2fV\n",
+                      soc, soh, rawV, filteredV);
     }
 }
 
@@ -251,7 +333,7 @@ void sendCANFrames(float voltage,
                    uint16_t chargeCurrentLimitAx10,
                    uint16_t dischargeCurrentLimitAx10) {
     can_send_limits(chargeCurrentLimitAx10, dischargeCurrentLimitAx10);
-    can_send_soc(soc);
+    can_send_soc(voltage, soc);
     can_send_measurements(voltage, current, temperature);
     can_send_alarms(voltage, temperature);
     can_send_request(chargeAllowed, dischargeAllowed);
