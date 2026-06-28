@@ -348,3 +348,9 @@
     - charge: `25.0A` per contributing battery (`250` in x10 units), so two batteries advertise `50A` total max charge current.
     - discharge: keep existing `40.0A` per contributing battery (`400` in x10 units), so two batteries still advertise `80A` total max discharge current.
   - PR/task was started to split charge/discharge constants and keep all existing cell-voltage derating logic intact.
+
+## 2026-06-11
+
+- New physical FIT/generation meter reading:
+  - `2026-06-11 16:26`: `34526.91 kWh`.
+  - This is a physical FIT/generation meter reading and can be compared against the current clean baseline (`2026-06-10 09:13`: `34513.02 kWh`) for later validation.
