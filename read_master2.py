@@ -4,7 +4,7 @@ Pi-side Solis-only poller.
 
 - Polls Solis inverter as Modbus slave 1 (FC04 input registers).
 - Writes Solis metrics to InfluxDB.
-- Adds Solis ToU low-battery protection logic.
+- Adds Solis ToU low-battery / low-PV no-charge protection logic.
 - Syncs the Solis inverter clock from the Pi clock once at startup only.
 
 ESP32 BMS slave 5 telemetry is handled by the separate read_esp_slave5.py script
@@ -13,26 +13,55 @@ on a dedicated second USB-RS485 adapter (CH340, /dev/serial/by-id/usb-1a86_USB2.
 Battery protection logic:
 
 NORMAL / UNKNOWN:
-  If gridPower < 0 W (importing) AND Solis SOC < 16% AND batteryDirectionFlag == 1 (discharging):
-    Write Solis ToU:
-      RUN with grid-charge allowed
-      charge current 0.5A (kick)
-      charge window now-2min -> now+12h
-    After 20 s, if still BATTERY_OFF: write charge current 0.0A (hold)
-    state = BATTERY_OFF
+  Condition A – grid-import low-SOC protection (original):
+    If gridPower < 0 W (importing) AND Solis SOC < 16% AND batteryDirectionFlag == 1
+    (discharging) AND SOC >= 10% (not in emergency range):
+      Write Solis ToU:
+        RUN with grid-charge allowed
+        charge current 0.5A (kick)
+        charge window now-2min -> now+12h
+      After 20 s, if still BATTERY_OFF: write charge current 0.0A (hold)
+      state = BATTERY_OFF
+
+  Condition B – low-PV no-charge (new):
+    If pvTotalPowerW < 100W AND SOC <= 15% AND SOC >= 10% (not in emergency range):
+      Enter BATTERY_OFF with the same ToU write sequence.
+      Prevents AC-side / grid energy from being stored into the Solis DC battery
+      when there is insufficient PV to justify charging.
+
+  Emergency override (new):
+    If SOC < 10%, neither Condition A nor Condition B will trigger BATTERY_OFF.
+    This ensures that after prolonged periods with no sun the DC battery can
+    still receive a charge before it drops to a critically damaging level.
+    If the controller is already in BATTERY_OFF when SOC falls below 10%, it
+    will exit immediately (see BATTERY_OFF emergency exit below).
 
 BATTERY_OFF:
-  If (pvTotalPowerW > 100W AND gridPower > 0W (exporting)) OR Solis SOC >= 20%:
-    Write Solis ToU:
-      STOP with grid-charge allowed
-      charge current 10.0A
-      charge window 00:00 -> 00:00
-    state = NORMAL
+  Normal exit:
+    If (pvTotalPowerW > 100W AND gridPower > 0W (exporting)) OR
+    Solis SOC >= BATTERY_OFF_EXIT_SOC (18%):
+      Write Solis ToU:
+        STOP with grid-charge allowed
+        charge current 10.0A
+        charge window 00:00 -> 00:00
+      state = NORMAL
+
+  Emergency exit (new):
+    If SOC < 10%:
+      Exit BATTERY_OFF unconditionally so the inverter can charge the
+      DC battery regardless of PV availability (emergency reserve).
 
 BATTERY_OFF refresh:
-  If still grid importing, SOC < 16%, and battery discharging, and the current 12h
-  OFF window has less than 2 hours remaining, refresh the OFF window with a new 0.5A
-  kick followed by the same 20 s -> 0.0A hold sequence.
+  If still grid importing, SOC < 16%, battery discharging, SOC >= 10%, and the
+  current 12h OFF window has less than 2 hours remaining, refresh the OFF window
+  with a new 0.5A kick followed by the same 20 s -> 0.0A hold sequence.
+
+Threshold constants (see config section below):
+  BATTERY_OFF_ENTER_SOC      = 16  % – enter BATTERY_OFF when SOC falls below this
+  BATTERY_OFF_EXIT_SOC       = 18  % – exit BATTERY_OFF when SOC recovers above this
+  LOW_PV_NOCHARGE_PV_W       = 100 W – PV below this is considered low/no PV
+  LOW_PV_NOCHARGE_SOC        = 15  % – block charging when PV is low and SOC <= this
+  EMERGENCY_CHARGE_SOC       = 10  % – allow charging regardless of PV below this SOC
 
 No persistent state is used. On startup, the script:
   1. Syncs the Solis inverter clock to Pi time (once only).
@@ -100,6 +129,20 @@ BATTERY_OFF_EXIT_GRID_EXPORT_W = 0.0
 BATTERY_OFF_EXIT_SOC = 18
 BATTERY_OFF_ENTER_SOC = 16
 BATTERY_OFF_ENTER_GRID_IMPORT_W = 0.0  # enter when grid < this (negative = importing)
+
+# Low-PV no-charge thresholds.
+# When PV output is below LOW_PV_NOCHARGE_PV_W and SOC is at or below
+# LOW_PV_NOCHARGE_SOC the controller enters BATTERY_OFF to prevent AC-side /
+# grid energy being stored into the Solis DC battery unnecessarily.
+LOW_PV_NOCHARGE_PV_W = 100.0   # W – PV power below this is considered low/no PV
+LOW_PV_NOCHARGE_SOC = 15        # % – block charging when PV is low and SOC <= this
+
+# Emergency charging threshold.
+# If SOC falls below this value the controller must allow charging even when
+# PV is low, overriding the low-PV no-charge rule and the normal grid-import
+# BATTERY_OFF entry rule, to prevent the DC battery from discharging to a
+# dangerously low level during an extended period with no sun.
+EMERGENCY_CHARGE_SOC = 10       # % – allow charging regardless of PV below this SOC
 
 # batteryDirectionFlag value that indicates the battery is discharging
 BATTERY_DIRECTION_DISCHARGING = 1
@@ -648,32 +691,78 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
     battery_direction_flag = int(s.get("batteryDirectionFlag", 0))
     state = controller.get("state", STATE_UNKNOWN)
 
+    # Emergency reserve: if SOC has dropped below EMERGENCY_CHARGE_SOC (10%) we
+    # must allow charging regardless of PV availability.  This overrides both the
+    # grid-import entry rule and the low-PV no-charge rule below.
+    emergency_charge = soc < EMERGENCY_CHARGE_SOC
+
+    # Original grid-import / low-SOC / discharging entry condition.
+    # Guarded by not emergency_charge so we never block charging when the
+    # DC battery is critically low.
     entry_ready = (
         grid < BATTERY_OFF_ENTER_GRID_IMPORT_W
         and soc < BATTERY_OFF_ENTER_SOC
         and battery_direction_flag == BATTERY_DIRECTION_DISCHARGING
+        and not emergency_charge
     )
+
+    # Low-PV no-charge: if PV is too low to be genuinely generating and SOC is
+    # at or below LOW_PV_NOCHARGE_SOC (15%), force BATTERY_OFF so that AC-side /
+    # grid energy cannot be stored into the Solis DC battery.
+    # Suppressed by emergency_charge so the DC battery can still recover after
+    # a prolonged period with no sun.
+    low_pv_nocharge = (
+        pv < LOW_PV_NOCHARGE_PV_W
+        and soc <= LOW_PV_NOCHARGE_SOC
+        and not emergency_charge
+    )
+
     pv_recovered = pv > BATTERY_OFF_EXIT_PV_W
     grid_exporting = grid > BATTERY_OFF_EXIT_GRID_EXPORT_W
     soc_recovered = soc >= BATTERY_OFF_EXIT_SOC
-    exit_ready = (pv_recovered and grid_exporting) or soc_recovered
+    # Also exit BATTERY_OFF on the emergency_charge condition so the inverter
+    # can charge the DC battery when SOC drops to a critically low level.
+    exit_ready = (pv_recovered and grid_exporting) or soc_recovered or emergency_charge
 
     print(
         f"[tou] state={state} pv={pv:.1f}W grid={grid:.1f}W soc={soc}% "
         f"batt_dir_flag={battery_direction_flag} entry_ready={entry_ready} "
+        f"low_pv_nocharge={low_pv_nocharge} emergency_charge={emergency_charge} "
         f"pv_recovered={pv_recovered} grid_exporting={grid_exporting} "
         f"soc_recovered={soc_recovered} exit_ready={exit_ready}"
     )
 
+    if emergency_charge:
+        print(
+            f"[tou] EMERGENCY CHARGE OVERRIDE: SOC {soc}% < {EMERGENCY_CHARGE_SOC}%; "
+            f"charging allowed regardless of PV"
+        )
+    elif low_pv_nocharge:
+        print(
+            f"[tou] LOW-PV NO-CHARGE: pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W "
+            f"and SOC {soc}% <= {LOW_PV_NOCHARGE_SOC}%; charging blocked"
+        )
+
     # Startup recovery.
     if state == STATE_UNKNOWN:
-        if entry_ready:
+        if entry_ready or low_pv_nocharge:
             if can_attempt_tou_write(controller):
-                enter_battery_off(
-                    ser,
-                    controller,
-                    reason=f"startup/unknown: grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, battery discharging",
-                )
+                if entry_ready and low_pv_nocharge:
+                    reason = (
+                        f"startup/unknown: grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, "
+                        f"battery discharging AND low-PV pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W"
+                    )
+                elif low_pv_nocharge:
+                    reason = (
+                        f"startup/unknown: low-PV no-charge, pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W, "
+                        f"SOC {soc}% <= {LOW_PV_NOCHARGE_SOC}%"
+                    )
+                else:
+                    reason = (
+                        f"startup/unknown: grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, "
+                        f"battery discharging"
+                    )
+                enter_battery_off(ser, controller, reason=reason)
             return
 
         # On startup we do not know whether BATTERY_OFF is actually active on the
@@ -684,38 +773,51 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
         # on the next poll cycles.
         controller["state"] = STATE_NORMAL
         print(
-            "[tou] startup/unknown: entry conditions not met (grid not importing or SOC not low or battery not discharging); "
+            "[tou] startup/unknown: entry conditions not met "
+            "(no low-PV no-charge, no grid-import low-SOC discharge, no emergency); "
             "assuming NORMAL without ToU writes"
         )
         return
 
     # Normal -> Battery-off.
     if state == STATE_NORMAL:
-        if entry_ready:
+        if entry_ready or low_pv_nocharge:
             if can_attempt_tou_write(controller):
-                enter_battery_off(
-                    ser,
-                    controller,
-                    reason=f"grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, battery discharging",
-                )
+                if entry_ready and low_pv_nocharge:
+                    reason = (
+                        f"grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, "
+                        f"battery discharging AND low-PV pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W"
+                    )
+                elif low_pv_nocharge:
+                    reason = (
+                        f"low-PV no-charge: pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W, "
+                        f"SOC {soc}% <= {LOW_PV_NOCHARGE_SOC}%"
+                    )
+                else:
+                    reason = (
+                        f"grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, "
+                        f"battery discharging"
+                    )
+                enter_battery_off(ser, controller, reason=reason)
         return
 
     # Battery-off -> Normal, or refresh rolling 12h window.
     if state == STATE_BATTERY_OFF:
         if exit_ready:
             if can_attempt_tou_write(controller):
-                exit_battery_off(
-                    ser,
-                    controller,
-                    reason=(
-                        f"SOC {soc}% >= {BATTERY_OFF_EXIT_SOC}% recovery"
-                        if soc_recovered
-                        else (
-                            f"PV {pv:.1f}W > {BATTERY_OFF_EXIT_PV_W}W "
-                            f"AND grid {grid:.1f}W > {BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)"
-                        )
-                    ),
-                )
+                if emergency_charge:
+                    exit_reason = (
+                        f"emergency charge override: SOC {soc}% < {EMERGENCY_CHARGE_SOC}%; "
+                        f"allowing charging regardless of PV"
+                    )
+                elif soc_recovered:
+                    exit_reason = f"SOC {soc}% >= {BATTERY_OFF_EXIT_SOC}% recovery"
+                else:
+                    exit_reason = (
+                        f"PV {pv:.1f}W > {BATTERY_OFF_EXIT_PV_W}W "
+                        f"AND grid {grid:.1f}W > {BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)"
+                    )
+                exit_battery_off(ser, controller, reason=exit_reason)
             return
 
         off_until = controller.get("battery_off_until_ts")
