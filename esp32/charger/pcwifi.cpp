@@ -113,6 +113,7 @@ static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL; // 10 seconds
 static const int           GTI_ALLOW_MAX_SOC_PCT     = 15;      // GTI is allowed when SoC is at or below this threshold.
 static const float         GTI_ALLOW_MIN_DISCHARGE_W = -2000.0f; // GTI is allowed when discharge is at or beyond this negative-power threshold.
 static unsigned long       lastEnergyPoll            = 0;
+static bool                gtiAllowedByDischarge     = false; // latched true when discharge > 2000W; cleared when Solis stops discharging
 
 static void clearGTIInhibit()
 {
@@ -220,9 +221,15 @@ void pollEnergyState()
     return;
   }
 
-  // Allow GTI either when the battery SoC is low or when the inverter is already
-  // discharging heavily, so the charger logic does not block GTI in those cases.
-  bool shouldAllow = (solisSoc <= GTI_ALLOW_MAX_SOC_PCT || solisP <= GTI_ALLOW_MIN_DISCHARGE_W);
+  // Allow GTI when the battery SoC is low, or when the inverter is (or was recently)
+  // discharging heavily. Once allowed by discharge, stay allowed until Solis stops
+  // discharging entirely (power >= 0), so a brief dip below the threshold doesn't
+  // immediately re-inhibit the GTI.
+  if (solisP <= GTI_ALLOW_MIN_DISCHARGE_W)      gtiAllowedByDischarge = true;
+  else if (solisP >= 0.0f)                       gtiAllowedByDischarge = false;
+  // else: still discharging but under threshold — keep the latch as-is
+
+  bool shouldAllow = (solisSoc <= GTI_ALLOW_MAX_SOC_PCT || gtiAllowedByDischarge);
   bool newInhibited = !shouldAllow;
 
   if (newInhibited != gtiInhibited)
@@ -230,7 +237,8 @@ void pollEnergyState()
     gtiInhibited = newInhibited;
     Serial.println("EnergyPoll: solis_power=" + String(solisP, 1) +
                    " W soc=" + String(solisSoc) +
-                   "% => GTI " + (gtiInhibited ? "INHIBITED" : "ALLOWED"));
+                   "% dischLatch=" + String(gtiAllowedByDischarge ? "Y" : "N") +
+                   " => GTI " + (gtiInhibited ? "INHIBITED" : "ALLOWED"));
     if (gtiInhibited)
     {
       turnGTIOff();
