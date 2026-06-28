@@ -113,6 +113,7 @@ static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL; // 10 seconds
 static const int           GTI_ALLOW_MAX_SOC_PCT     = 15;      // GTI is allowed when SoC is at or below this threshold.
 static const float         GTI_ALLOW_MIN_DISCHARGE_W = -2000.0f; // GTI is allowed when discharge is at or beyond this negative-power threshold.
 static unsigned long       lastEnergyPoll            = 0;
+static bool                energyPollOk              = true; // tracks last-known poll health for edge-only logging
 
 static void clearGTIInhibit()
 {
@@ -160,7 +161,7 @@ void pollEnergyState()
 
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("EnergyPoll: WiFi not connected - GTI allowed (fail-safe)");
+    if (energyPollOk) { Serial.println("EnergyPoll: WiFi not connected - GTI allowed (fail-safe)"); energyPollOk = false; }
     clearGTIInhibit();
     return;
   }
@@ -172,7 +173,7 @@ void pollEnergyState()
   int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK)
   {
-    Serial.println("EnergyPoll: HTTP error " + String(httpCode) + " - GTI allowed (fail-safe)");
+    if (energyPollOk) { Serial.println("EnergyPoll: HTTP error " + String(httpCode) + " - GTI allowed (fail-safe)"); energyPollOk = false; }
     http.end();
     clearGTIInhibit();
     return;
@@ -210,10 +211,12 @@ void pollEnergyState()
 
   if (!gotOk || ok != 1 || !gotP || !gotSoc)
   {
-    Serial.println("EnergyPoll: parse failed or ok=0 - GTI allowed (fail-safe)");
+    if (energyPollOk) { Serial.println("EnergyPoll: parse failed or ok=0 - GTI allowed (fail-safe)"); energyPollOk = false; }
     clearGTIInhibit();
     return;
   }
+
+  if (!energyPollOk) { Serial.println("EnergyPoll: recovered"); energyPollOk = true; }
 
   // Allow GTI either when the battery SoC is low or when the inverter is already
   // discharging heavily, so the charger logic does not block GTI in those cases.
