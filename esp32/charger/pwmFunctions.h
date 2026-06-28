@@ -20,4 +20,9 @@ void goBottom();
 void goMid();
 void goTop();
 void writePowerValuesToPSUs();
+
+// GTI inhibit state: true = GTI is blocked regardless of schedule
+extern bool gtiInhibited;
+// charger relay state: true = charger is on
+extern bool powerOn;
 #endif

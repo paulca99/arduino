@@ -28,8 +28,11 @@ Maybe if grid < -300 and afterburner off, engage afterburner.
 
 */
 boolean VOLTAGE_HIGH = false;
-boolean powerOn = false;
+bool powerOn = false;
 boolean afterburnerOn = false;
+// gtiInhibited: set true by pollEnergyState() when Solis data shows GTI should be blocked.
+// turnGTIOn() and turnPowerOff() both respect this flag.
+bool gtiInhibited = false;
 int gtiPin = 23;
 int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
@@ -139,7 +142,7 @@ void writePowerValuesToPSUs()
 void turnGTIOn()
 {
   VOLTAGE_HIGH = false;
-  if (GTIenabled)
+  if (GTIenabled && !gtiInhibited)
   {
     digitalWrite(gtiPin, HIGH);
   }
