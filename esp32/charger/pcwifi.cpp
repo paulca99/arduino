@@ -110,7 +110,7 @@ void generateCsvString()
 
 static const char*         ENERGY_STATE_URL          = "http://192.168.1.218/energy-state";
 static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL; // 10 seconds
-static const int           GTI_ALLOW_MAX_SOC_PCT     = 15;      // GTI is allowed when SoC is at or below this threshold.
+static const int           GTI_ALLOW_MAX_SOC_PCT     = 16;      // GTI is allowed when SoC is at or below this threshold.
 static const float         GTI_ALLOW_MIN_DISCHARGE_W = -2000.0f; // GTI is allowed when discharge is at or beyond this negative-power threshold.
 static unsigned long       lastEnergyPoll            = 0;
 static bool                gtiAllowedByDischarge     = false; // latched true when discharge > 2000W; cleared when Solis stops discharging
