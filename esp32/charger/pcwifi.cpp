@@ -71,6 +71,13 @@ static bool lastLoggedChargerAllowed = false;
 static bool lastEnergyFailureLogged = false;
 static unsigned long lastEnergyFailureLogMs = 0;
 
+static bool isSolisChargerPermitted()
+{
+  return solisEnergyOk &&
+         (solisPvTotalPower > solisMinPvForChargingW) &&
+         (solisBatteryPower > 0.0);
+}
+
 static void logEnergyDecisionState()
 {
   if (!lastLoggedSolisState ||
@@ -97,6 +104,7 @@ static void applyEnergyPermissions()
   bool gtiAllowed = true;
   if (!solisEnergyOk)
   {
+    // Fail safe: if polling fails or ok=0, leave GTI allowed and block the charger.
     gtiHardDischargeLatched = false;
   }
   else
@@ -113,9 +121,7 @@ static void applyEnergyPermissions()
   }
 
   gtiInhibited = !gtiAllowed;
-  solisChargerAllowed = solisEnergyOk &&
-                        (solisPvTotalPower > solisMinPvForChargingW) &&
-                        (solisBatteryPower > 0.0);
+  solisChargerAllowed = isSolisChargerPermitted();
 
   if (!powerOn && (gtiInhibited != previousGtiInhibited))
   {
@@ -285,7 +291,7 @@ void pollEnergyStateIfDue()
 
   if (!haveBatteryPower || !haveBatterySoc)
   {
-    logEnergyFailure("missing GTI keys", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+    logEnergyFailure("missing required keys: solis_battery_power and/or solis_battery_soc", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
     applyEnergyPermissions();
     return;
   }
@@ -300,9 +306,6 @@ void pollEnergyStateIfDue()
   }
 
   solisEnergyOk = true;
-  solisChargerAllowed = havePvTotalPower &&
-                        (solisPvTotalPower > solisMinPvForChargingW) &&
-                        (solisBatteryPower > 0.0);
   applyEnergyPermissions();
 }
 
