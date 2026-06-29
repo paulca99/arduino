@@ -70,7 +70,6 @@ float readBatteryOnce()
   // true_voltage = measured_voltage - (I * R), R = 0.10Ω measured
   float correctedVoltage = measuredVoltage - (charger.Irms * WIRING_RESISTANCE_OHMS);
   batteryTotalVoltage = correctedVoltage;
-  Serial.println("ADS V=" + (String)voltageOnPinADS + " measured=" + (String)measuredVoltage + " Irms=" + (String)charger.Irms + " corrected=" + (String)correctedVoltage);
   return batteryTotalVoltage;
 }
 
@@ -95,7 +94,6 @@ void setupBattery()
   else
   {
     ads1.setGain(GAIN_FOUR);  // ±1.024V — covers battery divider output (max ~1.017V at 60V)
-    Serial.println("ADS1 initialized with GAIN_FOUR");
   }
 
   for (int i = 0; i < arraySize; i++)

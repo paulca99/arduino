@@ -1,5 +1,6 @@
 #include "Arduino.h"
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include "espEmonLib.h"
 #include "battery.h"
 #include "pwmFunctions.h"
@@ -7,6 +8,8 @@
 #include <ESPAsyncWebSrv.h>
 
 extern bool GTIenabled;
+extern bool gtiInhibited;
+extern bool powerOn;
 extern struct tm timeinfo;
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
@@ -99,7 +102,157 @@ void generateCsvString()
 {
   csvString=(String)readBattery()+","+(String)grid.realPower+","+(String)grid.Vrms+","+(String)getTotalResistance()+","+(String)(chargerPower)+","+(String)(gtiPower)+","+(String)timeinfo.tm_hour+","+(String)GTIenabled+","+(String)chargerPLimit+",EOT\n";
 }
+
+// ── Pi energy-state polling ──────────────────────────────────────────────────
+// Poll http://192.168.1.218/energy-state every ENERGY_POLL_INTERVAL_MS ms.
+// Updates gtiInhibited based on Solis battery state.
+// Fail-safe: on any error or ok=0, gtiInhibited is cleared (GTI allowed).
+
+static const char*         ENERGY_STATE_URL          = "http://192.168.1.218/energy-state";
+static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL; // 10 seconds
+static const int           GTI_ALLOW_MAX_SOC_PCT     = 16;      // GTI is allowed when SoC is at or below this threshold.
+static const float         GTI_ALLOW_MIN_DISCHARGE_W = -2000.0f; // GTI is allowed when discharge is at or beyond this negative-power threshold.
+static unsigned long       lastEnergyPoll            = 0;
+static bool                gtiAllowedByDischarge     = false; // latched true when discharge > 2000W; cleared when Solis stops discharging
+
+static void clearGTIInhibit()
+{
+  if (gtiInhibited)
+  {
+    gtiInhibited = false;
+    if (!powerOn) turnGTIOn();
+  }
+}
+
+static bool parseIntStrict(String value, int& out)
+{
+  value.trim();
+  if (value.length() == 0) return false;
+
+  char* end = nullptr;
+  long parsed = strtol(value.c_str(), &end, 10);
+  if (end == value.c_str() || *end != '\0') return false;
+
+  out = (int)parsed;
+  return true;
+}
+
+static bool parseFloatStrict(String value, float& out)
+{
+  value.trim();
+  if (value.length() == 0) return false;
+
+  char* end = nullptr;
+  float parsed = strtof(value.c_str(), &end);
+  if (end == value.c_str() || *end != '\0') return false;
+
+  out = parsed;
+  return true;
+}
+
+void pollEnergyState()
+{
+  unsigned long now = millis();
+  if (now - lastEnergyPoll < ENERGY_POLL_INTERVAL_MS) return;
+  lastEnergyPoll = now;
+
+  // Only poll when GTI is enabled by the schedule; inhibit logic is irrelevant otherwise.
+  if (!GTIenabled) return;
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("EnergyPoll: WiFi not connected - GTI allowed (fail-safe)");
+    clearGTIInhibit();
+    return;
+  }
+
+  Serial.println("EnergyPoll: GET " + String(ENERGY_STATE_URL) + " (WiFi IP=" + WiFi.localIP().toString() + ")");
+
+  HTTPClient http;
+  http.begin(ENERGY_STATE_URL);
+  http.setTimeout(500); // 500 ms timeout
+
+  unsigned long t0 = millis();
+  int httpCode = http.GET();
+  unsigned long elapsed = millis() - t0;
+
+  if (httpCode != HTTP_CODE_OK)
+  {
+    Serial.println("EnergyPoll: HTTP error " + String(httpCode) + " after " + String(elapsed) + "ms - GTI allowed (fail-safe)");
+    http.end();
+    clearGTIInhibit();
+    return;
+  }
+
+  String body = http.getString();
+  http.end();
+
+  // Parse plain-text key=value lines
+  float solisP   = 0.0f;
+  int   solisSoc = 0;
+  int   ok       = 0;
+  bool  gotP     = false;
+  bool  gotSoc   = false;
+  bool  gotOk    = false;
+
+  int lineStart = 0;
+  while (lineStart < (int)body.length())
+  {
+    int lineEnd = body.indexOf('\n', lineStart);
+    if (lineEnd < 0) lineEnd = (int)body.length();
+    String line = body.substring(lineStart, lineEnd);
+    line.trim();
+    int eq = line.indexOf('=');
+    if (eq > 0)
+    {
+      String key = line.substring(0, eq);
+      String val = line.substring(eq + 1);
+      if (key == "solis_battery_power")    { gotP   = parseFloatStrict(val, solisP); }
+      else if (key == "solis_battery_soc") { gotSoc = parseIntStrict(val, solisSoc); }
+      else if (key == "ok")                { gotOk  = parseIntStrict(val, ok); }
+    }
+    lineStart = lineEnd + 1;
+  }
+
+  if (!gotOk || ok != 1 || !gotP || !gotSoc)
+  {
+    Serial.println("EnergyPoll: parse failed or ok=0 - GTI allowed (fail-safe)");
+    clearGTIInhibit();
+    return;
+  }
+
+  // Allow GTI when the battery SoC is low, or when the inverter is (or was recently)
+  // discharging heavily. Once allowed by discharge, stay allowed until Solis stops
+  // discharging entirely (power >= 0), so a brief dip below the threshold doesn't
+  // immediately re-inhibit the GTI.
+  if (solisP <= GTI_ALLOW_MIN_DISCHARGE_W)      gtiAllowedByDischarge = true;
+  else if (solisP >= 0.0f)                       gtiAllowedByDischarge = false;
+  // else: still discharging but under threshold — keep the latch as-is
+
+  bool shouldAllow = (solisSoc <= GTI_ALLOW_MAX_SOC_PCT || gtiAllowedByDischarge);
+  bool newInhibited = !shouldAllow;
+
+  if (newInhibited != gtiInhibited)
+  {
+    gtiInhibited = newInhibited;
+    Serial.println("EnergyPoll: solis_power=" + String(solisP, 1) +
+                   " W soc=" + String(solisSoc) +
+                   "% dischLatch=" + String(gtiAllowedByDischarge ? "Y" : "N") +
+                   " => GTI " + (gtiInhibited ? "INHIBITED" : "ALLOWED"));
+    if (gtiInhibited)
+    {
+      turnGTIOff();
+    }
+    else if (!powerOn)
+    {
+      turnGTIOn();
+    }
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 void wifiLoop() {
+  pollEnergyState();
   generateCsvString();
   WiFiClient client = server.available();  // Listen for incoming clients
   if (client) {  // If a new client connects,
