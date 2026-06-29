@@ -57,6 +57,7 @@ void autoLoop()
   readCharger();
   readGrid();
   readBattery();
+  pollEnergyStateIfDue();
   wifiLoop();
   if (checkTime == 50)
   {

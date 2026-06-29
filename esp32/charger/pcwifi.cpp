@@ -1,4 +1,5 @@
 #include "Arduino.h"
+#include <HTTPClient.h>
 #include <WiFi.h>
 #include "espEmonLib.h"
 #include "battery.h"
@@ -23,6 +24,7 @@ extern float chargerPower;
 extern float gtiPower;
 extern int chargerPLimit;
 extern int chargerPowerCreep;
+extern boolean powerOn;
 
 // Replace with your network credentials
 //const char* ssid = "TP-LINK_73F3";
@@ -45,6 +47,264 @@ const long interval=5000;
 const long timeoutTime = 2000;
 AsyncWebServer csvserver(8080);
 String csvString="1,2,3,4";
+
+float solisBatteryPower = 0.0;
+int solisBatterySoc = 0;
+float solisPvTotalPower = 0.0;
+bool solisEnergyOk = false;
+bool solisChargerAllowed = false;
+bool gtiInhibited = false;
+
+static const char *energyStateUrl = "http://192.168.1.218/energy-state";
+static const unsigned long energyStatePollIntervalMs = 10000;
+static const uint16_t energyStateTimeoutMs = 500;
+static const int solisLowSocThreshold = 15;
+static const float solisHardDischargeThresholdW = -2000.0;
+static const float solisMinPvForChargingW = 100.0;
+
+static unsigned long lastEnergyStatePollMs = 0;
+static bool gtiHardDischargeLatched = false;
+static bool lastLoggedSolisState = false;
+static bool lastLoggedEnergyOk = false;
+static bool lastLoggedGtiInhibited = false;
+static bool lastLoggedChargerAllowed = false;
+static bool lastEnergyFailureLogged = false;
+static unsigned long lastEnergyFailureLogMs = 0;
+
+static void logEnergyDecisionState()
+{
+  if (!lastLoggedSolisState ||
+      lastLoggedEnergyOk != solisEnergyOk ||
+      lastLoggedGtiInhibited != gtiInhibited ||
+      lastLoggedChargerAllowed != solisChargerAllowed)
+  {
+    Serial.println("Solis energy-state battP=" + (String)solisBatteryPower +
+                   " soc=" + (String)solisBatterySoc +
+                   " pv=" + (String)solisPvTotalPower +
+                   " ok=" + (String)solisEnergyOk +
+                   " GTI=" + (gtiInhibited ? String("INHIBITED") : String("ALLOWED")) +
+                   " charger=" + (solisChargerAllowed ? String("ALLOWED") : String("BLOCKED")));
+    lastLoggedSolisState = true;
+    lastLoggedEnergyOk = solisEnergyOk;
+    lastLoggedGtiInhibited = gtiInhibited;
+    lastLoggedChargerAllowed = solisChargerAllowed;
+  }
+}
+
+static void applyEnergyPermissions()
+{
+  bool previousGtiInhibited = gtiInhibited;
+  bool gtiAllowed = true;
+  if (!solisEnergyOk)
+  {
+    gtiHardDischargeLatched = false;
+  }
+  else
+  {
+    if (solisBatteryPower <= solisHardDischargeThresholdW)
+    {
+      gtiHardDischargeLatched = true;
+    }
+    else if (solisBatteryPower >= 0.0)
+    {
+      gtiHardDischargeLatched = false;
+    }
+    gtiAllowed = (solisBatterySoc <= solisLowSocThreshold) || gtiHardDischargeLatched;
+  }
+
+  gtiInhibited = !gtiAllowed;
+  solisChargerAllowed = solisEnergyOk &&
+                        (solisPvTotalPower > solisMinPvForChargingW) &&
+                        (solisBatteryPower > 0.0);
+
+  if (!powerOn && (gtiInhibited != previousGtiInhibited))
+  {
+    if (gtiInhibited)
+    {
+      turnGTIOff();
+    }
+    else
+    {
+      turnGTIOn();
+    }
+  }
+
+  logEnergyDecisionState();
+}
+
+static void logEnergyFailure(const String &reason, unsigned long elapsedMs, const String &decisionSummary)
+{
+  unsigned long now = millis();
+  if (!lastEnergyFailureLogged || (now - lastEnergyFailureLogMs) >= 60000)
+  {
+    Serial.println("energy-state poll failed after " + (String)elapsedMs + "ms: " + reason +
+                   " -> " + decisionSummary);
+    lastEnergyFailureLogged = true;
+    lastEnergyFailureLogMs = now;
+  }
+}
+
+void pollEnergyStateIfDue()
+{
+  unsigned long now = millis();
+  if (lastEnergyStatePollMs != 0 && (now - lastEnergyStatePollMs) < energyStatePollIntervalMs)
+  {
+    return;
+  }
+  lastEnergyStatePollMs = now;
+
+  solisBatteryPower = 0.0;
+  solisBatterySoc = 0;
+  solisPvTotalPower = 0.0;
+  solisEnergyOk = false;
+
+  unsigned long startMs = millis();
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    logEnergyFailure("WiFi disconnected", millis() - startMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+    applyEnergyPermissions();
+    return;
+  }
+
+  HTTPClient http;
+  http.setTimeout(energyStateTimeoutMs);
+  if (!http.begin(energyStateUrl))
+  {
+    logEnergyFailure("HTTP begin failed", millis() - startMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+    applyEnergyPermissions();
+    return;
+  }
+
+  int httpCode = http.GET();
+  unsigned long elapsedMs = millis() - startMs;
+  if (httpCode != HTTP_CODE_OK)
+  {
+    String reason = (httpCode > 0) ? ("HTTP " + String(httpCode)) : http.errorToString(httpCode);
+    http.end();
+    logEnergyFailure(reason, elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+    applyEnergyPermissions();
+    return;
+  }
+
+  String payload = http.getString();
+  http.end();
+
+  bool haveBatteryPower = false;
+  bool haveBatterySoc = false;
+  bool havePvTotalPower = false;
+  bool haveOk = false;
+  bool payloadOk = false;
+
+  int lineStart = 0;
+  while (lineStart < payload.length())
+  {
+    int lineEnd = payload.indexOf('\n', lineStart);
+    if (lineEnd == -1)
+    {
+      lineEnd = payload.length();
+    }
+
+    String line = payload.substring(lineStart, lineEnd);
+    line.trim();
+    if (line.length() > 0)
+    {
+      int equalsPos = line.indexOf('=');
+      if (equalsPos <= 0)
+      {
+        logEnergyFailure("parse error", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+        applyEnergyPermissions();
+        return;
+      }
+
+      String key = line.substring(0, equalsPos);
+      String value = line.substring(equalsPos + 1);
+      value.trim();
+
+      if (key == "solis_battery_power")
+      {
+        if (value.length() == 0)
+        {
+          logEnergyFailure("missing solis_battery_power", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+          applyEnergyPermissions();
+          return;
+        }
+        solisBatteryPower = value.toFloat();
+        haveBatteryPower = true;
+      }
+      else if (key == "solis_battery_soc")
+      {
+        if (value.length() == 0)
+        {
+          logEnergyFailure("missing solis_battery_soc", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+          applyEnergyPermissions();
+          return;
+        }
+        solisBatterySoc = value.toInt();
+        haveBatterySoc = true;
+      }
+      else if (key == "solis_pv_total_power")
+      {
+        if (value.length() == 0)
+        {
+          logEnergyFailure("missing solis_pv_total_power", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+          applyEnergyPermissions();
+          return;
+        }
+        solisPvTotalPower = value.toFloat();
+        havePvTotalPower = true;
+      }
+      else if (key == "ok")
+      {
+        if (value.length() == 0)
+        {
+          logEnergyFailure("missing ok value", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+          applyEnergyPermissions();
+          return;
+        }
+        payloadOk = (value.toInt() == 1);
+        haveOk = true;
+      }
+    }
+
+    lineStart = lineEnd + 1;
+  }
+
+  if (!haveOk)
+  {
+    logEnergyFailure("missing ok", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+    applyEnergyPermissions();
+    return;
+  }
+
+  if (!payloadOk)
+  {
+    logEnergyFailure("ok=0", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+    applyEnergyPermissions();
+    return;
+  }
+
+  if (!haveBatteryPower || !haveBatterySoc)
+  {
+    logEnergyFailure("missing GTI keys", elapsedMs, "GTI ALLOWED fail-safe, AC charger BLOCKED fail-safe");
+    applyEnergyPermissions();
+    return;
+  }
+
+  if (!havePvTotalPower)
+  {
+    logEnergyFailure("missing charger PV key", elapsedMs, "GTI decision kept from valid Solis data, AC charger BLOCKED fail-safe");
+  }
+  else
+  {
+    lastEnergyFailureLogged = false;
+  }
+
+  solisEnergyOk = true;
+  solisChargerAllowed = havePvTotalPower &&
+                        (solisPvTotalPower > solisMinPvForChargingW) &&
+                        (solisBatteryPower > 0.0);
+  applyEnergyPermissions();
+}
 
 void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info){
   Serial.println("WiFi connected");

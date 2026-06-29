@@ -139,7 +139,7 @@ void writePowerValuesToPSUs()
 void turnGTIOn()
 {
   VOLTAGE_HIGH = false;
-  if (GTIenabled)
+  if (GTIenabled && !gtiInhibited)
   {
     digitalWrite(gtiPin, HIGH);
   }
@@ -407,6 +407,7 @@ void reduceChargerPower(float startingChargerPower)
 
 void adjustCharger()
 {
+  static bool loggedSolisChargerBlock = false;
 
   float vbatt = readBattery();
   bool vLimitHit = voltageLimitReached2();
@@ -426,6 +427,28 @@ void adjustCharger()
   {
     Serial.println(" " + (String)presentChargerPower);
   }
+  if (powerOn && !solisChargerAllowed)
+  {
+    if (!loggedSolisChargerBlock)
+    {
+      Serial.println("Solis charger permission lost - ramping down / turning charger off");
+      loggedSolisChargerBlock = true;
+    }
+    if (isAtMinPower())
+    {
+      turnPowerOff();
+    }
+    else
+    {
+      decrementPower(true, 30);
+      if (isAtMinPower())
+      {
+        turnPowerOff();
+      }
+    }
+    return;
+  }
+  loggedSolisChargerBlock = false;
   if (grid.realPower > upperChargerLimit || vbatt > voltageLimit || presentChargerPower > chargerPLimit)
   {
     if (isAtMinPower() && powerOn)
@@ -438,7 +461,7 @@ void adjustCharger()
       reduceChargerPower(presentChargerPower);
     }
   }
-  else if (SOC < 99 && grid.realPower < lowerChargerLimit)
+  else if (SOC < 99 && grid.realPower < lowerChargerLimit && solisChargerAllowed)
   {
     if (!powerOn)
     {
