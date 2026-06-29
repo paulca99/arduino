@@ -10,6 +10,7 @@
 extern bool GTIenabled;
 extern bool gtiInhibited;
 extern bool powerOn;
+extern bool solisChargerAllowed;
 extern struct tm timeinfo;
 extern EnergyMonitor grid;
 extern EnergyMonitor charger;
@@ -105,15 +106,19 @@ void generateCsvString()
 
 // ── Pi energy-state polling ──────────────────────────────────────────────────
 // Poll http://192.168.1.218/energy-state every ENERGY_POLL_INTERVAL_MS ms.
-// Updates gtiInhibited based on Solis battery state.
-// Fail-safe: on any error or ok=0, gtiInhibited is cleared (GTI allowed).
+// Updates gtiInhibited and solisChargerAllowed based on Solis state.
+//
+// Fail-safe behaviour (intentionally asymmetric):
+//   GTI:     fails OPEN  — on any error, gtiInhibited is cleared (GTI allowed).
+//   Charger: fails CLOSED — on any error, solisChargerAllowed = false (charger blocked).
 
 static const char*         ENERGY_STATE_URL          = "http://192.168.1.218/energy-state";
-static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL; // 10 seconds
-static const int           GTI_ALLOW_MAX_SOC_PCT     = 16;      // GTI is allowed when SoC is at or below this threshold.
-static const float         GTI_ALLOW_MIN_DISCHARGE_W = -2000.0f; // GTI is allowed when discharge is at or beyond this negative-power threshold.
+static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL;   // 10 seconds
+static const int           GTI_ALLOW_MAX_SOC_PCT     = 16;        // GTI allowed when SoC <= this
+static const float         GTI_ALLOW_MIN_DISCHARGE_W = -2000.0f;  // GTI allowed when discharging beyond this
+static const float         CHARGER_MIN_PV_W          = 100.0f;    // AC charger needs PV above this
 static unsigned long       lastEnergyPoll            = 0;
-static bool                gtiAllowedByDischarge     = false; // latched true when discharge > 2000W; cleared when Solis stops discharging
+static bool                gtiAllowedByDischarge     = false; // latched; cleared when Solis power >= 0
 
 static void clearGTIInhibit()
 {
@@ -121,6 +126,15 @@ static void clearGTIInhibit()
   {
     gtiInhibited = false;
     if (!powerOn) turnGTIOn();
+  }
+}
+
+static void blockCharger()
+{
+  if (solisChargerAllowed)
+  {
+    solisChargerAllowed = false;
+    Serial.println("EnergyPoll: AC charger BLOCKED (fail-safe)");
   }
 }
 
@@ -156,13 +170,11 @@ void pollEnergyState()
   if (now - lastEnergyPoll < ENERGY_POLL_INTERVAL_MS) return;
   lastEnergyPoll = now;
 
-  // Only poll when GTI is enabled by the schedule; inhibit logic is irrelevant otherwise.
-  if (!GTIenabled) return;
-
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("EnergyPoll: WiFi not connected - GTI allowed (fail-safe)");
+    Serial.println("EnergyPoll: WiFi not connected - GTI allowed (fail-safe), AC charger blocked (fail-safe)");
     clearGTIInhibit();
+    blockCharger();
     return;
   }
 
@@ -178,20 +190,24 @@ void pollEnergyState()
 
   if (httpCode != HTTP_CODE_OK)
   {
-    Serial.println("EnergyPoll: HTTP error " + String(httpCode) + " after " + String(elapsed) + "ms - GTI allowed (fail-safe)");
+    Serial.println("EnergyPoll: HTTP error " + String(httpCode) + " after " + String(elapsed) +
+                   "ms - GTI allowed (fail-safe), AC charger blocked (fail-safe)");
     http.end();
     clearGTIInhibit();
+    blockCharger();
     return;
   }
 
   String body = http.getString();
   http.end();
 
-  // Parse plain-text key=value lines
+  // Parse plain-text key=value lines; unknown keys are silently ignored.
   float solisP   = 0.0f;
+  float solisPv  = 0.0f;
   int   solisSoc = 0;
   int   ok       = 0;
   bool  gotP     = false;
+  bool  gotPv    = false;
   bool  gotSoc   = false;
   bool  gotOk    = false;
 
@@ -207,29 +223,33 @@ void pollEnergyState()
     {
       String key = line.substring(0, eq);
       String val = line.substring(eq + 1);
-      if (key == "solis_battery_power")    { gotP   = parseFloatStrict(val, solisP); }
-      else if (key == "solis_battery_soc") { gotSoc = parseIntStrict(val, solisSoc); }
-      else if (key == "ok")                { gotOk  = parseIntStrict(val, ok); }
+      if      (key == "solis_battery_power")   { gotP   = parseFloatStrict(val, solisP);  }
+      else if (key == "solis_battery_soc")     { gotSoc = parseIntStrict(val, solisSoc);  }
+      else if (key == "solis_pv_total_power")  { gotPv  = parseFloatStrict(val, solisPv); }
+      else if (key == "ok")                    { gotOk  = parseIntStrict(val, ok);        }
+      // all other keys are ignored
     }
     lineStart = lineEnd + 1;
   }
 
+  // Basic validity: ok, battery_power, and soc are required for GTI logic.
   if (!gotOk || ok != 1 || !gotP || !gotSoc)
   {
-    Serial.println("EnergyPoll: parse failed or ok=0 - GTI allowed (fail-safe)");
+    Serial.println("EnergyPoll: parse failed or ok=0 - GTI allowed (fail-safe), AC charger blocked (fail-safe)");
     clearGTIInhibit();
+    blockCharger();
     return;
   }
 
-  // Allow GTI when the battery SoC is low, or when the inverter is (or was recently)
-  // discharging heavily. Once allowed by discharge, stay allowed until Solis stops
-  // discharging entirely (power >= 0), so a brief dip below the threshold doesn't
-  // immediately re-inhibit the GTI.
+  // ── GTI inhibit logic (unchanged from PR #110) ───────────────────────────
+  // Allow GTI when SoC is low, or when the inverter is (or was recently)
+  // discharging heavily. Once allowed by discharge, stay allowed until Solis
+  // stops discharging entirely (power >= 0).
   if (solisP <= GTI_ALLOW_MIN_DISCHARGE_W)      gtiAllowedByDischarge = true;
   else if (solisP >= 0.0f)                       gtiAllowedByDischarge = false;
   // else: still discharging but under threshold — keep the latch as-is
 
-  bool shouldAllow = (solisSoc <= GTI_ALLOW_MAX_SOC_PCT || gtiAllowedByDischarge);
+  bool shouldAllow  = (solisSoc <= GTI_ALLOW_MAX_SOC_PCT || gtiAllowedByDischarge);
   bool newInhibited = !shouldAllow;
 
   if (newInhibited != gtiInhibited)
@@ -247,6 +267,20 @@ void pollEnergyState()
     {
       turnGTIOn();
     }
+  }
+
+  // ── AC charger permission logic ──────────────────────────────────────────
+  // Allowed only when: PV key is present AND PV > 100 W AND Solis battery is
+  // charging (battery_power > 0 W). Missing PV key blocks the charger but does
+  // NOT affect the GTI decision above.
+  bool newChargerAllowed = (gotPv && solisPv > CHARGER_MIN_PV_W && solisP > 0.0f);
+
+  if (newChargerAllowed != solisChargerAllowed)
+  {
+    solisChargerAllowed = newChargerAllowed;
+    Serial.println("EnergyPoll: solis_pv=" + String(solisPv, 1) +
+                   " W solis_power=" + String(solisP, 1) +
+                   " W => AC charger " + (solisChargerAllowed ? "ALLOWED" : "BLOCKED"));
   }
 }
 // ────────────────────────────────────────────────────────────────────────────

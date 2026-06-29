@@ -25,4 +25,7 @@ void writePowerValuesToPSUs();
 extern bool gtiInhibited;
 // charger relay state: true = charger is on
 extern bool powerOn;
+// Solis charger permission: true = AC charger may start/run.
+// Set by pollEnergyState(). Fail-safe is false (charger blocked on any poll error).
+extern bool solisChargerAllowed;
 #endif
