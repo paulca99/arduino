@@ -117,6 +117,7 @@ static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL;   // 10 seconds
 static const int           GTI_ALLOW_MAX_SOC_PCT     = 16;        // GTI allowed when SoC <= this
 static const float         GTI_ALLOW_MIN_DISCHARGE_W = -2000.0f;  // GTI allowed when discharging beyond this
 static const float         CHARGER_MIN_PV_W          = 100.0f;    // AC charger needs PV above this
+static const float         CHARGER_MIN_BATT_CHARGE_W = 0.0f;      // Solis battery must be charging (power > this)
 static unsigned long       lastEnergyPoll            = 0;
 static bool                gtiAllowedByDischarge     = false; // latched; cleared when Solis power >= 0
 
@@ -273,13 +274,13 @@ void pollEnergyState()
   // Allowed only when: PV key is present AND PV > 100 W AND Solis battery is
   // charging (battery_power > 0 W). Missing PV key blocks the charger but does
   // NOT affect the GTI decision above.
-  bool newChargerAllowed = (gotPv && solisPv > CHARGER_MIN_PV_W && solisP > 0.0f);
+  bool newChargerAllowed = (gotPv && solisPv > CHARGER_MIN_PV_W && solisP > CHARGER_MIN_BATT_CHARGE_W);
 
   if (newChargerAllowed != solisChargerAllowed)
   {
     solisChargerAllowed = newChargerAllowed;
-    Serial.println("EnergyPoll: solis_pv=" + String(solisPv, 1) +
-                   " W solis_power=" + String(solisP, 1) +
+    Serial.println("EnergyPoll: solis_pv_total_power=" + String(solisPv, 1) +
+                   " W solis_battery_power=" + String(solisP, 1) +
                    " W => AC charger " + (solisChargerAllowed ? "ALLOWED" : "BLOCKED"));
   }
 }
