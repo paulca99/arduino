@@ -33,6 +33,10 @@ boolean afterburnerOn = false;
 // gtiInhibited: set true by pollEnergyState() when Solis data shows GTI should be blocked.
 // turnGTIOn() and turnPowerOff() both respect this flag.
 bool gtiInhibited = false;
+// solisChargerAllowed: set true by pollEnergyState() only when Solis PV > 100 W AND
+// Solis/DC battery is charging (battery_power > 0). Fail-safe is false: any poll
+// failure, ok=0, or missing PV value blocks the AC charger.
+bool solisChargerAllowed = false;
 int gtiPin = 23;
 int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
@@ -418,6 +422,17 @@ void adjustCharger()
     decrementPower(true, 30);
   }
 
+  // Solis charger permission check (fail-closed).
+  // If the charger is already running and Solis permission has been revoked
+  // (PV gone, poll failure, etc.), ramp down and switch off cleanly.
+  if (powerOn && !solisChargerAllowed)
+  {
+    Serial.println("Solis charger permission revoked - ramping down AC charger");
+    rampDown();
+    turnPowerOff();
+    return;
+  }
+
   //  if (vbatt )
   //  {
   //    maintainVoltage();
@@ -441,7 +456,7 @@ void adjustCharger()
       reduceChargerPower(presentChargerPower);
     }
   }
-  else if (SOC < 99 && grid.realPower < lowerChargerLimit)
+  else if (SOC < 99 && grid.realPower < lowerChargerLimit && solisChargerAllowed)
   {
     if (!powerOn)
     {
