@@ -114,7 +114,7 @@ void generateCsvString()
 
 static const char*         ENERGY_STATE_URL          = "http://192.168.1.218/energy-state";
 static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL;   // 10 seconds
-static const int           GTI_ALLOW_MAX_SOC_PCT     = 16;        // GTI allowed when SoC <= this
+static const int           GTI_ALLOW_MAX_SOC_PCT     = 17;        // GTI allowed when SoC <= this
 static const float         GTI_ALLOW_MIN_DISCHARGE_W = -2000.0f;  // GTI allowed when discharging beyond this
 static const float         CHARGER_MIN_PV_W          = 100.0f;    // AC charger needs PV above this
 static const float         CHARGER_MIN_BATT_CHARGE_W = 0.0f;      // Solis battery must be charging (power > this)
