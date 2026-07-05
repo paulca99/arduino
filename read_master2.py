@@ -186,6 +186,14 @@ TOU_CURRENT_10_0A = 100
 # Seconds after entering/refreshing BATTERY_OFF before writing 0.0A hold current.
 BATTERY_OFF_HOLD_DELAY_S = 30
 
+# ── Eon Next Drive cheap-rate window ──────────────────────────────
+CHEAP_RATE_START_HOUR    = 0     # 00:00
+CHEAP_RATE_END_HOUR      = 6     # 06:00
+# Only lock the DC battery off when the grid is importing more than this.
+# When the AC battery is nearly full the grid draw drops below this and
+# the DC battery is free to discharge and balance the grid normally.
+CHEAP_RATE_LOCK_IMPORT_W = 200.0
+
 
 # ----------------------------------------------------------------------
 # Modbus helpers
@@ -290,6 +298,12 @@ def flush_serial_input(ser: serial.Serial) -> None:
 # ----------------------------------------------------------------------
 # Influx
 # ----------------------------------------------------------------------
+
+def in_cheap_rate_window() -> bool:
+    """Return True during the Eon Next Drive cheap-rate window (00:00-06:00)."""
+    h = datetime.now().hour
+    return CHEAP_RATE_START_HOUR <= h < CHEAP_RATE_END_HOUR
+
 
 def write_line(measurement: str, value, source_tag: str):
     if value is None:
@@ -404,6 +418,7 @@ def write_solis_metrics(s: dict, poll_count: int, read_errors: int, controller_s
         STATE_BATTERY_OFF: 2,
     }.get(controller_state, 0)
     write_line("solis_battery_off_controller_state", state_num, SOLIS_SOURCE_TAG)
+    write_line("solis_cheap_rate_active", 1 if in_cheap_rate_window() else 0, SOLIS_SOURCE_TAG)
 
 
 # ----------------------------------------------------------------------
@@ -690,11 +705,50 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
     soc = int(s.get("batterySoc", 0))
     battery_direction_flag = int(s.get("batteryDirectionFlag", 0))
     state = controller.get("state", STATE_UNKNOWN)
+    cheap_rate = in_cheap_rate_window()
 
     # Emergency reserve: if SOC has dropped below EMERGENCY_CHARGE_SOC (10%) we
     # must allow charging regardless of PV availability.  This overrides both the
     # grid-import entry rule and the low-PV no-charge rule below.
     emergency_charge = soc < EMERGENCY_CHARGE_SOC
+
+    # ── Cheap-rate DC battery lock ────────────────────────────────────────────
+    # During 00:00-06:00 the AC charger draws from the grid.
+    # Lock DC battery off ONLY when the grid is importing hard (AC charger busy).
+    # When grid is near 0 or exporting, release the lock so DC can discharge.
+    # Emergency override (SOC < EMERGENCY_CHARGE_SOC) always beats cheap-rate lock.
+    if cheap_rate and not emergency_charge:
+        ac_charger_drawing_hard = grid < -CHEAP_RATE_LOCK_IMPORT_W  # negative = import
+
+        if ac_charger_drawing_hard:
+            # AC charger pulling hard — DC battery must stay off
+            if state != STATE_BATTERY_OFF:
+                if can_attempt_tou_write(controller):
+                    enter_battery_off(
+                        ser, controller,
+                        reason=f"cheap-rate: AC charger drawing {-grid:.0f}W from grid, locking DC battery off"
+                    )
+            controller["cheap_rate_locked"] = True
+            return  # skip normal state machine while locked
+
+        else:
+            # AC battery nearly full, grid near 0 or exporting — release the lock
+            if controller.get("cheap_rate_locked") and state == STATE_BATTERY_OFF:
+                if can_attempt_tou_write(controller):
+                    exit_battery_off(
+                        ser, controller,
+                        reason=f"cheap-rate: AC battery nearly full (grid={grid:.0f}W), releasing DC lock"
+                    )
+            controller["cheap_rate_locked"] = False
+            # Fall through to normal state machine so DC can respond to conditions
+
+    elif not cheap_rate and controller.get("cheap_rate_locked"):
+        # Cheap-rate window just ended — release any remaining lock
+        controller["cheap_rate_locked"] = False
+        if state == STATE_BATTERY_OFF:
+            if can_attempt_tou_write(controller):
+                exit_battery_off(ser, controller, reason="cheap-rate window ended at 06:00")
+        # Fall through to normal state machine
 
     # Original grid-import / low-SOC / discharging entry condition.
     # Guarded by not emergency_charge so we never block charging when the
@@ -924,6 +978,7 @@ def main():
         "battery_off_until_ts": None,
         "last_tou_write_ts": 0,
         "battery_off_hold_ts": None,
+        "cheap_rate_locked": False,
     }
 
     with serial.Serial(

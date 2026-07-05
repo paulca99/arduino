@@ -163,7 +163,8 @@ void turnPowerOff()
   powerOn = false;
   turnGTIOn();
   upperChargerLimit = 0;
-  lowerChargerLimit = -100;
+  if (!inCheapRateWindow)
+    lowerChargerLimit = -100;
 }
 void turnPowerOn()
 {
@@ -177,7 +178,8 @@ void turnPowerOn()
   powerOn = true;
   turnGTIOff();
   upperChargerLimit = 100;
-  lowerChargerLimit = 0;
+  if (!inCheapRateWindow)
+    lowerChargerLimit = 0;
 }
 void turnAfterburnerOff()
 {
@@ -425,7 +427,7 @@ void adjustCharger()
   // Solis charger permission check (fail-closed).
   // If the charger is already running and Solis permission has been revoked
   // (PV gone, poll failure, etc.), ramp down and switch off cleanly.
-  if (powerOn && !solisChargerAllowed)
+  if (powerOn && !solisChargerAllowed && !inCheapRateWindow)
   {
     Serial.println("Solis charger permission revoked - ramping down AC charger");
     rampDown();
@@ -456,7 +458,7 @@ void adjustCharger()
       reduceChargerPower(presentChargerPower);
     }
   }
-  else if (SOC < 99 && grid.realPower < lowerChargerLimit && solisChargerAllowed)
+  else if (SOC < 99 && grid.realPower < lowerChargerLimit && (solisChargerAllowed || inCheapRateWindow))
   {
     if (!powerOn)
     {

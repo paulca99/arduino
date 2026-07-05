@@ -1,6 +1,7 @@
 #include "Arduino.h"
 #include "espEmonLib.h"
 #include "pwmFunctions.h"
+#include "timestuff.h"
 
 extern int lowerChargerLimit;
 const int resolution = 8; // 2^8 = 256
@@ -80,12 +81,12 @@ float readGti()
     current = 0;
   }
   gtiPower = current * grid.Vrms;
- if (gtiPower > 120)
-  {
-    lowerChargerLimit = (gtiPower ) * -1;
+ if (!inCheapRateWindow) {
+    if (gtiPower > 120)
+      lowerChargerLimit = (gtiPower) * -1;
+    else
+      lowerChargerLimit = -120;
   }
-  else
-    lowerChargerLimit = -120;
 
   return gtiPower;
   // need to average over 20 like the battery average

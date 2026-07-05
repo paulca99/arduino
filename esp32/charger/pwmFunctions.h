@@ -28,4 +28,6 @@ extern bool powerOn;
 // Solis charger permission: true = AC charger may start/run.
 // Set by pollEnergyState(). Fail-safe is false (charger blocked on any poll error).
 extern bool solisChargerAllowed;
+// True when current time is in the cheap-rate window (00:00-06:00).
+extern bool inCheapRateWindow;
 #endif

@@ -17,6 +17,11 @@ int GTI_off_time = 23;
 int startChargingTime = 6;
 int stopChargingTime = 18;
 
+// ── Eon Next Drive cheap-rate ─────────────────────────────────────
+static const int CHEAP_RATE_START = 0;   // 00:00
+static const int CHEAP_RATE_END   = 6;   // 06:00
+bool inCheapRateWindow = false;
+
 void timeSetup()
 {
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
@@ -48,6 +53,26 @@ void timeLoop()
 
      // GTIenabled = false;
      // turnGTIOff();
+    }
+
+    // ── Cheap-rate window management ─────────────────────────────────
+    bool nowCheap = (timeinfo.tm_hour >= CHEAP_RATE_START && timeinfo.tm_hour < CHEAP_RATE_END);
+
+    if (nowCheap && !inCheapRateWindow) {
+      // Entering cheap-rate window
+      inCheapRateWindow = true;
+      lowerChargerLimit = -9999;
+      GTIenabled = false;
+      turnGTIOff();
+      Serial.println("[CheapRate] STARTED: lowerChargerLimit=-9999, GTI OFF");
+    }
+    else if (!nowCheap && inCheapRateWindow) {
+      // Leaving cheap-rate window
+      inCheapRateWindow = false;
+      lowerChargerLimit = 0;
+      GTIenabled = true;
+      Serial.println("[CheapRate] ENDED: lowerChargerLimit=0, GTI re-enabled");
+      // The GTI_on_time block above will call turnGTIOn() on the next timeLoop() call if appropriate
     }
   }
 }
