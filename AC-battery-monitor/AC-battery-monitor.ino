@@ -723,10 +723,11 @@ static void printSummary() {
 
 static void checkDailyRestart() {
   if (dailyRestartStarted) return;
-  if ((unsigned long)(millis() - bootMillis) < DAILY_RESTART_INTERVAL_MS) return;
+  unsigned long elapsedMs = millis() - bootMillis;
+  if (elapsedMs < DAILY_RESTART_INTERVAL_MS) return;
 
   dailyRestartStarted = true;
-  Serial.printf("Daily restart interval reached after %lu seconds; restarting AC_BMS_MONITOR\n", millis() / 1000UL);
+  Serial.printf("Daily restart interval reached after %lu seconds; restarting AC_BMS_MONITOR\n", elapsedMs / 1000UL);
   delay(1000);
   ESP.restart();
 }
