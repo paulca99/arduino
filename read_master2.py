@@ -327,12 +327,12 @@ def write_line(measurement: str, value, source_tag: str):
 # ----------------------------------------------------------------------
 
 def normalize_charger_plimit_key(key: str) -> str:
-    """Lowercase and strip punctuation so chargerPlimit keys match robustly."""
+    """Remove non-alphanumerics and lowercase for robust chargerPlimit key matching."""
     return re.sub(r"[^a-z0-9]+", "", key.lower())
 
 
 def coerce_int(value: Any) -> Optional[int]:
-    """Convert supported scalar values to int while rejecting booleans."""
+    """Convert supported scalar values to int while rejecting booleans as 1/0."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -851,7 +851,9 @@ def manage_battery_off_controller(
     # can charge the DC battery when SOC drops to a critically low level.
     exit_ready = (pv_recovered and grid_exporting) or soc_recovered or emergency_charge
     charger_limit_active = (
-        charger_plimit == CHARGER_PLIMIT_BATTERY_OFF and not emergency_charge
+        charger_plimit is not None
+        and charger_plimit == CHARGER_PLIMIT_BATTERY_OFF
+        and not emergency_charge
     )
     charger_limit_normal = charger_plimit == CHARGER_PLIMIT_NORMAL
     charger_plimit_known = charger_plimit is not None
@@ -885,7 +887,7 @@ def manage_battery_off_controller(
 
     protection_entry_active = entry_ready or low_pv_nocharge
 
-    def enter_reason(prefix: str = "") -> str:
+    def build_entry_reason(prefix: str = "") -> str:
         """Build a human-readable BATTERY_OFF entry reason from active conditions."""
         reasons = []
         if charger_limit_active:
@@ -905,7 +907,7 @@ def manage_battery_off_controller(
         if protection_entry_active or charger_limit_active:
             if can_attempt_tou_write(controller):
                 is_charger_only_trigger = charger_limit_active and not protection_entry_active
-                ok = enter_battery_off(ser, controller, reason=enter_reason(prefix="startup/unknown: "))
+                ok = enter_battery_off(ser, controller, reason=build_entry_reason(prefix="startup/unknown: "))
                 if ok:
                     controller["charger_plimit_forced_battery_off"] = is_charger_only_trigger
             return
@@ -930,7 +932,7 @@ def manage_battery_off_controller(
         if protection_entry_active or charger_limit_active:
             if can_attempt_tou_write(controller):
                 is_charger_only_trigger = charger_limit_active and not protection_entry_active
-                ok = enter_battery_off(ser, controller, reason=enter_reason())
+                ok = enter_battery_off(ser, controller, reason=build_entry_reason())
                 if ok:
                     controller["charger_plimit_forced_battery_off"] = is_charger_only_trigger
         return
@@ -944,6 +946,9 @@ def manage_battery_off_controller(
             remaining_s = off_until - time.time()
 
         if charger_plimit_forced_battery_off and not charger_plimit_known:
+            # Missing/unparseable charger data must not cause entry/exit
+            # transitions for charger-limit-forced BATTERY_OFF. Keep the current
+            # state latched and refresh the rolling OFF window when needed.
             if remaining_s < BATTERY_OFF_REFRESH_WHEN_REMAINING_S:
                 if can_attempt_tou_write(controller):
                     enter_battery_off(
@@ -961,6 +966,8 @@ def manage_battery_off_controller(
                 # Keep BATTERY_OFF latched while the charger itself still reports
                 # the limited/blocked state, even if the normal PV/SOC exit rules
                 # are satisfied, so we do not release the inverter prematurely.
+                # The charger_plimit_forced_battery_off flag only controls the
+                # special auto-release when chargerPlimit returns to 2900.
                 return
             if can_attempt_tou_write(controller):
                 if emergency_charge:
@@ -1005,7 +1012,7 @@ def manage_battery_off_controller(
                     controller,
                     reason=(
                         f"refresh rolling OFF window, remaining={remaining_s / 3600.0:.2f}h, "
-                        f"{enter_reason()}"
+                        f"{build_entry_reason()}"
                     ),
                 )
         return
