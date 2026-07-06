@@ -806,7 +806,7 @@ def apply_battery_off_hold(ser: serial.Serial, controller: dict) -> None:
         return
 
     if controller.get("state") not in (STATE_BATTERY_OFF, STATE_CHEAP_CHARGING):
-        # Left BATTERY_OFF/CHEAP_CHARGING since the kick; discard the pending hold.
+        # Left BATTERY_OFF or CHEAP_CHARGING since the kick; discard the pending hold.
         controller["battery_off_hold_ts"] = None
         return
 
@@ -866,7 +866,9 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
     exit_ready = (pv_recovered and grid_exporting) or soc_recovered or emergency_charge
 
     # Cheap charging: enter if local time is within the cheap-rate window and
-    # AC BMS power reading exceeds the threshold.  Query InfluxDB once per poll.
+    # AC BMS power reading exceeds the threshold.  The InfluxDB query is only
+    # issued during the cheap-rate window or while CHEAP_CHARGING is active;
+    # outside this period ac_bms_power is set to None without any network call.
     now_hour = datetime.now().hour
     in_cheap_window = CHEAP_CHARGING_START_HOUR <= now_hour < CHEAP_CHARGING_END_HOUR
     ac_bms_power = read_ac_bms_power_w() if in_cheap_window or state == STATE_CHEAP_CHARGING else None
