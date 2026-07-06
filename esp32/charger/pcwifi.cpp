@@ -171,6 +171,15 @@ void pollEnergyState()
   if (now - lastEnergyPoll < ENERGY_POLL_INTERVAL_MS) return;
   lastEnergyPoll = now;
 
+  // During cheap charge skip all Solis policy updates and keep the GTI relay off.
+  // This prevents poll failures or Solis state from shutting down the charger or
+  // re-enabling the GTI while the cheap-charge window is active.
+  if (cheapChargeActive)
+  {
+    turnGTIOff();
+    return;
+  }
+
   if (WiFi.status() != WL_CONNECTED)
   {
     Serial.println("EnergyPoll: WiFi not connected - GTI allowed (fail-safe), AC charger blocked (fail-safe)");

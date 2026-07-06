@@ -14,8 +14,30 @@ const int daylightOffset_sec = 3600;
 
 int GTI_on_time = 5;
 int GTI_off_time = 23;
-int startChargingTime = 6;
-int stopChargingTime = 18;
+
+// Cheap charge overnight window (24-hour clock, hour and minute).
+// Default: 00:30 – 05:00 (crosses midnight).
+int cheapChargeStartHour   = 01;
+int cheapChargeStartMinute = 00;
+int cheapChargeStopHour    = 05;
+int cheapChargeStopMinute  = 45;
+
+// Returns true if the current NTP time falls inside the cheap-charge window.
+// Handles windows that cross midnight (e.g. 00:30 → 05:00).
+static bool isInsideCheapChargeWindow()
+{
+  int nowMinutes   = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+  int startMinutes = cheapChargeStartHour * 60 + cheapChargeStartMinute;
+  int stopMinutes  = cheapChargeStopHour  * 60 + cheapChargeStopMinute;
+
+  if (startMinutes < stopMinutes) {
+    // Same-day window (e.g. 01:00 – 05:00)
+    return (nowMinutes >= startMinutes && nowMinutes < stopMinutes);
+  } else {
+    // Overnight window crossing midnight (e.g. 23:30 – 05:00)
+    return (nowMinutes >= startMinutes || nowMinutes < stopMinutes);
+  }
+}
 
 void timeSetup()
 {
@@ -36,8 +58,8 @@ void timeLoop()
 
     Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
     if ((timeinfo.tm_hour >= GTI_on_time) && (timeinfo.tm_hour < GTI_off_time))
-    { // Within GTI hours
-      if (GTIenabled == false)
+    { // Within GTI hours — only enable if cheap charge is not active
+      if (GTIenabled == false && !cheapChargeActive)
       {
         GTIenabled = true; // should happen ONCE at 5am
         turnGTIOn();
@@ -48,6 +70,32 @@ void timeLoop()
 
      // GTIenabled = false;
      // turnGTIOff();
+    }
+
+    // Cheap charge window management
+    bool insideWindow = isInsideCheapChargeWindow();
+
+    if (insideWindow)
+    {
+      if (!cheapChargeActive && !cheapChargeVoltageExit)
+      {
+        cheapChargeActive = true;
+        Serial.println("CheapCharge: entered cheap charge window");
+      }
+    }
+    else
+    {
+      // Outside the cheap-charge window
+      if (cheapChargeActive)
+      {
+        exitCheapCharge(false);
+      }
+      // Reset the voltage-exit latch so the next window starts fresh
+      if (cheapChargeVoltageExit)
+      {
+        cheapChargeVoltageExit = false;
+        Serial.println("CheapCharge: voltage exit latch reset outside window");
+      }
     }
   }
 }

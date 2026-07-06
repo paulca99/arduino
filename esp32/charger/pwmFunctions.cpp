@@ -37,6 +37,13 @@ bool gtiInhibited = false;
 // Solis/DC battery is charging (battery_power > 0). Fail-safe is false: any poll
 // failure, ok=0, or missing PV value blocks the AC charger.
 bool solisChargerAllowed = false;
+// cheapChargeActive: true while inside the overnight cheap-charge window and voltage OK.
+bool cheapChargeActive    = false;
+// cheapChargeVoltageExit: latched true when voltage limit is hit during cheap charge.
+// Cleared by timeLoop() once the cheap-charge window has ended.
+bool cheapChargeVoltageExit = false;
+static int savedCheapChargePLimit = 0;
+static bool cheapChargePLimitSaved = false;
 int gtiPin = 23;
 int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
@@ -247,7 +254,7 @@ void incrementPower(boolean write, int stepAmount)
 void decrementPower(boolean write, int stepAmount)
 { // means increasing resistance
   // Serial.println("DecrementPower");
-  // 00000 , 00001 , 00011 , 00111 , 01111 , 11111 , 11112
+  // 00000 , 00001 , 00011 , 11111 , 11112
   if (!isAtMinPower())
   {
     for (int i = 0; i < stepAmount; i++)
@@ -412,9 +419,79 @@ void reduceChargerPower(float startingChargerPower)
   }
 }
 
+static void saveCheapChargePLimit()
+{
+  if (cheapChargePLimitSaved)
+    return;
+
+  savedCheapChargePLimit = chargerPLimit;
+  cheapChargePLimitSaved = true;
+  Serial.println("CheapCharge: saved chargerPLimit=" + String(savedCheapChargePLimit));
+}
+
+static void restoreCheapChargePLimit()
+{
+  if (!cheapChargePLimitSaved)
+    return;
+
+  chargerPLimit = savedCheapChargePLimit;
+  cheapChargePLimitSaved = false;
+  Serial.println("CheapCharge: restored chargerPLimit=" + String(chargerPLimit));
+}
+
+// Set grid import target band and charger power cap used during cheap charge.
+void applyCheapChargeLimits()
+{
+  saveCheapChargePLimit();
+  lowerChargerLimit = 2000;
+  upperChargerLimit = 2500;
+  if (chargerPLimit != 2000)
+  {
+    Serial.println("CheapCharge: applying chargerPLimit=2000 (was " + String(chargerPLimit) + ")");
+  }
+  chargerPLimit = 2000;
+}
+
+// Restore the normal grid-following thresholds based on current charger state.
+void restoreNormalChargeLimits()
+{
+  if (powerOn) {
+    upperChargerLimit = 100;
+    lowerChargerLimit = 0;
+  } else {
+    upperChargerLimit = 0;
+    lowerChargerLimit = -100;
+  }
+}
+
+// Exit cheap-charge state cleanly.
+// voltageLimitExit == true : voltage limit was hit; ramp down and latch the exit flag.
+// voltageLimitExit == false: the window ended naturally; restore limits and let normal
+//                            logic continue with whatever the charger is already doing.
+void exitCheapCharge(bool voltageLimitExit)
+{
+  cheapChargeActive = false;
+  GTIenabled = true;
+  if (voltageLimitExit)
+  {
+    cheapChargeVoltageExit = true;
+    Serial.println("CheapCharge: exited by voltage limit");
+    rampDown();
+    turnPowerOff(); // restores limits to 0/-100 and calls turnGTIOn()
+    restoreCheapChargePLimit();
+  }
+  else
+  {
+    Serial.println("CheapCharge: exited by window end");
+    restoreCheapChargePLimit();
+    restoreNormalChargeLimits();
+    if (!powerOn)
+      turnGTIOn();
+  }
+}
+
 void adjustCharger()
 {
-
   float vbatt = readBattery();
   bool vLimitHit = voltageLimitReached2();
   if (vbatt > voltageLimit)
@@ -422,10 +499,34 @@ void adjustCharger()
     decrementPower(true, 30);
   }
 
-  // Solis charger permission check (fail-closed).
+  // Cheap charge voltage limit exit: leave cheap charge for the rest of this window.
+  if (cheapChargeActive && (vbatt > voltageLimit || vLimitHit))
+  {
+    exitCheapCharge(true);
+    return;
+  }
+
+  // Cheap charge: force GTI off, ensure charger is on, apply cheap import limits.
+  if (cheapChargeActive)
+  {
+    GTIenabled = false;
+    turnGTIOff();
+    if (!powerOn)
+    {
+      turnPowerOn(); // resets limits to 100/0; re-applied below
+      if (vbatt > 54)
+        turnAfterburnerOn();
+      readGrid();
+      for (int i = 0; i < 10; i++) // stabilise readings after power-on
+        readCharger();
+    }
+    applyCheapChargeLimits(); // always re-apply in case turnPowerOn or other code reset them
+  }
+
+  // Solis charger permission check (fail-closed) — skipped during cheap charge.
   // If the charger is already running and Solis permission has been revoked
   // (PV gone, poll failure, etc.), ramp down and switch off cleanly.
-  if (powerOn && !solisChargerAllowed)
+  if (powerOn && !solisChargerAllowed && !cheapChargeActive)
   {
     Serial.println("Solis charger permission revoked - ramping down AC charger");
     rampDown();
@@ -456,7 +557,7 @@ void adjustCharger()
       reduceChargerPower(presentChargerPower);
     }
   }
-  else if (SOC < 99 && grid.realPower < lowerChargerLimit && solisChargerAllowed)
+  else if (SOC < 99 && grid.realPower < lowerChargerLimit && (solisChargerAllowed || cheapChargeActive))
   {
     if (!powerOn)
     {
