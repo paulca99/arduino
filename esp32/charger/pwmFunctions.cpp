@@ -1,3 +1,4 @@
+
 #include "Arduino.h"
 #if __has_include("esp_arduino_version.h")
 #include "esp_arduino_version.h"
@@ -342,20 +343,39 @@ void rampDown()
 
 void increaseChargerPower(float startingChargerPower)
 {
-  // here gridp is lower than the lowerChargerLimit.
   float vbattery = readBattery();
-  float fakeGridp = grid.realPower + 10000; // cancel out -ve values
-  float fakeLowerLimit = lowerChargerLimit + 10000;
-  float increaseAmount = fakeLowerLimit - fakeGridp; // will always be +ve
+  float increaseAmount;
 
-  Serial.println("startingCpower=" + (String)startingChargerPower + (String)lowerChargerLimit + " - " + (String)grid.realPower + " = " + (String)increaseAmount);
-  if (afterburnerOn)
-    increaseAmount = increaseAmount * 0.7; // don't overshoot
-  if (vbattery > 56)
+  if (inCheapRateWindow)
   {
-    if (increaseAmount > 50)
+    // During cheap rate lowerChargerLimit is -9999, so the normal +10000 offset
+    // arithmetic produces a negative increaseAmount and the ramp-up loop never
+    // runs.  Instead, target chargerPLimit directly — ramp up as fast as the
+    // hardware allows.  All safety guards in the while loop below remain active:
+    // current_limit, voltageLimitReached2(), isAtMaxPower(), chargerPLimit,
+    // voltageLimit.
+    increaseAmount = chargerPLimit - startingChargerPower;
+    Serial.println("[CheapRate] increaseChargerPower: target chargerPLimit=" + (String)chargerPLimit
+                   + " startingP=" + (String)startingChargerPower
+                   + " increaseAmount=" + (String)increaseAmount);
+  }
+  else
+  {
+    // Normal daytime grid-following mode: increase just enough to bring grid
+    // power back up to lowerChargerLimit.
+    float fakeGridp = grid.realPower + 10000; // cancel out -ve values
+    float fakeLowerLimit = lowerChargerLimit + 10000;
+    increaseAmount = fakeLowerLimit - fakeGridp; // will always be +ve
+
+    Serial.println("startingCpower=" + (String)startingChargerPower + (String)lowerChargerLimit + " - " + (String)grid.realPower + " = " + (String)increaseAmount);
+    if (afterburnerOn)
+      increaseAmount = increaseAmount * 0.7; // don't overshoot
+    if (vbattery > 56)
     {
-      increaseAmount = 50;
+      if (increaseAmount > 50)
+      {
+        increaseAmount = 50;
+      }
     }
   }
 
@@ -373,6 +393,12 @@ void increaseChargerPower(float startingChargerPower)
   float chargerPower = startingChargerPower;
   // float gtiPower = readGti();
   int attemptCount = 0;
+  // Safety guards are always active regardless of cheap-rate mode:
+  //   charger.Irms < current_limit  — AC current cap
+  //   !voltageLimitReached2()       — battery voltage ceiling with hysteresis
+  //   !isAtMaxPower()               — PSU at full deflection
+  //   chargerPower < chargerPLimit  — watt cap (charger trips if exceeded)
+  //   vbattery < voltageLimit       — hard voltage stop
   while (chargerPower < target && (charger.Irms < current_limit) && !voltageLimitReached2() && !isAtMaxPower() && chargerPower < chargerPLimit && vbattery < voltageLimit && attemptCount < 50)
   {
     incrementPower(true, stepAmount);
