@@ -42,6 +42,8 @@ bool cheapChargeActive    = false;
 // cheapChargeVoltageExit: latched true when voltage limit is hit during cheap charge.
 // Cleared by timeLoop() once the cheap-charge window has ended.
 bool cheapChargeVoltageExit = false;
+static int savedCheapChargePLimit = 0;
+static bool cheapChargePLimitSaved = false;
 int gtiPin = 23;
 int upperChargerLimit = 100; // point to turn charger off
 int lowerChargerLimit = 0;   // point to turn charger on
@@ -252,7 +254,7 @@ void incrementPower(boolean write, int stepAmount)
 void decrementPower(boolean write, int stepAmount)
 { // means increasing resistance
   // Serial.println("DecrementPower");
-  // 00000 , 00001 , 00011 , 00111 , 01111 , 11111 , 11112
+  // 00000 , 00001 , 00011 , 11111 , 11112
   if (!isAtMinPower())
   {
     for (int i = 0; i < stepAmount; i++)
@@ -417,11 +419,37 @@ void reduceChargerPower(float startingChargerPower)
   }
 }
 
-// Set grid import target band used during cheap charge.
+static void saveCheapChargePLimit()
+{
+  if (cheapChargePLimitSaved)
+    return;
+
+  savedCheapChargePLimit = chargerPLimit;
+  cheapChargePLimitSaved = true;
+  Serial.println("CheapCharge: saved chargerPLimit=" + String(savedCheapChargePLimit));
+}
+
+static void restoreCheapChargePLimit()
+{
+  if (!cheapChargePLimitSaved)
+    return;
+
+  chargerPLimit = savedCheapChargePLimit;
+  cheapChargePLimitSaved = false;
+  Serial.println("CheapCharge: restored chargerPLimit=" + String(chargerPLimit));
+}
+
+// Set grid import target band and charger power cap used during cheap charge.
 void applyCheapChargeLimits()
 {
+  saveCheapChargePLimit();
   lowerChargerLimit = 2000;
   upperChargerLimit = 2500;
+  if (chargerPLimit != 2000)
+  {
+    Serial.println("CheapCharge: applying chargerPLimit=2000 (was " + String(chargerPLimit) + ")");
+  }
+  chargerPLimit = 2000;
 }
 
 // Restore the normal grid-following thresholds based on current charger state.
@@ -450,10 +478,12 @@ void exitCheapCharge(bool voltageLimitExit)
     Serial.println("CheapCharge: exited by voltage limit");
     rampDown();
     turnPowerOff(); // restores limits to 0/-100 and calls turnGTIOn()
+    restoreCheapChargePLimit();
   }
   else
   {
     Serial.println("CheapCharge: exited by window end");
+    restoreCheapChargePLimit();
     restoreNormalChargeLimits();
     if (!powerOn)
       turnGTIOn();
