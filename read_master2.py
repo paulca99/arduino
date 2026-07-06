@@ -4,7 +4,7 @@ Pi-side Solis-only poller.
 
 - Polls Solis inverter as Modbus slave 1 (FC04 input registers).
 - Writes Solis metrics to InfluxDB.
-- Adds Solis ToU low-battery / low-PV no-charge / charger-limit protection logic.
+- Adds Solis ToU low-battery / low-PV no-charge protection logic.
 - Syncs the Solis inverter clock from the Pi clock once at startup only.
 
 ESP32 BMS slave 5 telemetry is handled by the separate read_esp_slave5.py script
@@ -29,13 +29,6 @@ NORMAL / UNKNOWN:
       Prevents AC-side / grid energy from being stored into the Solis DC battery
       when there is insufficient PV to justify charging.
 
-  Condition C – charger power limit (new):
-    If chargerPlimit / chargerPLimit / chargerP_limit from the local charger
-    status endpoint indicates the limited value (2000) while the controller is
-    in NORMAL, enter BATTERY_OFF with the same ToU write sequence.
-    Remain in BATTERY_OFF because of that charger-limit condition until the
-    charger power limit returns to the normal value (2900).
-
   Emergency override (new):
     If SOC < 10%, neither Condition A nor Condition B will trigger BATTERY_OFF.
     This ensures that after prolonged periods with no sun the DC battery can
@@ -58,12 +51,6 @@ BATTERY_OFF:
       Exit BATTERY_OFF unconditionally so the inverter can charge the
       DC battery regardless of PV availability (emergency reserve).
 
-  Charger-limit release (new):
-    If BATTERY_OFF was entered only because chargerPlimit was limited (2000),
-    release back to NORMAL/STOP when chargerPlimit returns to 2900.
-    This must not override BATTERY_OFF that is still required by the existing
-    low-SOC / low-PV protection conditions.
-
 BATTERY_OFF refresh:
   If still grid importing, SOC < 16%, battery discharging, SOC >= 10%, and the
   current 12h OFF window has less than 2 hours remaining, refresh the OFF window
@@ -83,11 +70,9 @@ No persistent state is used. On startup, the script:
   Live conditions then quickly re-enter BATTERY_OFF if needed.
 """
 
-import json
-import re
 import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import requests
 import serial
@@ -104,7 +89,6 @@ INFLUX_URL = "http://localhost:8086/write?db=power"
 HOST_TAG = "server01"
 
 SOLIS_SOURCE_TAG = "solis_master"
-CHARGER_STATUS_SOURCE_TAG = "charger_status"
 
 SOLIS_SLAVE_ID = 0x01
 
@@ -159,11 +143,6 @@ LOW_PV_NOCHARGE_SOC = 15        # % – block charging when PV is low and SOC <=
 # BATTERY_OFF entry rule, to prevent the DC battery from discharging to a
 # dangerously low level during an extended period with no sun.
 EMERGENCY_CHARGE_SOC = 10       # % – allow charging regardless of PV below this SOC
-
-CHARGER_STATUS_URL = "http://192.168.1.174:8080"
-CHARGER_STATUS_TIMEOUT_S = 2.0
-CHARGER_PLIMIT_NORMAL = 2900
-CHARGER_PLIMIT_BATTERY_OFF = 2000
 
 # batteryDirectionFlag value that indicates the battery is discharging
 BATTERY_DIRECTION_DISCHARGING = 1
@@ -323,92 +302,6 @@ def write_line(measurement: str, value, source_tag: str):
 
 
 # ----------------------------------------------------------------------
-# Charger status helper
-# ----------------------------------------------------------------------
-
-def normalize_charger_plimit_key(key: str) -> str:
-    """Remove non-alphanumerics and lowercase for robust chargerPlimit key matching."""
-    return re.sub(r"[^a-z0-9]+", "", key.lower())
-
-
-def coerce_int(value: Any) -> Optional[int]:
-    """Convert supported scalar values to int while rejecting booleans as 1/0."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        stripped = value.strip()
-        if re.fullmatch(r"-?\d+", stripped):
-            return int(stripped)
-    return None
-
-
-def find_charger_plimit_in_json(value: Any) -> Optional[int]:
-    """Recursively search JSON-like dict/list structures for chargerPlimit."""
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if normalize_charger_plimit_key(str(key)) == "chargerplimit":
-                return coerce_int(item)
-        for item in value.values():
-            found = find_charger_plimit_in_json(item)
-            if found is not None:
-                return found
-    elif isinstance(value, list):
-        for item in value:
-            found = find_charger_plimit_in_json(item)
-            if found is not None:
-                return found
-    return None
-
-
-def parse_charger_plimit_text(text: str) -> Optional[int]:
-    """Parse chargerPlimit from keyed text or CSV/EOT endpoint responses."""
-    keyed_match = re.search(
-        r'(?is)charger\s*[_-]?\s*p\s*[_-]?\s*limit\s*["\']?\s*[:=]\s*["\']?(-?\d+)',
-        text,
-    )
-    if keyed_match:
-        return int(keyed_match.group(1))
-
-    eot_match = re.search(r"(-?\d+)\s*,\s*EOT\b", text, flags=re.IGNORECASE)
-    if eot_match:
-        return int(eot_match.group(1))
-
-    return None
-
-
-def read_charger_plimit() -> Optional[int]:
-    """Fetch charger status, prefer JSON parsing, and fall back to text parsing."""
-    try:
-        response = requests.get(CHARGER_STATUS_URL, timeout=CHARGER_STATUS_TIMEOUT_S)
-        response.raise_for_status()
-    except Exception as e:
-        print(f"[charger] WARNING: failed to read {CHARGER_STATUS_URL}: {e}")
-        return None
-
-    try:
-        payload = response.json()
-    except json.JSONDecodeError:
-        payload = None
-
-    if payload is not None:
-        plimit = find_charger_plimit_in_json(payload)
-        if plimit is not None:
-            return plimit
-
-    text = response.text.strip()
-    plimit = parse_charger_plimit_text(text)
-    if plimit is not None:
-        return plimit
-
-    print("[charger] WARNING: could not parse chargerPlimit from endpoint response")
-    return None
-
-
-# ----------------------------------------------------------------------
 # Solis decode / metrics
 # ----------------------------------------------------------------------
 
@@ -477,14 +370,7 @@ def decode_solis(regs: Dict[int, int]) -> dict:
     }
 
 
-def write_solis_metrics(
-    s: dict,
-    poll_count: int,
-    read_errors: int,
-    controller_state: str,
-    charger_plimit: Optional[int],
-    charger_plimit_forced_battery_off: bool,
-):
+def write_solis_metrics(s: dict, poll_count: int, read_errors: int, controller_state: str):
     write_line("solis_pv1_voltage", s["pv1Voltage"], SOLIS_SOURCE_TAG)
     write_line("solis_pv1_current", s["pv1Current"], SOLIS_SOURCE_TAG)
     write_line("solis_pv2_voltage", s["pv2Voltage"], SOLIS_SOURCE_TAG)
@@ -518,13 +404,6 @@ def write_solis_metrics(
         STATE_BATTERY_OFF: 2,
     }.get(controller_state, 0)
     write_line("solis_battery_off_controller_state", state_num, SOLIS_SOURCE_TAG)
-    if charger_plimit is not None:
-        write_line("charger_plimit", charger_plimit, CHARGER_STATUS_SOURCE_TAG)
-    write_line(
-        "charger_plimit_forced_battery_off",
-        1 if charger_plimit_forced_battery_off else 0,
-        CHARGER_STATUS_SOURCE_TAG,
-    )
 
 
 # ----------------------------------------------------------------------
@@ -805,18 +684,12 @@ def apply_battery_off_hold(ser: serial.Serial, controller: dict) -> None:
         )
 
 
-def manage_battery_off_controller(
-    ser: serial.Serial,
-    s: dict,
-    controller: dict,
-    charger_plimit: Optional[int],
-) -> None:
+def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict) -> None:
     pv = float(s.get("pvTotalPowerW", 0.0))
     grid = float(s.get("gridPower", 0.0))
     soc = int(s.get("batterySoc", 0))
     battery_direction_flag = int(s.get("batteryDirectionFlag", 0))
     state = controller.get("state", STATE_UNKNOWN)
-    charger_plimit_forced_battery_off = bool(controller.get("charger_plimit_forced_battery_off", False))
 
     # Emergency reserve: if SOC has dropped below EMERGENCY_CHARGE_SOC (10%) we
     # must allow charging regardless of PV availability.  This overrides both the
@@ -850,23 +723,13 @@ def manage_battery_off_controller(
     # Also exit BATTERY_OFF on the emergency_charge condition so the inverter
     # can charge the DC battery when SOC drops to a critically low level.
     exit_ready = (pv_recovered and grid_exporting) or soc_recovered or emergency_charge
-    charger_limit_active = (
-        charger_plimit is not None
-        and charger_plimit == CHARGER_PLIMIT_BATTERY_OFF
-        and not emergency_charge
-    )
-    charger_limit_normal = charger_plimit == CHARGER_PLIMIT_NORMAL
-    charger_plimit_known = charger_plimit is not None
 
     print(
         f"[tou] state={state} pv={pv:.1f}W grid={grid:.1f}W soc={soc}% "
         f"batt_dir_flag={battery_direction_flag} entry_ready={entry_ready} "
         f"low_pv_nocharge={low_pv_nocharge} emergency_charge={emergency_charge} "
         f"pv_recovered={pv_recovered} grid_exporting={grid_exporting} "
-        f"soc_recovered={soc_recovered} exit_ready={exit_ready} "
-        f"charger_plimit={charger_plimit} charger_plimit_known={charger_plimit_known} "
-        f"charger_limit_active={charger_limit_active} charger_limit_normal={charger_limit_normal} "
-        f"charger_plimit_forced_battery_off={charger_plimit_forced_battery_off}"
+        f"soc_recovered={soc_recovered} exit_ready={exit_ready}"
     )
 
     if emergency_charge:
@@ -879,37 +742,27 @@ def manage_battery_off_controller(
             f"[tou] LOW-PV NO-CHARGE: pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W "
             f"and SOC {soc}% <= {LOW_PV_NOCHARGE_SOC}%; charging blocked"
         )
-    if charger_limit_active:
-        print(
-            f"[tou] CHARGER LIMIT ACTIVE: chargerPlimit={charger_plimit} "
-            f"(forcing BATTERY_OFF while limit remains at {CHARGER_PLIMIT_BATTERY_OFF})"
-        )
-
-    protection_entry_active = entry_ready or low_pv_nocharge
-
-    def build_entry_reason(prefix: str = "") -> str:
-        """Build a human-readable BATTERY_OFF entry reason from active conditions."""
-        reasons = []
-        if charger_limit_active:
-            reasons.append(f"chargerPlimit={charger_plimit}")
-        if entry_ready:
-            reasons.append(
-                f"grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, battery discharging"
-            )
-        if low_pv_nocharge:
-            reasons.append(
-                f"low-PV no-charge, pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W, SOC {soc}% <= {LOW_PV_NOCHARGE_SOC}%"
-            )
-        return f"{prefix}{' AND '.join(reasons)}"
 
     # Startup recovery.
     if state == STATE_UNKNOWN:
-        if protection_entry_active or charger_limit_active:
+        if entry_ready or low_pv_nocharge:
             if can_attempt_tou_write(controller):
-                is_charger_only_trigger = charger_limit_active and not protection_entry_active
-                ok = enter_battery_off(ser, controller, reason=build_entry_reason(prefix="startup/unknown: "))
-                if ok:
-                    controller["charger_plimit_forced_battery_off"] = is_charger_only_trigger
+                if entry_ready and low_pv_nocharge:
+                    reason = (
+                        f"startup/unknown: grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, "
+                        f"battery discharging AND low-PV pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W"
+                    )
+                elif low_pv_nocharge:
+                    reason = (
+                        f"startup/unknown: low-PV no-charge, pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W, "
+                        f"SOC {soc}% <= {LOW_PV_NOCHARGE_SOC}%"
+                    )
+                else:
+                    reason = (
+                        f"startup/unknown: grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, "
+                        f"battery discharging"
+                    )
+                enter_battery_off(ser, controller, reason=reason)
             return
 
         # On startup we do not know whether BATTERY_OFF is actually active on the
@@ -919,56 +772,38 @@ def manage_battery_off_controller(
         # Instead, assume NORMAL and let the steady-state logic handle things cleanly
         # on the next poll cycles.
         controller["state"] = STATE_NORMAL
-        controller["charger_plimit_forced_battery_off"] = False
         print(
             "[tou] startup/unknown: entry conditions not met "
-            "(no charger-limit BATTERY_OFF, no low-PV no-charge, no grid-import low-SOC discharge, no emergency); "
+            "(no low-PV no-charge, no grid-import low-SOC discharge, no emergency); "
             "assuming NORMAL without ToU writes"
         )
         return
 
     # Normal -> Battery-off.
     if state == STATE_NORMAL:
-        if protection_entry_active or charger_limit_active:
+        if entry_ready or low_pv_nocharge:
             if can_attempt_tou_write(controller):
-                is_charger_only_trigger = charger_limit_active and not protection_entry_active
-                ok = enter_battery_off(ser, controller, reason=build_entry_reason())
-                if ok:
-                    controller["charger_plimit_forced_battery_off"] = is_charger_only_trigger
+                if entry_ready and low_pv_nocharge:
+                    reason = (
+                        f"grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, "
+                        f"battery discharging AND low-PV pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W"
+                    )
+                elif low_pv_nocharge:
+                    reason = (
+                        f"low-PV no-charge: pv={pv:.1f}W < {LOW_PV_NOCHARGE_PV_W}W, "
+                        f"SOC {soc}% <= {LOW_PV_NOCHARGE_SOC}%"
+                    )
+                else:
+                    reason = (
+                        f"grid {grid:.1f}W importing, SOC {soc}% < {BATTERY_OFF_ENTER_SOC}%, "
+                        f"battery discharging"
+                    )
+                enter_battery_off(ser, controller, reason=reason)
         return
 
     # Battery-off -> Normal, or refresh rolling 12h window.
     if state == STATE_BATTERY_OFF:
-        off_until = controller.get("battery_off_until_ts")
-        if off_until is None:
-            remaining_s = 0
-        else:
-            remaining_s = off_until - time.time()
-
-        if charger_plimit_forced_battery_off and not charger_plimit_known:
-            # Missing/unparseable charger data must not cause entry/exit
-            # transitions for charger-limit-forced BATTERY_OFF. Keep the current
-            # state latched and refresh the rolling OFF window when needed.
-            if remaining_s < BATTERY_OFF_REFRESH_WHEN_REMAINING_S:
-                if can_attempt_tou_write(controller):
-                    enter_battery_off(
-                        ser,
-                        controller,
-                        reason=(
-                            "refresh rolling OFF window because chargerPlimit is unavailable "
-                            "while preserving the existing charger-limit-forced BATTERY_OFF state"
-                        ),
-                    )
-            return
-
         if exit_ready:
-            if charger_limit_active:
-                # Keep BATTERY_OFF latched while the charger itself still reports
-                # the limited/blocked state, even if the normal PV/SOC exit rules
-                # are satisfied, so we do not release the inverter prematurely.
-                # The charger_plimit_forced_battery_off flag only controls the
-                # special auto-release when chargerPlimit returns to 2900.
-                return
             if can_attempt_tou_write(controller):
                 if emergency_charge:
                     exit_reason = (
@@ -982,37 +817,23 @@ def manage_battery_off_controller(
                         f"PV {pv:.1f}W > {BATTERY_OFF_EXIT_PV_W}W "
                         f"AND grid {grid:.1f}W > {BATTERY_OFF_EXIT_GRID_EXPORT_W}W (exporting)"
                     )
-                ok = exit_battery_off(ser, controller, reason=exit_reason)
-                if ok:
-                    controller["charger_plimit_forced_battery_off"] = False
+                exit_battery_off(ser, controller, reason=exit_reason)
             return
 
-        if (
-            charger_limit_normal
-            and charger_plimit_forced_battery_off
-            and not protection_entry_active
-        ):
-            if can_attempt_tou_write(controller):
-                ok = exit_battery_off(
-                    ser,
-                    controller,
-                    reason=f"chargerPlimit returned to {CHARGER_PLIMIT_NORMAL}",
-                )
-                if ok:
-                    controller["charger_plimit_forced_battery_off"] = False
-            return
+        off_until = controller.get("battery_off_until_ts")
+        if off_until is None:
+            remaining_s = 0
+        else:
+            remaining_s = off_until - time.time()
 
-        if (
-            (entry_ready or charger_limit_active)
-            and remaining_s < BATTERY_OFF_REFRESH_WHEN_REMAINING_S
-        ):
+        if entry_ready and remaining_s < BATTERY_OFF_REFRESH_WHEN_REMAINING_S:
             if can_attempt_tou_write(controller):
                 enter_battery_off(
                     ser,
                     controller,
                     reason=(
                         f"refresh rolling OFF window, remaining={remaining_s / 3600.0:.2f}h, "
-                        f"{build_entry_reason()}"
+                        f"grid {grid:.1f}W importing, SOC {soc}%, battery discharging"
                     ),
                 )
         return
@@ -1075,7 +896,6 @@ def main():
     print(f"Starting Solis-only poller on {PORT} @ {BAUDRATE}")
     print(f"Solis: slave {SOLIS_SLAVE_ID}, FC04, regs {SOLIS_START_DOC_REG}-{SOLIS_END_DOC_REG}")
     print(f"Influx URL: {INFLUX_URL}")
-    print(f"Charger status URL: {CHARGER_STATUS_URL}")
     print("")
     print("Timing / reliability constants:")
     print(f"  POLL_INTERVAL_S              = {POLL_INTERVAL_S}s")
@@ -1086,9 +906,7 @@ def main():
     print("")
     print("Battery-off controller:")
     print(f"  ENTER: grid < {BATTERY_OFF_ENTER_GRID_IMPORT_W}W (importing) AND SOC < {BATTERY_OFF_ENTER_SOC}% AND battery discharging (flag={BATTERY_DIRECTION_DISCHARGING})")
-    print(f"  ENTER: chargerPlimit == {CHARGER_PLIMIT_BATTERY_OFF} forces BATTERY_OFF while charger limit is active")
     print(f"  EXIT : (PV > {BATTERY_OFF_EXIT_PV_W}W AND grid > +{BATTERY_OFF_EXIT_GRID_EXPORT_W}W exporting) OR SOC >= {BATTERY_OFF_EXIT_SOC}%")
-    print(f"  RELEASE: charger-limit-forced BATTERY_OFF releases when chargerPlimit returns to {CHARGER_PLIMIT_NORMAL}")
     print(f"  OFF  : RUN+grid-charge, 0.5A kick, now{BATTERY_OFF_START_OFFSET_MINUTES:+d}min -> now+{BATTERY_OFF_WINDOW_HOURS}h")
     print(f"         then 0.0A hold after {BATTERY_OFF_HOLD_DELAY_S}s if still BATTERY_OFF")
     print("  RELEASE: STOP+grid-charge, 10.0A, 00:00 -> 00:00")
@@ -1106,7 +924,6 @@ def main():
         "battery_off_until_ts": None,
         "last_tou_write_ts": 0,
         "battery_off_hold_ts": None,
-        "charger_plimit_forced_battery_off": False,
     }
 
     with serial.Serial(
@@ -1146,7 +963,6 @@ def main():
         if startup_ok:
             controller["state"] = STATE_NORMAL
             controller["battery_off_until_ts"] = None
-            controller["charger_plimit_forced_battery_off"] = False
             # Reset throttle so the next poll can enter BATTERY_OFF without delay.
             controller["last_tou_write_ts"] = 0
             print("[startup] Startup normalization succeeded: Solis ToU is NORMAL/STOP, controller state = NORMAL")
@@ -1157,7 +973,6 @@ def main():
             print("[startup] WARNING: startup normalization write failed; proceeding as NORMAL (safe fallback)")
             controller["state"] = STATE_NORMAL
             controller["battery_off_until_ts"] = None
-            controller["charger_plimit_forced_battery_off"] = False
             controller["last_tou_write_ts"] = 0
         print("")
 
@@ -1180,20 +995,15 @@ def main():
             if solis_regs is not None:
                 poll_count += 1
                 s = decode_solis(solis_regs)
-                charger_plimit = read_charger_plimit()
 
                 # Run controller immediately after a valid Solis poll.
-                manage_battery_off_controller(ser, s, controller, charger_plimit)
+                manage_battery_off_controller(ser, s, controller)
 
                 write_solis_metrics(
                     s,
                     poll_count,
                     read_errors,
                     controller_state=controller.get("state", STATE_UNKNOWN),
-                    charger_plimit=charger_plimit,
-                    charger_plimit_forced_battery_off=bool(
-                        controller.get("charger_plimit_forced_battery_off", False)
-                    ),
                 )
             else:
                 print("[solis] FAIL: no response")
@@ -1210,4 +1020,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
