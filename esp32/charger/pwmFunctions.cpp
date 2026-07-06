@@ -541,8 +541,6 @@ void adjustCharger()
       {
         readCharger();
       }
-      if (cheapChargeActive)
-        applyCheapChargeLimits();
       presentChargerPower = readCharger();
     }
     increaseChargerPower(presentChargerPower);
