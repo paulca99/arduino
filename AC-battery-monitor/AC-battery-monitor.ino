@@ -39,6 +39,7 @@ static BLEUUID charUUID_tx("0000ff02-0000-1000-8000-00805f9b34fb");
 #define PACKET03_TEMP_COUNT_IDX_A   26
 #define PACKET03_TEMP_COUNT_IDX_B   25
 #define CELL_PACKET_EVERY_N_CYCLES   5
+#define DAILY_RESTART_INTERVAL_MS (24UL * 60UL * 60UL * 1000UL)
 
 struct BatteryState {
   const char* name;
@@ -94,6 +95,8 @@ static const int BATTERY_COUNT = sizeof(batteries) / sizeof(batteries[0]);
 static BLEScan* pBLEScan = nullptr;
 static WebServer server(80);
 static unsigned long loopCount = 0;
+static unsigned long bootMillis = 0;
+static bool dailyRestartStarted = false;
 
 static int findBatteryByClient(BLEClient* client);
 static int findBatteryByRx(BLERemoteCharacteristic* characteristic);
@@ -119,6 +122,7 @@ static String boolJson(bool v);
 static float computePowerW(const BatteryState& battery);
 static uint16_t minCellMv(const BatteryState& battery);
 static uint16_t maxCellMv(const BatteryState& battery);
+static void checkDailyRestart();
 
 static int findBatteryByClient(BLEClient* client) {
   for (int i = 0; i < BATTERY_COUNT; i++) {
@@ -717,6 +721,16 @@ static void printSummary() {
   Serial.printf("Connected %d/%d enabled batteries\n", connectedCount, enabledBatteryCount());
 }
 
+static void checkDailyRestart() {
+  if (dailyRestartStarted) return;
+  if ((unsigned long)(millis() - bootMillis) < DAILY_RESTART_INTERVAL_MS) return;
+
+  dailyRestartStarted = true;
+  Serial.printf("Daily restart interval reached after %lu seconds; restarting AC_BMS_MONITOR\n", millis() / 1000UL);
+  delay(1000);
+  ESP.restart();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -794,9 +808,12 @@ void setup() {
   }
 
   printSummary();
+  bootMillis = millis();
+  Serial.printf("Daily restart scheduled in %lu seconds\n", DAILY_RESTART_INTERVAL_MS / 1000UL);
 }
 
 void loop() {
+  checkDailyRestart();
   loopCount++;
 
   for (int i = 0; i < BATTERY_COUNT; i++) {
