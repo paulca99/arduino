@@ -393,8 +393,6 @@ def read_charger_plimit() -> Optional[int]:
         payload = response.json()
     except json.JSONDecodeError:
         payload = None
-    except ValueError:
-        payload = None
 
     if payload is not None:
         plimit = find_charger_plimit_in_json(payload)
@@ -521,7 +519,8 @@ def write_solis_metrics(
         STATE_BATTERY_OFF: 2,
     }.get(controller_state, 0)
     write_line("solis_battery_off_controller_state", state_num, SOLIS_SOURCE_TAG)
-    write_line("charger_plimit", charger_plimit, CHARGER_STATUS_SOURCE_TAG)
+    if charger_plimit is not None:
+        write_line("charger_plimit", charger_plimit, CHARGER_STATUS_SOURCE_TAG)
     write_line(
         "charger_plimit_forced_battery_off",
         1 if charger_plimit_forced_battery_off else 0,
@@ -906,10 +905,10 @@ def manage_battery_off_controller(
     if state == STATE_UNKNOWN:
         if protection_entry_active or charger_limit_active:
             if can_attempt_tou_write(controller):
-                enter_forced = charger_limit_active and not protection_entry_active
+                charger_limit_only = charger_limit_active and not protection_entry_active
                 ok = enter_battery_off(ser, controller, reason=enter_reason(prefix="startup/unknown: "))
                 if ok:
-                    controller["charger_plimit_forced_battery_off"] = enter_forced
+                    controller["charger_plimit_forced_battery_off"] = charger_limit_only
             return
 
         # On startup we do not know whether BATTERY_OFF is actually active on the
@@ -931,16 +930,19 @@ def manage_battery_off_controller(
     if state == STATE_NORMAL:
         if protection_entry_active or charger_limit_active:
             if can_attempt_tou_write(controller):
-                enter_forced = charger_limit_active and not protection_entry_active
+                charger_limit_only = charger_limit_active and not protection_entry_active
                 ok = enter_battery_off(ser, controller, reason=enter_reason())
                 if ok:
-                    controller["charger_plimit_forced_battery_off"] = enter_forced
+                    controller["charger_plimit_forced_battery_off"] = charger_limit_only
         return
 
     # Battery-off -> Normal, or refresh rolling 12h window.
     if state == STATE_BATTERY_OFF:
         if exit_ready:
             if charger_limit_active:
+                # Keep BATTERY_OFF latched while the charger itself still reports
+                # the limited/blocked state, even if the normal PV/SOC exit rules
+                # are satisfied, so we do not release the inverter prematurely.
                 return
             if can_attempt_tou_write(controller):
                 if emergency_charge:
