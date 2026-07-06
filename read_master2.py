@@ -186,7 +186,15 @@ TOU_CURRENT_10_0A = 100
 # Seconds after entering/refreshing BATTERY_OFF before writing 0.0A hold current.
 BATTERY_OFF_HOLD_DELAY_S = 30
 
+# ----------------------------------------------------------------------
+# External charger power limit override
+# ----------------------------------------------------------------------
 
+CHARGER_STATUS_URL = "http://192.168.1.174:8080"
+
+# "...blah,blah,2900,EOT"
+CHARGER_POWER_LIMIT_NORMAL = 2900
+CHARGER_POWER_LIMIT_FORCE_BATTERY_OFF = 2000
 # ----------------------------------------------------------------------
 # Modbus helpers
 # ----------------------------------------------------------------------
@@ -690,6 +698,11 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
     soc = int(s.get("batterySoc", 0))
     battery_direction_flag = int(s.get("batteryDirectionFlag", 0))
     state = controller.get("state", STATE_UNKNOWN)
+    charger_power_limit = controller.get("charger_power_limit")
+
+    forced_battery_off_requested = (
+        charger_power_limit == CHARGER_POWER_LIMIT_FORCE_BATTERY_OFF
+    )
 
     # Emergency reserve: if SOC has dropped below EMERGENCY_CHARGE_SOC (10%) we
     # must allow charging regardless of PV availability.  This overrides both the
@@ -724,14 +737,60 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
     # can charge the DC battery when SOC drops to a critically low level.
     exit_ready = (pv_recovered and grid_exporting) or soc_recovered or emergency_charge
 
-    print(
-        f"[tou] state={state} pv={pv:.1f}W grid={grid:.1f}W soc={soc}% "
+print(
+    f"[tou] state={state} "
+    f"charger_limit={charger_power_limit} "
+    f"forced_request={forced_battery_off_requested} "
+    f"pv={pv:.1f}W grid={grid:.1f}W soc={soc}% "
         f"batt_dir_flag={battery_direction_flag} entry_ready={entry_ready} "
         f"low_pv_nocharge={low_pv_nocharge} emergency_charge={emergency_charge} "
         f"pv_recovered={pv_recovered} grid_exporting={grid_exporting} "
         f"soc_recovered={soc_recovered} exit_ready={exit_ready}"
     )
+# --------------------------------------------------------------
+    # chargerPowerLimit override
+    #
+    # 2000 => force BATTERY_OFF
+    # stay there regardless of SOC/PV/grid logic
+    #
+    # leave only when limit returns to 2900
+    # --------------------------------------------------------------
 
+if forced_battery_off_requested:
+    if not controller.get("forced_battery_off", False):
+        if state != STATE_BATTERY_OFF and can_attempt_tou_write(controller):
+            ok = enter_battery_off(
+                ser,
+                controller,
+                reason=(
+                    f"chargerPowerLimit={charger_power_limit} "
+                    f"(forced BATTERY_OFF)"
+                ),
+            )
+
+            if ok:
+                controller["forced_battery_off"] = True
+
+    return
+
+    if controller.get("forced_battery_off", False):
+        if state == STATE_BATTERY_OFF:
+            if can_attempt_tou_write(controller):
+                ok = exit_battery_off(
+                    ser,
+                    controller,
+                    reason=(
+                        f"chargerPowerLimit restored "
+                        f"to {charger_power_limit}"
+                    ),
+                )
+
+                if ok:
+                    controller["forced_battery_off"] = False
+
+            return
+
+        controller["forced_battery_off"] = False
     if emergency_charge:
         print(
             f"[tou] EMERGENCY CHARGE OVERRIDE: SOC {soc}% < {EMERGENCY_CHARGE_SOC}%; "
@@ -838,7 +897,32 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
                 )
         return
 
+def get_charger_power_limit() -> Optional[int]:
+    """
+    Reads:
+        http://192.168.1.174:8080
 
+    Expected format:
+        ...,2900,EOT
+
+    Returns:
+        2900
+    """
+    try:
+        resp = requests.get(CHARGER_STATUS_URL, timeout=2)
+        resp.raise_for_status()
+
+        fields = resp.text.strip().split(",")
+
+        if len(fields) < 2:
+            raise ValueError("unexpected CSV format")
+
+        return int(fields[-2])
+
+    except Exception as e:
+        print(f"[charger] Failed to read chargerPowerLimit: {e}")
+        return None
+      
 # ----------------------------------------------------------------------
 # Polling helpers
 # ----------------------------------------------------------------------
@@ -924,6 +1008,10 @@ def main():
         "battery_off_until_ts": None,
         "last_tou_write_ts": 0,
         "battery_off_hold_ts": None,
+    
+        # chargerPowerLimit override state
+        "charger_power_limit": None,
+        "forced_battery_off": False,
     }
 
     with serial.Serial(
@@ -995,7 +1083,10 @@ def main():
             if solis_regs is not None:
                 poll_count += 1
                 s = decode_solis(solis_regs)
-
+                
+                charger_power_limit = get_charger_power_limit()
+                controller["charger_power_limit"] = charger_power_limit
+                
                 # Run controller immediately after a valid Solis poll.
                 manage_battery_off_controller(ser, s, controller)
 
