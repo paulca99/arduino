@@ -5,6 +5,7 @@
 #include "battery.h"
 #include "pwmFunctions.h"
 #include "pcemon.h"
+#include "timestuff.h"
 #include <ESPAsyncWebSrv.h>
 
 extern bool GTIenabled;
@@ -110,7 +111,11 @@ void generateCsvString()
 //
 // Fail-safe behaviour (intentionally asymmetric):
 //   GTI:     fails OPEN  — on any error, gtiInhibited is cleared (GTI allowed).
+//             EXCEPTION: during inCheapRateWindow the GTI stays OFF on failure
+//             so the poll failure cannot override the cheap-rate GTI schedule.
 //   Charger: fails CLOSED — on any error, solisChargerAllowed = false (charger blocked).
+//             This is harmless during cheap rate as adjustCharger() bypasses
+//             solisChargerAllowed when inCheapRateWindow is true.
 
 static const char*         ENERGY_STATE_URL          = "http://192.168.1.218/energy-state";
 static const unsigned long ENERGY_POLL_INTERVAL_MS   = 10000UL;   // 10 seconds
@@ -123,6 +128,10 @@ static bool                gtiAllowedByDischarge     = false; // latched; cleare
 
 static void clearGTIInhibit()
 {
+  // During cheap rate the GTI is deliberately kept OFF by timeLoop().
+  // Do not override that on a poll failure — skip the clear entirely.
+  if (inCheapRateWindow) return;
+
   if (gtiInhibited)
   {
     gtiInhibited = false;
