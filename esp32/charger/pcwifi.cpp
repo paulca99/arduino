@@ -245,7 +245,14 @@ void pollEnergyState()
   // Basic validity: ok, battery_power, and soc are required for GTI logic.
   if (!gotOk || ok != 1 || !gotP || !gotSoc)
   {
-    Serial.println("EnergyPoll: parse failed or ok=0 - GTI allowed (fail-safe), AC charger blocked (fail-safe)");
+    Serial.println("EnergyPoll: parse failed or ok=0 details: gotOk=" + String(gotOk ? "Y" : "N") +
+                   " ok=" + String(ok) +
+                   " gotP=" + String(gotP ? "Y" : "N") +
+                   " gotSoc=" + String(gotSoc ? "Y" : "N") +
+                   " gotPv=" + String(gotPv ? "Y" : "N") +
+                   " body_len=" + String(body.length()));
+    Serial.println("EnergyPoll: response body follows:");
+    Serial.println(body);
     clearGTIInhibit();
     blockCharger();
     return;
@@ -284,6 +291,12 @@ void pollEnergyState()
   // charging (battery_power > 0 W). Missing PV key blocks the charger but does
   // NOT affect the GTI decision above.
   bool newChargerAllowed = (gotPv && solisPv > CHARGER_MIN_PV_W && solisP > CHARGER_MIN_BATT_CHARGE_W);
+
+  Serial.println("EnergyPoll: parse OK ok=" + String(ok) +
+                 " solisP=" + String(solisP, 1) +
+                 "W soc=" + String(solisSoc) +
+                 "% pv=" + String(solisPv, 1) +
+                 "W chargerAllowed=" + String(newChargerAllowed ? "Y" : "N"));
 
   if (newChargerAllowed != solisChargerAllowed)
   {

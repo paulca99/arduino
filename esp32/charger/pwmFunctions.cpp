@@ -1,4 +1,3 @@
-
 #include "Arduino.h"
 #if __has_include("esp_arduino_version.h")
 #include "esp_arduino_version.h"
@@ -163,9 +162,16 @@ void turnPowerOff()
   digitalWrite(powerPin, HIGH);
   powerOn = false;
   turnGTIOn();
-  upperChargerLimit = 0;
-  if (!inCheapRateWindow)
+  if (inCheapRateWindow)
+  {
+    upperChargerLimit = 9999;
+    lowerChargerLimit = -9999;
+  }
+  else
+  {
+    upperChargerLimit = 0;
     lowerChargerLimit = -100;
+  }
 }
 void turnPowerOn()
 {
@@ -178,9 +184,16 @@ void turnPowerOn()
   digitalWrite(powerPin, LOW);
   powerOn = true;
   turnGTIOff();
-  upperChargerLimit = 100;
-  if (!inCheapRateWindow)
+  if (inCheapRateWindow)
+  {
+    upperChargerLimit = 9999;
+    lowerChargerLimit = -9999;
+  }
+  else
+  {
+    upperChargerLimit = 100;
     lowerChargerLimit = 0;
+  }
 }
 void turnAfterburnerOff()
 {
@@ -461,12 +474,6 @@ void adjustCharger()
     return;
   }
 
-  //  if (vbatt )
-  //  {
-  //    maintainVoltage();
-  //  }
-  //  else
-  //  {
   float presentChargerPower = readCharger();
   if (presentChargerPower > chargerPLimit)
   {
@@ -484,7 +491,7 @@ void adjustCharger()
       reduceChargerPower(presentChargerPower);
     }
   }
-  else if (SOC < 99 && grid.realPower < lowerChargerLimit && (solisChargerAllowed || inCheapRateWindow))
+  else if (SOC < 99 && (inCheapRateWindow || (grid.realPower < lowerChargerLimit && solisChargerAllowed)))
   {
     if (!powerOn)
     {

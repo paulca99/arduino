@@ -33,6 +33,7 @@ Charge permission:
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlencode, urlparse
 import json
+import sys
 import urllib.request
 
 
@@ -43,6 +44,10 @@ PORT = 80
 LOOKBACK = "30s"
 
 PV_CHARGE_ALLOW_W = 100.0
+
+
+def log(msg):
+    print(msg, flush=True)
 
 
 def influx_last(measurement, source=None):
@@ -59,7 +64,8 @@ def influx_last(measurement, source=None):
 
         return float(payload["results"][0]["series"][0]["values"][0][1])
 
-    except Exception:
+    except Exception as exc:
+        log(f"energy_state_server: missing {measurement} source={source}: {exc}")
         return None
 
 
@@ -78,31 +84,51 @@ class Handler(BaseHTTPRequestHandler):
         solis_pv_total_power = influx_last("solis_pv_total_power", "solis_master")
         ac_bms_discharge_power = influx_last("ac_bms_discharge_power", "ac_bms_monitor")
 
+        # ok means the Solis values required by the ESP32 are valid.
+        # ac_bms_discharge_power is useful telemetry but is NOT required for
+        # charger permission, so it must not poison ok=0 if the AC BMS monitor
+        # has not written recently.
         ok = 1
+        missing = []
 
         if solis_battery_power is None:
             solis_battery_power = 0.0
             ok = 0
+            missing.append("solis_battery_power")
 
         if solis_battery_soc is None:
             solis_battery_soc = 0.0
             ok = 0
+            missing.append("solis_battery_soc")
 
         if solis_grid_power is None:
             solis_grid_power = 0.0
             ok = 0
+            missing.append("solis_grid_power")
 
         if solis_pv_total_power is None:
             solis_pv_total_power = 0.0
             ok = 0
+            missing.append("solis_pv_total_power")
 
         if ac_bms_discharge_power is None:
             ac_bms_discharge_power = 0.0
-            ok = 0
+            missing.append("ac_bms_discharge_power(optional)")
 
-        # For charger permission, fail safe:
-        # if endpoint data is incomplete, do NOT allow AC charging.
+        # For charger permission, fail safe if required Solis data is incomplete.
         ac_charger_allowed = 1 if ok == 1 and solis_pv_total_power > PV_CHARGE_ALLOW_W else 0
+        ok_reason = "ok" if ok == 1 else "missing:" + ",".join(missing)
+
+        log(
+            "energy_state_server: "
+            f"ok={ok} reason={ok_reason} "
+            f"solis_battery_power={solis_battery_power:.1f} "
+            f"soc={int(round(solis_battery_soc))} "
+            f"grid={solis_grid_power:.1f} "
+            f"pv={solis_pv_total_power:.1f} "
+            f"ac_bms={ac_bms_discharge_power:.1f} "
+            f"ac_charger_allowed={ac_charger_allowed}"
+        )
 
         body = (
             f"solis_battery_power={solis_battery_power:.1f}\n"
@@ -112,6 +138,7 @@ class Handler(BaseHTTPRequestHandler):
             f"ac_bms_discharge_power={ac_bms_discharge_power:.1f}\n"
             f"ac_charger_allowed={ac_charger_allowed}\n"
             f"ok={ok}\n"
+            f"ok_reason={ok_reason}\n"
         )
 
         body_bytes = body.encode("utf-8")
@@ -129,11 +156,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     server = HTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"energy_state_server listening on http://0.0.0.0:{PORT}/energy-state")
-    print(f"AC charger allowed only when solis_pv_total_power > {PV_CHARGE_ALLOW_W:.1f}W")
+    log(f"energy_state_server listening on http://0.0.0.0:{PORT}/energy-state")
+    log(f"AC charger allowed only when solis_pv_total_power > {PV_CHARGE_ALLOW_W:.1f}W")
     server.serve_forever()
 
 
 if __name__ == "__main__":
     main()
-    
