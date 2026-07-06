@@ -728,7 +728,7 @@ static void checkDailyRestart() {
   if (elapsedMs < DAILY_RESTART_INTERVAL_MS) return;
 
   dailyRestartStarted = true;
-  Serial.printf("Daily restart interval reached after %lu seconds; restarting AC_BMS_MONITOR\n",
+  Serial.printf("Daily restart interval reached after %lu seconds; restarting AC battery monitor\n",
                 elapsedMs / 1000UL);
   delay(1000);
   ESP.restart();
