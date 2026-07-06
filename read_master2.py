@@ -327,10 +327,12 @@ def write_line(measurement: str, value, source_tag: str):
 # ----------------------------------------------------------------------
 
 def normalize_charger_plimit_key(key: str) -> str:
+    """Lowercase and strip punctuation so chargerPlimit keys match robustly."""
     return re.sub(r"[^a-z0-9]+", "", key.lower())
 
 
 def coerce_int(value: Any) -> Optional[int]:
+    """Convert supported scalar values to int while rejecting booleans."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -345,6 +347,7 @@ def coerce_int(value: Any) -> Optional[int]:
 
 
 def find_charger_plimit_in_json(value: Any) -> Optional[int]:
+    """Recursively search JSON-like dict/list structures for chargerPlimit."""
     if isinstance(value, dict):
         for key, item in value.items():
             if normalize_charger_plimit_key(str(key)) == "chargerplimit":
@@ -362,6 +365,7 @@ def find_charger_plimit_in_json(value: Any) -> Optional[int]:
 
 
 def parse_charger_plimit_text(text: str) -> Optional[int]:
+    """Parse chargerPlimit from keyed text or CSV/EOT endpoint responses."""
     keyed_match = re.search(
         r'(?is)charger\s*[_-]?\s*p\s*[_-]?\s*limit\s*["\']?\s*[:=]\s*["\']?(-?\d+)',
         text,
@@ -377,6 +381,7 @@ def parse_charger_plimit_text(text: str) -> Optional[int]:
 
 
 def read_charger_plimit() -> Optional[int]:
+    """Fetch charger status, prefer JSON parsing, and fall back to text parsing."""
     try:
         response = requests.get(CHARGER_STATUS_URL, timeout=CHARGER_STATUS_TIMEOUT_S)
         response.raise_for_status()
@@ -883,6 +888,7 @@ def manage_battery_off_controller(
     protection_entry_active = entry_ready or low_pv_nocharge
 
     def enter_reason(prefix: str = "") -> str:
+        """Build a human-readable BATTERY_OFF entry reason from active conditions."""
         reasons = []
         if charger_limit_active:
             reasons.append(f"chargerPlimit={charger_plimit}")
