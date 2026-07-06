@@ -5,6 +5,7 @@ Pi-side Solis-only poller.
 - Polls Solis inverter as Modbus slave 1 (FC04 input registers).
 - Writes Solis metrics to InfluxDB.
 - Adds Solis ToU low-battery / low-PV no-charge protection logic.
+- Adds cheap-charging support during overnight cheap-rate tariff window.
 - Syncs the Solis inverter clock from the Pi clock once at startup only.
 
 ESP32 BMS slave 5 telemetry is handled by the separate read_esp_slave5.py script
@@ -28,6 +29,18 @@ NORMAL / UNKNOWN:
       Enter BATTERY_OFF with the same ToU write sequence.
       Prevents AC-side / grid energy from being stored into the Solis DC battery
       when there is insufficient PV to justify charging.
+
+  Condition C – cheap charging (new):
+    If local time is >= 00:00 and < 06:00 AND ac_bms_power > 600W:
+      Enter CHEAP_CHARGING using the same Solis ToU method as BATTERY_OFF:
+        RUN with grid-charge allowed
+        charge current 0.5A (kick)
+        charge window now-2min -> now+12h
+      After BATTERY_OFF_HOLD_DELAY_S, write charge current 0.0A (hold)
+      state = CHEAP_CHARGING
+    Only transitions from NORMAL or UNKNOWN into CHEAP_CHARGING.
+    CHEAP_CHARGING takes priority over idle NORMAL; BATTERY_OFF conditions
+    remain independent and take priority.
 
   Emergency override (new):
     If SOC < 10%, neither Condition A nor Condition B will trigger BATTERY_OFF.
@@ -56,12 +69,25 @@ BATTERY_OFF refresh:
   current 12h OFF window has less than 2 hours remaining, refresh the OFF window
   with a new 0.5A kick followed by the same 20 s -> 0.0A hold sequence.
 
+CHEAP_CHARGING:
+  Exit:
+    If ac_bms_power < 600W:
+      Write Solis ToU:
+        STOP with grid-charge allowed
+        charge current 10.0A
+        charge window 00:00 -> 00:00
+      state = NORMAL
+  While in CHEAP_CHARGING, Solis polling and metric writing continue normally.
+
 Threshold constants (see config section below):
-  BATTERY_OFF_ENTER_SOC      = 16  % – enter BATTERY_OFF when SOC falls below this
-  BATTERY_OFF_EXIT_SOC       = 18  % – exit BATTERY_OFF when SOC recovers above this
-  LOW_PV_NOCHARGE_PV_W       = 100 W – PV below this is considered low/no PV
-  LOW_PV_NOCHARGE_SOC        = 15  % – block charging when PV is low and SOC <= this
-  EMERGENCY_CHARGE_SOC       = 10  % – allow charging regardless of PV below this SOC
+  BATTERY_OFF_ENTER_SOC        = 16  % – enter BATTERY_OFF when SOC falls below this
+  BATTERY_OFF_EXIT_SOC         = 18  % – exit BATTERY_OFF when SOC recovers above this
+  LOW_PV_NOCHARGE_PV_W         = 100 W – PV below this is considered low/no PV
+  LOW_PV_NOCHARGE_SOC          = 15  % – block charging when PV is low and SOC <= this
+  EMERGENCY_CHARGE_SOC         = 10  % – allow charging regardless of PV below this SOC
+  CHEAP_CHARGING_AC_BMS_POWER_W = 600 W – enter CHEAP_CHARGING when ac_bms_power exceeds this
+  CHEAP_CHARGING_START_HOUR    =  0  h – cheap-rate window start (midnight, inclusive)
+  CHEAP_CHARGING_END_HOUR      =  6  h – cheap-rate window end (exclusive)
 
 No persistent state is used. On startup, the script:
   1. Syncs the Solis inverter clock to Pi time (once only).
@@ -86,6 +112,7 @@ PORT = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A5010V5B-if00-port0"
 BAUDRATE = 9600
 
 INFLUX_URL = "http://localhost:8086/write?db=power"
+INFLUX_QUERY_URL = "http://localhost:8086/query"
 HOST_TAG = "server01"
 
 SOLIS_SOURCE_TAG = "solis_master"
@@ -123,6 +150,7 @@ BUFFER_MAX = 8192
 STATE_UNKNOWN = "UNKNOWN"
 STATE_NORMAL = "NORMAL"
 STATE_BATTERY_OFF = "BATTERY_OFF"
+STATE_CHEAP_CHARGING = "CHEAP_CHARGING"
 
 BATTERY_OFF_EXIT_PV_W = 100.0
 BATTERY_OFF_EXIT_GRID_EXPORT_W = 0.0
@@ -185,6 +213,17 @@ TOU_CURRENT_10_0A = 100
 
 # Seconds after entering/refreshing BATTERY_OFF before writing 0.0A hold current.
 BATTERY_OFF_HOLD_DELAY_S = 30
+
+# ----------------------------------------------------------------------
+# Cheap-charging config
+# ----------------------------------------------------------------------
+
+# AC BMS power threshold (W): enter CHEAP_CHARGING when above this value.
+CHEAP_CHARGING_AC_BMS_POWER_W = 600.0
+
+# Cheap-rate tariff window: midnight (inclusive) to 06:00 (exclusive), local time.
+CHEAP_CHARGING_START_HOUR = 0
+CHEAP_CHARGING_END_HOUR = 6
 
 
 # ----------------------------------------------------------------------
@@ -301,6 +340,28 @@ def write_line(measurement: str, value, source_tag: str):
         print(f"[Influx] write failed: {measurement}: {e}")
 
 
+def read_ac_bms_power_w() -> Optional[float]:
+    """Query InfluxDB for the latest value of the ac_bms_power measurement.
+
+    Returns the power in watts as a float, or None on any query/parse failure.
+    Never raises; the caller must treat None as "data unavailable".
+    """
+    try:
+        resp = requests.get(
+            INFLUX_QUERY_URL,
+            params={"db": "power", "q": 'SELECT last("value") FROM "ac_bms_power"'},
+            timeout=2,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        series = data["results"][0]["series"][0]
+        last_idx = series["columns"].index("last")
+        return float(series["values"][0][last_idx])
+    except Exception as e:
+        print(f"[cheap] read_ac_bms_power_w failed: {e}")
+        return None
+
+
 # ----------------------------------------------------------------------
 # Solis decode / metrics
 # ----------------------------------------------------------------------
@@ -397,11 +458,12 @@ def write_solis_metrics(s: dict, poll_count: int, read_errors: int, controller_s
     write_line("solis_reg_33081_raw", s["reg33081Raw"], SOLIS_SOURCE_TAG)
 
     # Controller state as numeric metric:
-    # UNKNOWN=0, NORMAL=1, BATTERY_OFF=2
+    # UNKNOWN=0, NORMAL=1, BATTERY_OFF=2, CHEAP_CHARGING=3
     state_num = {
         STATE_UNKNOWN: 0,
         STATE_NORMAL: 1,
         STATE_BATTERY_OFF: 2,
+        STATE_CHEAP_CHARGING: 3,
     }.get(controller_state, 0)
     write_line("solis_battery_off_controller_state", state_num, SOLIS_SOURCE_TAG)
 
@@ -648,6 +710,85 @@ def can_attempt_tou_write(controller: dict) -> bool:
     return (time.time() - last) >= TOU_MIN_WRITE_INTERVAL_S
 
 
+def enter_cheap_charging(ser: serial.Serial, controller: dict, reason: str) -> bool:
+    """Enter CHEAP_CHARGING using the same Solis ToU method as BATTERY_OFF."""
+    window = calc_battery_off_window()
+
+    print("")
+    print("=" * 80)
+    print(f"[tou] ENTER CHEAP_CHARGING: {reason}")
+    print(
+        f"[tou] Target: RUN+grid-charge, 0.5A kick -> 0.0A hold after {BATTERY_OFF_HOLD_DELAY_S}s, "
+        f"{window['start_text']} -> {window['end_text']}"
+    )
+    print("=" * 80)
+
+    controller["last_tou_write_ts"] = time.time()
+
+    ok = write_tou_registers(
+        ser=ser,
+        run_stop=TOU_RUN,
+        current_x10=TOU_CURRENT_0_5A,
+        start_hour=window["start_hour"],
+        start_minute=window["start_minute"],
+        end_hour=window["end_hour"],
+        end_minute=window["end_minute"],
+    )
+
+    if ok:
+        controller["state"] = STATE_CHEAP_CHARGING
+        controller["battery_off_until_ts"] = window["end_timestamp"]
+        controller["battery_off_hold_ts"] = time.time() + BATTERY_OFF_HOLD_DELAY_S
+        print(f"[tou] CHEAP_CHARGING active (0.5A kick); 0.0A hold scheduled in {BATTERY_OFF_HOLD_DELAY_S}s")
+    else:
+        print("[tou] CHEAP_CHARGING write failed; state unchanged")
+
+    if SOLIS_POST_WRITE_RECOVERY_S > 0:
+        print(f"[tou] post-write recovery pause {SOLIS_POST_WRITE_RECOVERY_S}s")
+        time.sleep(SOLIS_POST_WRITE_RECOVERY_S)
+    flush_serial_input(ser)
+
+    return ok
+
+
+def exit_cheap_charging(ser: serial.Serial, controller: dict, reason: str) -> bool:
+    """Exit CHEAP_CHARGING back to NORMAL using the same STOP/release method as BATTERY_OFF."""
+    print("")
+    print("=" * 80)
+    print(f"[tou] EXIT CHEAP_CHARGING: {reason}")
+    print("[tou] Target: STOP+grid-charge, 10.0A, 00:00 -> 00:00")
+    print("=" * 80)
+
+    # Clear any pending 0.0A hold – we are leaving CHEAP_CHARGING.
+    controller["battery_off_hold_ts"] = None
+
+    controller["last_tou_write_ts"] = time.time()
+
+    ok = write_tou_registers(
+        ser=ser,
+        run_stop=TOU_STOP,
+        current_x10=TOU_CURRENT_10_0A,
+        start_hour=0,
+        start_minute=0,
+        end_hour=0,
+        end_minute=0,
+    )
+
+    if ok:
+        controller["state"] = STATE_NORMAL
+        controller["battery_off_until_ts"] = None
+        print("[tou] NORMAL active")
+    else:
+        print("[tou] STOP/release write failed; state unchanged")
+
+    if SOLIS_POST_WRITE_RECOVERY_S > 0:
+        print(f"[tou] post-write recovery pause {SOLIS_POST_WRITE_RECOVERY_S}s")
+        time.sleep(SOLIS_POST_WRITE_RECOVERY_S)
+    flush_serial_input(ser)
+
+    return ok
+
+
 def apply_battery_off_hold(ser: serial.Serial, controller: dict) -> None:
     """
     Non-blocking check for the pending 0.0A hold step after a BATTERY_OFF kick.
@@ -664,8 +805,8 @@ def apply_battery_off_hold(ser: serial.Serial, controller: dict) -> None:
     if time.time() < hold_ts:
         return
 
-    if controller.get("state") != STATE_BATTERY_OFF:
-        # Left BATTERY_OFF since the kick; discard the pending hold.
+    if controller.get("state") not in (STATE_BATTERY_OFF, STATE_CHEAP_CHARGING):
+        # Left BATTERY_OFF or CHEAP_CHARGING since the kick; discard the pending hold.
         controller["battery_off_hold_ts"] = None
         return
 
@@ -724,12 +865,27 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
     # can charge the DC battery when SOC drops to a critically low level.
     exit_ready = (pv_recovered and grid_exporting) or soc_recovered or emergency_charge
 
+    # Cheap charging: enter if local time is within the cheap-rate window and
+    # AC BMS power reading exceeds the threshold.  The InfluxDB query is only
+    # issued during the cheap-rate window or while CHEAP_CHARGING is active;
+    # outside this period ac_bms_power is set to None without any network call.
+    now_hour = datetime.now().hour
+    in_cheap_window = CHEAP_CHARGING_START_HOUR <= now_hour < CHEAP_CHARGING_END_HOUR
+    ac_bms_power = read_ac_bms_power_w() if in_cheap_window or state == STATE_CHEAP_CHARGING else None
+    cheap_charging_active = (
+        in_cheap_window
+        and ac_bms_power is not None
+        and ac_bms_power > CHEAP_CHARGING_AC_BMS_POWER_W
+    )
+
     print(
         f"[tou] state={state} pv={pv:.1f}W grid={grid:.1f}W soc={soc}% "
         f"batt_dir_flag={battery_direction_flag} entry_ready={entry_ready} "
         f"low_pv_nocharge={low_pv_nocharge} emergency_charge={emergency_charge} "
         f"pv_recovered={pv_recovered} grid_exporting={grid_exporting} "
-        f"soc_recovered={soc_recovered} exit_ready={exit_ready}"
+        f"soc_recovered={soc_recovered} exit_ready={exit_ready} "
+        f"in_cheap_window={in_cheap_window} ac_bms_power={ac_bms_power} "
+        f"cheap_charging_active={cheap_charging_active}"
     )
 
     if emergency_charge:
@@ -765,6 +921,19 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
                 enter_battery_off(ser, controller, reason=reason)
             return
 
+        if cheap_charging_active:
+            if can_attempt_tou_write(controller):
+                enter_cheap_charging(
+                    ser,
+                    controller,
+                    reason=(
+                        f"startup/unknown: cheap-rate window {CHEAP_CHARGING_START_HOUR:02d}:00-"
+                        f"{CHEAP_CHARGING_END_HOUR:02d}:00, "
+                        f"ac_bms_power={ac_bms_power:.1f}W > {CHEAP_CHARGING_AC_BMS_POWER_W}W"
+                    ),
+                )
+            return
+
         # On startup we do not know whether BATTERY_OFF is actually active on the
         # Solis, so we must NOT fire the exit/STOP write burst just because PV has
         # recovered.  Doing so causes a large FC06 write sequence that can upset
@@ -774,12 +943,12 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
         controller["state"] = STATE_NORMAL
         print(
             "[tou] startup/unknown: entry conditions not met "
-            "(no low-PV no-charge, no grid-import low-SOC discharge, no emergency); "
+            "(no low-PV no-charge, no grid-import low-SOC discharge, no emergency, no cheap-charging); "
             "assuming NORMAL without ToU writes"
         )
         return
 
-    # Normal -> Battery-off.
+    # Normal -> Battery-off or Cheap-charging.
     if state == STATE_NORMAL:
         if entry_ready or low_pv_nocharge:
             if can_attempt_tou_write(controller):
@@ -799,6 +968,19 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
                         f"battery discharging"
                     )
                 enter_battery_off(ser, controller, reason=reason)
+            return
+
+        if cheap_charging_active:
+            if can_attempt_tou_write(controller):
+                enter_cheap_charging(
+                    ser,
+                    controller,
+                    reason=(
+                        f"cheap-rate window {CHEAP_CHARGING_START_HOUR:02d}:00-"
+                        f"{CHEAP_CHARGING_END_HOUR:02d}:00, "
+                        f"ac_bms_power={ac_bms_power:.1f}W > {CHEAP_CHARGING_AC_BMS_POWER_W}W"
+                    ),
+                )
         return
 
     # Battery-off -> Normal, or refresh rolling 12h window.
@@ -836,6 +1018,19 @@ def manage_battery_off_controller(ser: serial.Serial, s: dict, controller: dict)
                         f"grid {grid:.1f}W importing, SOC {soc}%, battery discharging"
                     ),
                 )
+        return
+
+    # Cheap-charging -> Normal when AC BMS power drops below threshold.
+    if state == STATE_CHEAP_CHARGING:
+        if ac_bms_power is None or ac_bms_power < CHEAP_CHARGING_AC_BMS_POWER_W:
+            if can_attempt_tou_write(controller):
+                if ac_bms_power is None:
+                    exit_reason = "ac_bms_power unavailable; releasing CHEAP_CHARGING"
+                else:
+                    exit_reason = (
+                        f"ac_bms_power={ac_bms_power:.1f}W < {CHEAP_CHARGING_AC_BMS_POWER_W}W"
+                    )
+                exit_cheap_charging(ser, controller, reason=exit_reason)
         return
 
 
@@ -914,6 +1109,12 @@ def main():
     print("  Startup: syncs Solis clock to Pi time (once only), then forces Solis ToU to")
     print("           NORMAL/STOP so script and inverter begin aligned;")
     print("           live conditions then decide whether to re-enter BATTERY_OFF immediately")
+    print("")
+    print("Cheap-charging controller:")
+    print(f"  WINDOW: {CHEAP_CHARGING_START_HOUR:02d}:00 (inclusive) to {CHEAP_CHARGING_END_HOUR:02d}:00 (exclusive), local time")
+    print(f"  ENTER : ac_bms_power > {CHEAP_CHARGING_AC_BMS_POWER_W}W while in cheap-rate window (NORMAL or UNKNOWN state)")
+    print(f"  METHOD: same as BATTERY_OFF (RUN+grid-charge, 0.5A kick, now{BATTERY_OFF_START_OFFSET_MINUTES:+d}min -> now+{BATTERY_OFF_WINDOW_HOURS}h, 0.0A hold)")
+    print(f"  EXIT  : ac_bms_power < {CHEAP_CHARGING_AC_BMS_POWER_W}W -> NORMAL (same STOP/release as BATTERY_OFF)")
     print("")
 
     poll_count = 0
