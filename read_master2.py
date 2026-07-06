@@ -340,9 +340,9 @@ def coerce_int(value: Any) -> Optional[int]:
     if isinstance(value, float):
         return int(value)
     if isinstance(value, str):
-        match = re.search(r"-?\d+", value.strip())
-        if match:
-            return int(match.group(0))
+        stripped = value.strip()
+        if re.fullmatch(r"-?\d+", stripped):
+            return int(stripped)
     return None
 
 
@@ -404,8 +404,7 @@ def read_charger_plimit() -> Optional[int]:
     if plimit is not None:
         return plimit
 
-    snippet = text[:120].replace("\n", " ")
-    print(f"[charger] WARNING: could not parse chargerPlimit from endpoint response: {snippet!r}")
+    print("[charger] WARNING: could not parse chargerPlimit from endpoint response")
     return None
 
 
@@ -905,10 +904,10 @@ def manage_battery_off_controller(
     if state == STATE_UNKNOWN:
         if protection_entry_active or charger_limit_active:
             if can_attempt_tou_write(controller):
-                charger_limit_only = charger_limit_active and not protection_entry_active
+                is_charger_only_trigger = charger_limit_active and not protection_entry_active
                 ok = enter_battery_off(ser, controller, reason=enter_reason(prefix="startup/unknown: "))
                 if ok:
-                    controller["charger_plimit_forced_battery_off"] = charger_limit_only
+                    controller["charger_plimit_forced_battery_off"] = is_charger_only_trigger
             return
 
         # On startup we do not know whether BATTERY_OFF is actually active on the
@@ -930,14 +929,33 @@ def manage_battery_off_controller(
     if state == STATE_NORMAL:
         if protection_entry_active or charger_limit_active:
             if can_attempt_tou_write(controller):
-                charger_limit_only = charger_limit_active and not protection_entry_active
+                is_charger_only_trigger = charger_limit_active and not protection_entry_active
                 ok = enter_battery_off(ser, controller, reason=enter_reason())
                 if ok:
-                    controller["charger_plimit_forced_battery_off"] = charger_limit_only
+                    controller["charger_plimit_forced_battery_off"] = is_charger_only_trigger
         return
 
     # Battery-off -> Normal, or refresh rolling 12h window.
     if state == STATE_BATTERY_OFF:
+        off_until = controller.get("battery_off_until_ts")
+        if off_until is None:
+            remaining_s = 0
+        else:
+            remaining_s = off_until - time.time()
+
+        if charger_plimit_forced_battery_off and not charger_plimit_known:
+            if remaining_s < BATTERY_OFF_REFRESH_WHEN_REMAINING_S:
+                if can_attempt_tou_write(controller):
+                    enter_battery_off(
+                        ser,
+                        controller,
+                        reason=(
+                            "refresh rolling OFF window because chargerPlimit is unavailable "
+                            "while preserving the existing charger-limit-forced BATTERY_OFF state"
+                        ),
+                    )
+            return
+
         if exit_ready:
             if charger_limit_active:
                 # Keep BATTERY_OFF latched while the charger itself still reports
@@ -961,12 +979,6 @@ def manage_battery_off_controller(
                 if ok:
                     controller["charger_plimit_forced_battery_off"] = False
             return
-
-        off_until = controller.get("battery_off_until_ts")
-        if off_until is None:
-            remaining_s = 0
-        else:
-            remaining_s = off_until - time.time()
 
         if (
             charger_limit_normal
