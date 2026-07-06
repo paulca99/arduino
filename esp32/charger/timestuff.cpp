@@ -59,20 +59,31 @@ void timeLoop()
     bool nowCheap = (timeinfo.tm_hour >= CHEAP_RATE_START && timeinfo.tm_hour < CHEAP_RATE_END);
 
     if (nowCheap && !inCheapRateWindow) {
-      // Entering cheap-rate window
+      // Entering cheap-rate window.
+      // lowerChargerLimit = -9999 : grid is always below this so charger always
+      //   wants to increase power (until hardware limits fire).
+      // upperChargerLimit = 9999  : grid can never exceed this so the
+      //   reduce/stop branch in adjustCharger() only triggers via voltage or
+      //   chargerPLimit — never from a momentary grid reading.
+      //   This is critical: without it, after a voltage-limit shutdown the
+      //   charger cannot restart because the idle-load grid reading (~-80W to
+      //   +50W) is always inside the band [-9999, 0] left by turnPowerOff().
       inCheapRateWindow = true;
       lowerChargerLimit = -9999;
+      upperChargerLimit = 9999;
       GTIenabled = false;
       turnGTIOff();
-      Serial.println("[CheapRate] STARTED: lowerChargerLimit=-9999, GTI OFF");
+      Serial.println("[CheapRate] STARTED: lower=-9999 upper=9999, GTI OFF");
     }
     else if (!nowCheap && inCheapRateWindow) {
-      // Leaving cheap-rate window
+      // Leaving cheap-rate window — restore normal daytime limits.
       inCheapRateWindow = false;
       lowerChargerLimit = 0;
+      upperChargerLimit = 100;
       GTIenabled = true;
-      Serial.println("[CheapRate] ENDED: lowerChargerLimit=0, GTI re-enabled");
-      // The GTI_on_time block above will call turnGTIOn() on the next timeLoop() call if appropriate
+      Serial.println("[CheapRate] ENDED: lower=0 upper=100, GTI re-enabled");
+      // The GTI_on_time block above will call turnGTIOn() on the next
+      // timeLoop() call if we are inside GTI hours (hour >= 5).
     }
   }
 }
