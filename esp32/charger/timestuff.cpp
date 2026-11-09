@@ -17,10 +17,10 @@ int GTI_off_time = 23;
 
 // Cheap charge overnight window (24-hour clock, hour and minute).
 // Default: 00:30 – 05:00 (crosses midnight).
-int cheapChargeStartHour   = 01;
-int cheapChargeStartMinute = 00;
-int cheapChargeStopHour    = 05;
-int cheapChargeStopMinute  = 45;
+int cheapChargeStartHour   = 00;
+int cheapChargeStartMinute = 05;
+int cheapChargeStopHour    = 5;
+int cheapChargeStopMinute  = 55;
 
 // Returns true if the current NTP time falls inside the cheap-charge window.
 // Handles windows that cross midnight (e.g. 00:30 → 05:00).
